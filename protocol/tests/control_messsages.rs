@@ -106,6 +106,16 @@ fn serde_framebuffer_update_request() {
 }
 
 #[test]
+fn serde_missed_frame_report() {
+    serde_type!(
+        MissedFrameReport,
+        MissedFrameReport {
+            sequence_ids: vec![SequenceId(1), SequenceId(2), SequenceId(3),],
+        }
+    );
+}
+
+#[test]
 fn serde_client_to_server_message() {
     serde_type!(
         ClientToServerMessage,

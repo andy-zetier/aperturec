@@ -36,7 +36,7 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     numberOfCores INTEGER (1..MAX),
     amountOfRam UTF8String
   }
-  
+
   ClientInit ::= SEQUENCE {
     tempId ClientId,
     clientInfo ClientInfo,
@@ -49,29 +49,34 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     UserRequested,
     Terminating
   }
-  
+
   ClientGoodbye ::= SEQUENCE {
     clientId ClientId,
     reason ClientGoodbyeReason
   }
-  
+
   HeartbeatResponse ::= SEQUENCE {
     heartbeatId HeartbeatId,
     lastSequenceId SequenceId
   }
-  
+
   FramebufferUpdateRequest ::= SEQUENCE {
     location Location,
     dimension Dimension
   }
-  
+
+  MissedFrameReport ::= SEQUENCE {
+    sequenceIds SEQUENCE OF SequenceId
+  }
+
   ClientToServerMessage ::= CHOICE {
     clientInit ClientInit,
     clientGoodbye ClientGoodbye,
     heartbeatResponse HeartbeatResponse,
-    framebufferUpdateRequest FramebufferUpdateRequest
+    framebufferUpdateRequest FramebufferUpdateRequest,
+    missedFrameReport MissedFrameReport
   }
-  
+
   ServerInit ::= SEQUENCE {
     clientId ClientId,
     serverName UTF8String,
@@ -80,15 +85,15 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   ServerGoodbyeReason ::= ENUMERATED {
     ServerShuttingDown
   }
-  
+
   ServerGoodbye ::= SEQUENCE {
     reason ServerGoodbyeReason 
   }
-  
+
   HeartbeatRequest ::= SEQUENCE {
     requestId HeartbeatId,
   }
-  
+
   ServerToClientMessage ::= CHOICE {
     serverInit ServerInit,
     serverGoodbye ServerGoodbye,
