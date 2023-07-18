@@ -1,0 +1,109 @@
+stages:
+  - check
+  - build
+  - test
+
+# Helper anchors
+.cargo_format_check: &cargo_format_check
+  |
+  cd "$CI_PROJECT_DIR/$SUBDIR"
+  cargo fmt -- --check
+
+.cargo_check: &cargo_check
+  |
+  cd "$CI_PROJECT_DIR/$SUBDIR"
+  cargo check
+
+.cargo_build_debug: &cargo_build_debug
+  |
+  cd "$CI_PROJECT_DIR/$SUBDIR"
+  cargo build
+
+.cargo_build_release: &cargo_build_release
+  |
+  cd "$CI_PROJECT_DIR/$SUBDIR"
+  cargo build --release
+
+.cargo_test: &cargo_test
+  |
+  cd "$CI_PROJECT_DIR/$SUBDIR"
+  cargo test
+
+# Common configurations
+.rust-job:
+  image: rust
+  tags:
+    - linux
+    - docker
+  before_script:
+    rustup update
+
+.cargo-format-check:
+  extends: .rust-job
+  stage: check
+  before_script:
+    - rustup component add rustfmt
+  script:
+    - *cargo_format_check
+
+.cargo-check:
+  extends: .rust-job
+  stage: check
+  cache:
+    key: "$SUBDIR"
+    paths:
+      - target/
+  script:
+    - *cargo_check
+
+.cargo-build-debug:
+  extends: .rust-job
+  stage: build
+  cache:
+    key: "$SUBDIR"
+    paths:
+      - target/
+  script:
+    - *cargo_build_debug
+
+.cargo-build-release:
+  extends: .rust-job
+  stage: build
+  cache:
+    key: "$SUBDIR"
+    paths:
+      - target/
+  script:
+    - *cargo_build_release
+
+.cargo-test: &cargo-test
+  extends: .rust-job
+  stage: test
+  cache:
+    key: "$SUBDIR"
+    paths:
+      - target/
+  script:
+    - *cargo_test
+
+# Protocol project
+protocol-format-check:
+  extends: .cargo-format-check
+  variables:
+    SUBDIR: "protocol/"
+protocol-check:
+  extends: .cargo-check
+  variables:
+    SUBDIR: "protocol/"
+protocol-build-debug:
+  extends: .cargo-build-debug
+  variables:
+    SUBDIR: "protocol/"
+protocol-build-release:
+  extends: .cargo-build-release
+  variables:
+    SUBDIR: "protocol/"
+protocol-test:
+  extends: .cargo-test
+  variables:
+    SUBDIR: "protocol/"

@@ -1,0 +1,11 @@
+[package]
+name = "aperturec-protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+asn1rs = "0.2.2"
+syn = {version = "1.0.109", features = ["full", "extra-traits"] }
+
+[build-dependencies]
+asn1rs = "0.2.2"

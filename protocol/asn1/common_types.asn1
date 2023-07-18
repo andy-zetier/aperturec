@@ -1,0 +1,35 @@
+CommonTypes DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+  DurationMs ::= INTEGER (0..MAX)
+
+  ClientId ::= INTEGER (0..MAX)
+
+  SequenceId ::= INTEGER(0..MAX)
+
+  SemVer ::= SEQUENCE {
+    major INTEGER (0..MAX),
+    minor INTEGER (0..MAX),
+    patch INTEGER (0..MAX)
+  }
+
+  Dimension ::= SEQUENCE {
+    width INTEGER (1..MAX),
+    height INTEGER (1..MAX)
+  }
+
+  Location ::= SEQUENCE {
+    xPosition INTEGER (0..MAX),
+    yPosition INTEGER (0..MAX)
+  }
+  
+  Codec ::= ENUMERATED {
+    AVIF,
+    RAW
+  }
+
+  ClientCaps ::= SEQUENCE {
+    supportedCodecs SEQUENCE OF Codec
+  }
+
+  HeartbeatId ::= INTEGER (0..MAX)
+
+END

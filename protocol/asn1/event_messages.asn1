@@ -1,0 +1,41 @@
+EventMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+  IMPORTS Location from CommonTypes;
+
+  MappedButton ::= ENUMERATED {
+    Left (0),
+    Right (1),
+    Middle (2),
+    WheelScrollUp (3),
+    WheelScrollDown (4),
+    WheelScrollLeft (5),
+    WheelScrollRight (6),
+    Back (7),
+    Forward (8)
+  }
+
+  Button ::= CHOICE {
+    mappedButton MappedButton,
+    unmappedButton INTEGER (9..255)
+  }
+
+  ButtonState ::= SEQUENCE {
+    button Button,
+    isDepressed BOOLEAN,
+  }
+  
+  KeyEvent ::= SEQUENCE {
+    down BOOLEAN,
+    key INTEGER (0..MAX),
+  }
+  
+  PointerEvent ::= SEQUENCE {
+    buttonStates SEQUENCE OF ButtonState,
+    location Location
+  }
+  
+  ClientToServerMessage ::= CHOICE {
+    keyEvent KeyEvent,
+    pointerEvent PointerEvent
+  }
+
+END
