@@ -1,0 +1,98 @@
+ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+  IMPORTS ClientId, ClientCaps, Dimension, DurationMs, HeartbeatId, Location, SemVer, SequenceId from CommonTypes;
+
+  OS ::= ENUMERATED {
+    Linux,
+    Windows,
+    Mac
+  }
+
+  Bitness ::= ENUMERATED {
+    B32,
+    B64 
+  }
+
+  Endianness ::= ENUMERATED {
+    Big,
+    Little
+  }
+
+  Architecture ::= ENUMERATED {
+    x86,
+    ARM
+  }
+
+  ClientInfo ::= SEQUENCE {
+    version SemVer,
+    buildId UTF8String,
+    os OS,
+    osVersion UTF8String,
+    sslLibrary UTF8String,
+    sslVersion UTF8String,
+    bitness Bitness,
+    endianness Endianness,
+    architecture Architecture,
+    cpuId UTF8String,
+    numberOfCores INTEGER (1..MAX),
+    amountOfRam UTF8String
+  }
+  
+  ClientInit ::= SEQUENCE {
+    tempId ClientId,
+    clientInfo ClientInfo,
+    clientCaps ClientCaps,
+    clientHeartbeatInterval DurationMs,
+    clientHeartbeatResponseInterval DurationMs,
+  }
+
+  ClientGoodbyeReason ::= ENUMERATED {
+    UserRequested,
+    Terminating
+  }
+  
+  ClientGoodbye ::= SEQUENCE {
+    clientId ClientId,
+    reason ClientGoodbyeReason
+  }
+  
+  HeartbeatResponse ::= SEQUENCE {
+    heartbeatId HeartbeatId,
+    lastSequenceId SequenceId
+  }
+  
+  FramebufferUpdateRequest ::= SEQUENCE {
+    location Location,
+    dimension Dimension
+  }
+  
+  ClientToServerMessage ::= CHOICE {
+    clientInit ClientInit,
+    clientGoodbye ClientGoodbye,
+    heartbeatResponse HeartbeatResponse,
+    framebufferUpdateRequest FramebufferUpdateRequest
+  }
+  
+  ServerInit ::= SEQUENCE {
+    clientId ClientId,
+    serverName UTF8String,
+  }
+
+  ServerGoodbyeReason ::= ENUMERATED {
+    ServerShuttingDown
+  }
+  
+  ServerGoodbye ::= SEQUENCE {
+    reason ServerGoodbyeReason 
+  }
+  
+  HeartbeatRequest ::= SEQUENCE {
+    requestId HeartbeatId,
+  }
+  
+  ServerToClientMessage ::= CHOICE {
+    serverInit ServerInit,
+    serverGoodbye ServerGoodbye,
+    heartbeatRequest HeartbeatRequest
+  }
+
+END

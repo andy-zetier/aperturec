@@ -1,0 +1,24 @@
+MediaMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
+  IMPORTS Codec, Dimension, Location, SequenceId from CommonTypes;
+
+  Rectangle ::= SEQUENCE {
+    codec Codec,
+    data OCTET STRING,
+    dimension Dimension OPTIONAL,
+  }
+  
+  RectangleUpdate ::= SEQUENCE {
+    sequenceId SequenceId,
+    location Location,
+    rectangle Rectangle
+  }
+
+  FramebufferUpdate ::= SEQUENCE {
+    rectangleUpdates SEQUENCE OF RectangleUpdate
+  }
+
+  ClientToServerMessage ::= CHOICE {
+    framebufferUpdate FramebufferUpdate
+  }
+
+END
