@@ -37,4 +37,34 @@ CommonTypes DEFINITIONS AUTOMATIC TAGS ::= BEGIN
 
   HeartbeatId ::= INTEGER (0..MAX)
 
+  -- From www.freedesktop.org/wiki/Specifications/cursor-spec
+  Cursor ::= ENUMERATED {
+    default,
+    text,
+    pointer,
+    help,
+    progress,
+    wait,
+    copy,
+    alias,
+    no-drop,
+    not-allowed,
+    all-scroll,
+    row-resize,
+    col-resize,
+    e-resize,
+    ne-resize,
+    nw-resize,
+    n-resize,
+    se-resize,
+    sw-resize,
+    s-resize,
+    w-resize
+  }
+
+  CursorBitmap ::= SEQUENCE {
+    cursor Cursor,
+    data OCTET STRING
+  }
+
 END

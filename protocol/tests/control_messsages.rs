@@ -140,7 +140,17 @@ fn serde_server_init() {
         ServerInit,
         ServerInit {
             client_id: ClientId(567),
-            server_name: String::from("Some sweet server")
+            server_name: String::from("Some sweet server"),
+            cursor_bitmaps: Some(vec![
+                CursorBitmap {
+                    cursor: Cursor::Default,
+                    data: vec![110, 20, 30]
+                },
+                CursorBitmap {
+                    cursor: Cursor::Text,
+                    data: vec![40, 50, 66]
+                }
+            ])
         }
     );
 }

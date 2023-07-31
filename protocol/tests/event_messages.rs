@@ -42,7 +42,8 @@ fn serde_pointer_event() {
             location: Location {
                 x_position: 0,
                 y_position: 0
-            }
+            },
+            cursor: Cursor::Wait
         }
     );
 }

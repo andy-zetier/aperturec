@@ -1,5 +1,7 @@
 ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
-  IMPORTS ClientId, ClientCaps, Dimension, DurationMs, HeartbeatId, Location, SemVer, SequenceId FROM CommonTypes;
+  IMPORTS
+    ClientId, ClientCaps, CursorBitmap, Dimension, DurationMs,
+      HeartbeatId, Location, SemVer, SequenceId FROM CommonTypes;
 
   OS ::= ENUMERATED {
     linux,
@@ -94,6 +96,7 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   ServerInit ::= SEQUENCE {
     clientId ClientId,
     serverName UTF8String,
+    cursorBitmaps SEQUENCE OF CursorBitmap OPTIONAL,
     ...
   }
 

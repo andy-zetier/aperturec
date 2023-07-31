@@ -1,5 +1,5 @@
 EventMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
-  IMPORTS Location, Dimension FROM CommonTypes;
+  IMPORTS Cursor, Dimension, Location FROM CommonTypes;
 
   MappedButton ::= ENUMERATED {
     left (0),
@@ -35,6 +35,7 @@ EventMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   PointerEvent ::= SEQUENCE {
     buttonStates SEQUENCE OF ButtonState,
     location Location,
+    cursor Cursor,
     ...
   }
 
