@@ -1,25 +1,25 @@
 ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
-  IMPORTS ClientId, ClientCaps, Dimension, DurationMs, HeartbeatId, Location, SemVer, SequenceId from CommonTypes;
+  IMPORTS ClientId, ClientCaps, Dimension, DurationMs, HeartbeatId, Location, SemVer, SequenceId FROM CommonTypes;
 
   OS ::= ENUMERATED {
-    Linux,
-    Windows,
-    Mac
+    linux,
+    windows,
+    mac
   }
 
   Bitness ::= ENUMERATED {
-    B32,
-    B64 
+    b32,
+    b64 
   }
 
   Endianness ::= ENUMERATED {
-    Big,
-    Little
+    big,
+    little
   }
 
   Architecture ::= ENUMERATED {
     x86,
-    ARM
+    arm
   }
 
   ClientInfo ::= SEQUENCE {
@@ -34,7 +34,8 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     architecture Architecture,
     cpuId UTF8String,
     numberOfCores INTEGER (1..MAX),
-    amountOfRam UTF8String
+    amountOfRam UTF8String,
+    displaySize Dimension
   }
 
   ClientInit ::= SEQUENCE {
@@ -42,12 +43,12 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     clientInfo ClientInfo,
     clientCaps ClientCaps,
     clientHeartbeatInterval DurationMs,
-    clientHeartbeatResponseInterval DurationMs,
+    clientHeartbeatResponseInterval DurationMs
   }
 
   ClientGoodbyeReason ::= ENUMERATED {
-    UserRequested,
-    Terminating
+    userRequested,
+    terminating
   }
 
   ClientGoodbye ::= SEQUENCE {
@@ -79,11 +80,11 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
 
   ServerInit ::= SEQUENCE {
     clientId ClientId,
-    serverName UTF8String,
+    serverName UTF8String
   }
 
   ServerGoodbyeReason ::= ENUMERATED {
-    ServerShuttingDown
+    serverShuttingDown
   }
 
   ServerGoodbye ::= SEQUENCE {
@@ -91,7 +92,7 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   }
 
   HeartbeatRequest ::= SEQUENCE {
-    requestId HeartbeatId,
+    requestId HeartbeatId
   }
 
   ServerToClientMessage ::= CHOICE {

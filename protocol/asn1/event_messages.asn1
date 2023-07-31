@@ -1,16 +1,16 @@
 EventMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
-  IMPORTS Location from CommonTypes;
+  IMPORTS Location, Dimension FROM CommonTypes;
 
   MappedButton ::= ENUMERATED {
-    Left (0),
-    Right (1),
-    Middle (2),
-    WheelScrollUp (3),
-    WheelScrollDown (4),
-    WheelScrollLeft (5),
-    WheelScrollRight (6),
-    Back (7),
-    Forward (8)
+    left (0),
+    right (1),
+    middle (2),
+    wheelScrollUp (3),
+    wheelScrollDown (4),
+    wheelScrollLeft (5),
+    wheelScrollRight (6),
+    back (7),
+    forward (8)
   }
 
   Button ::= CHOICE {
@@ -20,22 +20,27 @@ EventMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
 
   ButtonState ::= SEQUENCE {
     button Button,
-    isDepressed BOOLEAN,
+    isDepressed BOOLEAN
   }
-  
+
   KeyEvent ::= SEQUENCE {
     down BOOLEAN,
-    key INTEGER (0..MAX),
+    key INTEGER (0..MAX)
   }
-  
+
   PointerEvent ::= SEQUENCE {
     buttonStates SEQUENCE OF ButtonState,
     location Location
   }
-  
+
+  DisplayEvent ::= SEQUENCE {
+    displaySize Dimension
+  }
+
   ClientToServerMessage ::= CHOICE {
     keyEvent KeyEvent,
-    pointerEvent PointerEvent
+    pointerEvent PointerEvent,
+    displayEvent DisplayEvent
   }
 
 END
