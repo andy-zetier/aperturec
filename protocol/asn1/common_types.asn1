@@ -20,10 +20,10 @@ CommonTypes DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     xPosition INTEGER (0..MAX),
     yPosition INTEGER (0..MAX)
   }
-  
+
   Codec ::= ENUMERATED {
-    AVIF,
-    RAW
+    avif,
+    raw
   }
 
   ClientCaps ::= SEQUENCE {

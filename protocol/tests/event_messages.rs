@@ -48,6 +48,19 @@ fn serde_pointer_event() {
 }
 
 #[test]
+fn serde_display_event() {
+    serde_type!(
+        DisplayEvent,
+        DisplayEvent {
+            display_size: Dimension {
+                width: 1024,
+                height: 768
+            }
+        }
+    );
+}
+
+#[test]
 fn serde_client_to_server_message() {
     serde_type!(
         ClientToServerMessage,

@@ -28,7 +28,11 @@ fn serde_client_info() {
             architecture: Architecture::X86,
             cpu_id: "Haswell".into(),
             number_of_cores: 4,
-            amount_of_ram: "2.4Gb".into()
+            amount_of_ram: "2.4Gb".into(),
+            display_size: Dimension {
+                height: 1024,
+                width: 768
+            },
         }
     );
 }
@@ -55,7 +59,11 @@ fn serde_client_init() {
                 architecture: Architecture::X86,
                 cpu_id: "Haswell".into(),
                 number_of_cores: 4,
-                amount_of_ram: "2.4Gb".into()
+                amount_of_ram: "2.4Gb".into(),
+                display_size: Dimension {
+                    height: 1024,
+                    width: 768
+                },
             },
             client_caps: ClientCaps {
                 supported_codecs: vec![Codec::Avif],
