@@ -4,21 +4,25 @@ MediaMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   Rectangle ::= SEQUENCE {
     codec Codec,
     data OCTET STRING,
-    dimension Dimension OPTIONAL
+    dimension Dimension OPTIONAL,
+    ...
   }
 
   RectangleUpdate ::= SEQUENCE {
     sequenceId SequenceId,
     location Location,
-    rectangle Rectangle
+    rectangle Rectangle,
+    ...
   }
 
   FramebufferUpdate ::= SEQUENCE {
-    rectangleUpdates SEQUENCE OF RectangleUpdate
+    rectangleUpdates SEQUENCE OF RectangleUpdate,
+    ...
   }
 
   ClientToServerMessage ::= CHOICE {
-    framebufferUpdate FramebufferUpdate
+    framebufferUpdate FramebufferUpdate,
+    ...
   }
 
 END

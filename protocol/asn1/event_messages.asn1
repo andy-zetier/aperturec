@@ -10,37 +10,44 @@ EventMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     wheelScrollLeft (5),
     wheelScrollRight (6),
     back (7),
-    forward (8)
+    forward (8),
+    ...
   }
 
   Button ::= CHOICE {
     mappedButton MappedButton,
-    unmappedButton INTEGER (9..255)
+    unmappedButton INTEGER (9..255),
+    ...
   }
 
   ButtonState ::= SEQUENCE {
     button Button,
-    isDepressed BOOLEAN
+    isDepressed BOOLEAN,
+    ...
   }
 
   KeyEvent ::= SEQUENCE {
     down BOOLEAN,
-    key INTEGER (0..MAX)
+    key INTEGER (0..MAX),
+    ...
   }
 
   PointerEvent ::= SEQUENCE {
     buttonStates SEQUENCE OF ButtonState,
-    location Location
+    location Location,
+    ...
   }
 
   DisplayEvent ::= SEQUENCE {
-    displaySize Dimension
+    displaySize Dimension,
+    ...
   }
 
   ClientToServerMessage ::= CHOICE {
     keyEvent KeyEvent,
     pointerEvent PointerEvent,
-    displayEvent DisplayEvent
+    displayEvent DisplayEvent,
+    ...
   }
 
 END

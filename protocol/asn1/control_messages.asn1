@@ -4,22 +4,26 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   OS ::= ENUMERATED {
     linux,
     windows,
-    mac
+    mac,
+    ...
   }
 
   Bitness ::= ENUMERATED {
     b32,
-    b64 
+    b64,
+    ...
   }
 
   Endianness ::= ENUMERATED {
     big,
-    little
+    little,
+    ...
   }
 
   Architecture ::= ENUMERATED {
     x86,
-    arm
+    arm,
+    ...
   }
 
   ClientInfo ::= SEQUENCE {
@@ -35,7 +39,8 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     cpuId UTF8String,
     numberOfCores INTEGER (1..MAX),
     amountOfRam UTF8String,
-    displaySize Dimension
+    displaySize Dimension,
+    ...
   }
 
   ClientInit ::= SEQUENCE {
@@ -43,31 +48,38 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     clientInfo ClientInfo,
     clientCaps ClientCaps,
     clientHeartbeatInterval DurationMs,
-    clientHeartbeatResponseInterval DurationMs
+    clientHeartbeatResponseInterval DurationMs,
+    ...
   }
 
   ClientGoodbyeReason ::= ENUMERATED {
     userRequested,
-    terminating
+    networkError,
+    terminating,
+    ...
   }
 
   ClientGoodbye ::= SEQUENCE {
     clientId ClientId,
-    reason ClientGoodbyeReason
+    reason ClientGoodbyeReason,
+    ...
   }
 
   HeartbeatResponse ::= SEQUENCE {
     heartbeatId HeartbeatId,
-    lastSequenceId SequenceId
+    lastSequenceId SequenceId,
+    ...
   }
 
   FramebufferUpdateRequest ::= SEQUENCE {
     location Location,
-    dimension Dimension
+    dimension Dimension,
+    ...
   }
 
   MissedFrameReport ::= SEQUENCE {
-    sequenceIds SEQUENCE OF SequenceId
+    sequenceIds SEQUENCE OF SequenceId,
+    ...
   }
 
   ClientToServerMessage ::= CHOICE {
@@ -75,30 +87,37 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     clientGoodbye ClientGoodbye,
     heartbeatResponse HeartbeatResponse,
     framebufferUpdateRequest FramebufferUpdateRequest,
-    missedFrameReport MissedFrameReport
+    missedFrameReport MissedFrameReport,
+    ...
   }
 
   ServerInit ::= SEQUENCE {
     clientId ClientId,
-    serverName UTF8String
+    serverName UTF8String,
+    ...
   }
 
   ServerGoodbyeReason ::= ENUMERATED {
-    serverShuttingDown
+    serverShuttingDown,
+    networkError,
+    ...
   }
 
   ServerGoodbye ::= SEQUENCE {
-    reason ServerGoodbyeReason 
+    reason ServerGoodbyeReason,
+    ...
   }
 
   HeartbeatRequest ::= SEQUENCE {
-    requestId HeartbeatId
+    requestId HeartbeatId,
+    ...
   }
 
   ServerToClientMessage ::= CHOICE {
     serverInit ServerInit,
     serverGoodbye ServerGoodbye,
-    heartbeatRequest HeartbeatRequest
+    heartbeatRequest HeartbeatRequest,
+    ...
   }
 
 END
