@@ -19,6 +19,7 @@ default:
   parallel:
     matrix:
       - SUBDIR: "protocol"
+      - SUBDIR: "state_machine"
 
 cargo:format-check:
   extends: .cargo-job
