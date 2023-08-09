@@ -1,8 +1,13 @@
 stages:
+  - build-images
   - check
   - build
   - test
   - doc
+
+variables:
+  RUST_BASE_IMAGE: "$CI_REGISTRY_IMAGE/rust/base:$CI_COMMIT_REF_SLUG"
+  RUST_XBACKEND_IMAGE: "$CI_REGISTRY_IMAGE/rust/xbackend:$CI_COMMIT_REF_SLUG"
 
 default:
   interruptible: true
@@ -11,11 +16,46 @@ default:
     - docker
     - amd64
 
+.docker:build-push:
+  stage: build-images
+  image:
+    name: gcr.io/kaniko-project/executor:v1.9.0-debug
+    entrypoint: [""]
+  script:
+    - >-
+      /kaniko/executor
+      --cache=true
+      --cache-copy-layers=true
+      --cache-run-layers=true
+      --cache-ttl=24h
+      --cache-repo="$CI_REGISTRY_IMAGE"
+      --compressed-caching=false
+      --snapshotMode=redo
+      --context "$CI_PROJECT_DIR/images/$IMAGE_NAME"
+      --build-arg BASE_IMAGE
+      --destination "$CI_REGISTRY_IMAGE/$IMAGE_NAME:$CI_COMMIT_REF_SLUG"
+      --registry-certificate "$CI_REGISTRY=$CI_SERVER_TLS_CA_FILE"
+
+images:build-push:base:
+  extends: .docker:build-push
+  variables:
+    IMAGE_NAME: rust/base
+
+images:build-push:xbackend:
+  extends: .docker:build-push
+  variables:
+    BASE_IMAGE: "$RUST_BASE_IMAGE"
+    IMAGE_NAME: rust/xbackend
+  needs:
+    - images:build-push:base
+
 .cargo-job:
-  image: rust
+  image: "$IMAGE"
   before_script:
     - rustup update
     - cd "$SUBDIR"
+  variables:
+    IMAGE: "$RUST_BASE_IMAGE"
   parallel:
     matrix:
       - SUBDIR: "protocol"
@@ -29,33 +69,45 @@ cargo:format-check:
     - rustup component add rustfmt
   script:
     - cargo fmt -- --check
+  needs:
+    - images:build-push:base
 
 cargo:check:
   extends: .cargo-job
   stage: check
   script:
     - cargo check
+  needs:
+    - images:build-push:base
 
 cargo:build:debug:
   extends: .cargo-job
   stage: build
   script:
     - cargo build
+  needs:
+    - images:build-push:base
 
 cargo:build:release:
   extends: .cargo-job
   stage: build
   script:
     - cargo build --release
+  needs:
+    - images:build-push:base
 
 cargo:test:
   extends: .cargo-job
   stage: test
   script:
     - cargo test
+  needs:
+    - images:build-push:base
 
 cargo:doc:
   extends: .cargo-job
   stage: doc
   script:
     - cargo doc
+  needs:
+    - images:build-push:base
