@@ -49,8 +49,8 @@ images:build-push:xbackend:
   needs:
     - images:build-push:base
 
-.cargo-job:
-  image: "$IMAGE"
+.cargo:
+  image: "$RUST_BASE_IMAGE"
   before_script:
     - rustup update
     - cd "$SUBDIR"
@@ -61,53 +61,81 @@ images:build-push:xbackend:
       - SUBDIR: "protocol"
       - SUBDIR: "state_machine"
 
+.cargo:debug:
+  extends: .cargo
+
+.cargo:release:
+  extends: .cargo
+  variables:
+    FLAGS: "--release"
+
 cargo:format-check:
-  extends: .cargo-job
+  extends: .cargo
   stage: check
   before_script:
-    - !reference [.cargo-job, before_script]
+    - !reference [.cargo, before_script]
     - rustup component add rustfmt
   script:
     - cargo fmt -- --check
   needs:
     - images:build-push:base
 
-cargo:check:
-  extends: .cargo-job
+.cargo:check: &cargo-check
   stage: check
   script:
-    - cargo check
+    - cargo check $FLAGS
+  needs:
+    - images:build-push:base
+
+cargo:check:debug:
+  extends: .cargo:debug
+  <<: *cargo-check
+
+cargo:check:release:
+  extends: .cargo:release
+  <<: *cargo-check
+
+.cargo:build: &cargo-build
+  stage: build
+  script:
+    - cargo build $FLAGS
   needs:
     - images:build-push:base
 
 cargo:build:debug:
-  extends: .cargo-job
-  stage: build
-  script:
-    - cargo build
-  needs:
-    - images:build-push:base
+  extends: .cargo:debug
+  <<: *cargo-build
 
 cargo:build:release:
-  extends: .cargo-job
-  stage: build
-  script:
-    - cargo build --release
-  needs:
-    - images:build-push:base
+  extends: .cargo:release
+  <<: *cargo-build
 
-cargo:test:
-  extends: .cargo-job
+.cargo:test: &cargo-test
   stage: test
   script:
-    - cargo test
+    - cargo test $FLAGS
   needs:
     - images:build-push:base
 
-cargo:doc:
-  extends: .cargo-job
+cargo:test:debug:
+  extends: .cargo:debug
+  <<: *cargo-test
+
+cargo:test:release:
+  extends: .cargo:release
+  <<: *cargo-test
+
+.cargo:doc: &cargo-doc
   stage: doc
   script:
-    - cargo doc
+    - cargo doc $FLAGS
   needs:
     - images:build-push:base
+
+cargo:doc:debug:
+  extends: .cargo:debug
+  <<: *cargo-doc
+
+cargo:doc:release:
+  extends: .cargo:release
+  <<: *cargo-doc
