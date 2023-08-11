@@ -16,46 +16,57 @@ default:
     - docker
     - amd64
 
-.docker:build-push:
+.image:build-push:
   stage: build-images
   image:
-    name: gcr.io/kaniko-project/executor:v1.9.0-debug
+    name: gcr.io/kaniko-project/executor:v1.13.0-debug
     entrypoint: [""]
   script:
     - >-
       /kaniko/executor
-      --cache=true
-      --cache-copy-layers=true
-      --cache-run-layers=true
-      --cache-ttl=24h
-      --cache-repo="$CI_REGISTRY_IMAGE"
-      --compressed-caching=false
-      --snapshotMode=redo
-      --context "$CI_PROJECT_DIR/images/$IMAGE_NAME"
+      --snapshot-mode=redo
+      --context "$CI_PROJECT_DIR/images/$IMAGE"
       --build-arg BASE_IMAGE
-      --destination "$CI_REGISTRY_IMAGE/$IMAGE_NAME:$CI_COMMIT_REF_SLUG"
+      --destination "$CI_REGISTRY_IMAGE/$IMAGE:$CI_COMMIT_REF_SLUG"
       --registry-certificate "$CI_REGISTRY=$CI_SERVER_TLS_CA_FILE"
 
-images:build-push:base:
-  extends: .docker:build-push
-  variables:
-    IMAGE_NAME: rust/base
+.rules:event:push: &rules-event-push
+  $CI_PIPELINE_SOURCE == "push"
 
-images:build-push:xbackend:
-  extends: .docker:build-push
-  variables:
-    BASE_IMAGE: "$RUST_BASE_IMAGE"
-    IMAGE_NAME: rust/xbackend
+.needs:image:rust:base: &needs-image-rust-base
   needs:
-    - images:build-push:base
+    - job: image:build-push:rust:base
+      optional: true
+
+image:build-push:rust:base:
+  extends: .image:build-push
+  variables:
+    IMAGE: rust/base
+  rules:
+    - if: *rules-event-push
+      changes:
+        - images/rust/base/*
+
+image:build-push:rust:xbackend:
+  extends: .image:build-push
+  variables:
+    IMAGE: rust/xbackend
+    BASE_IMAGE: "$RUST_BASE_IMAGE"
+  rules:
+    - if: *rules-event-push
+      changes:
+        - images/rust/xbackend/*
+    - !reference [ image:build-push:rust:base, rules ]
+  <<: *needs-image-rust-base
 
 .cargo:
-  image: "$RUST_BASE_IMAGE"
+  image: "$IMAGE"
   before_script:
     - rustup update
     - cd "$SUBDIR"
   variables:
     IMAGE: "$RUST_BASE_IMAGE"
+  <<: *needs-image-rust-base
   parallel:
     matrix:
       - SUBDIR: "protocol"
@@ -77,15 +88,11 @@ cargo:format-check:
     - rustup component add rustfmt
   script:
     - cargo fmt -- --check
-  needs:
-    - images:build-push:base
 
 .cargo:check: &cargo-check
   stage: check
   script:
     - cargo check $FLAGS
-  needs:
-    - images:build-push:base
 
 cargo:check:debug:
   extends: .cargo:debug
@@ -99,8 +106,6 @@ cargo:check:release:
   stage: build
   script:
     - cargo build $FLAGS
-  needs:
-    - images:build-push:base
 
 cargo:build:debug:
   extends: .cargo:debug
@@ -114,8 +119,6 @@ cargo:build:release:
   stage: test
   script:
     - cargo test $FLAGS
-  needs:
-    - images:build-push:base
 
 cargo:test:debug:
   extends: .cargo:debug
@@ -129,8 +132,6 @@ cargo:test:release:
   stage: doc
   script:
     - cargo doc $FLAGS
-  needs:
-    - images:build-push:base
 
 cargo:doc:debug:
   extends: .cargo:debug
