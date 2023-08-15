@@ -8,19 +8,17 @@
 /// use async_trait::async_trait;
 /// use aperturec_state_machine::{try_recover, Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable};
 ///
+/// #[derive(State)]
 /// struct Init;
+/// #[derive(State)]
 /// struct Running;
-/// impl State for Init {}
-/// impl State for Running {}
 ///
+/// #[derive(Stateful)]
+/// #[state(S)]
 /// struct Server<S: State> {
 ///     state: S
 /// }
 /// impl SelfTransitionable for Server<Init> {}
-///
-/// impl<S: State> Stateful for Server<S> {
-///     type State = S;
-/// }
 ///
 /// fn do_thing() -> anyhow::Result<()> {
 ///     anyhow::bail!("We always fail")
@@ -63,18 +61,15 @@ macro_rules! try_recover {
 /// use async_trait::async_trait;
 /// use aperturec_state_machine::{return_recover, try_transition_continue, Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable};
 ///
+/// #[derive(State)]
 /// struct Init;
+/// #[derive(State)]
 /// struct Running;
-/// impl State for Init {}
-/// impl State for Running {}
 ///
+/// #[derive(Stateful, SelfTransitionable)]
+/// #[state(S)]
 /// struct Server<S: State> {
 ///     state: S
-/// }
-/// impl SelfTransitionable for Server<Init> {}
-///
-/// impl<S: State> Stateful for Server<S> {
-///     type State = S;
 /// }
 ///
 /// #[async_trait]
@@ -107,18 +102,15 @@ macro_rules! return_recover {
 /// use async_trait::async_trait;
 /// use aperturec_state_machine::{return_recover, try_transition_continue, Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable};
 ///
+/// #[derive(State)]
 /// struct Init;
+/// #[derive(State)]
 /// struct Running;
-/// impl State for Init {}
-/// impl State for Running {}
 ///
+/// #[derive(Stateful, SelfTransitionable)]
+/// #[state(S)]
 /// struct Server<S: State> {
 ///     state: S
-/// }
-/// impl SelfTransitionable for Server<Init> {}
-///
-/// impl<S: State> Stateful for Server<S> {
-///     type State = S;
 /// }
 ///
 /// #[async_trait]
