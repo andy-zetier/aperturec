@@ -41,20 +41,19 @@ provides a decent overview to the crate. Transitions go from
 ```rust
 use aperturec_state_machine::{State, Stateful, Transitionable};
 
+#[derive(State)]
 struct Alpha;
-impl State for Alpha {}
 
+#[derive(State)]
 struct Beta;
-impl State for Beta {}
 
+#[derive(State)]
 struct Gamma;
-impl State for Gamma {}
 
+#[derive(Stateful)]
+#[state(S)]
 struct Machine<S: State> {
     state: S
-}
-impl<S: State> Stateful for Machine<S> {
-    type State = S;
 }
 
 impl Transitionable<Beta> for Machine<Alpha> {
@@ -105,24 +104,19 @@ from `Beta->Gamma` can fail. In this case, we want the machine to return to the
 ```rust
 # use aperturec_state_machine::{Bailable, Recovered, State, Stateful, Transitionable, TryTransitionable};
 # 
-# #[derive(Debug)]
+# #[derive(State, Debug)]
 # struct Alpha;
-# impl State for Alpha {}
 # 
-# #[derive(Debug)]
+# #[derive(State, Debug)]
 # struct Beta;
-# impl State for Beta {}
 # 
-# #[derive(Debug)]
+# #[derive(State, Debug)]
 # struct Gamma;
-# impl State for Gamma {}
 # 
-# #[derive(Debug)]
+# #[derive(Stateful, Debug)]
+# #[state(S)]
 # struct Machine<S: State> {
 #     state: S
-# }
-# impl<S: State> Stateful for Machine<S> {
-#     type State = S;
 # }
 # 
 # impl Transitionable<Beta> for Machine<Alpha> {

@@ -71,6 +71,7 @@ image:build-push:rust:xbackend:
     matrix:
       - SUBDIR: "protocol"
       - SUBDIR: "state_machine"
+      - SUBDIR: "state_machine/derive"
 
 .cargo:debug:
   extends: .cargo

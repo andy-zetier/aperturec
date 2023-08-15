@@ -5,6 +5,40 @@ use async_trait::async_trait;
 mod macros;
 pub use macros::*;
 
+/// Derive for [`State`] trait
+/// ```
+/// # use aperturec_state_machine::*;
+/// #[derive(State)]
+/// struct MyState;
+/// ```
+pub use aperturec_state_machine_derive::State;
+
+/// Derive for [`Stateful`] trait
+///
+/// Users of this derive must specify the [`State`] with an attrubute. For example:
+/// ```
+/// # use aperturec_state_machine::*;
+/// #[derive(Stateful)]
+/// #[state(S)]
+/// struct MyMachine<S: State> {
+///     state: S,
+/// }
+/// ```
+pub use aperturec_state_machine_derive::Stateful;
+
+/// Derive for [`SelfTransitionable`]
+///
+/// Users must also implement [`Stateful`], and can do so via the provided derive
+/// ```
+/// # use aperturec_state_machine::*;
+/// #[derive(Stateful, SelfTransitionable)]
+/// #[state(S)]
+/// struct MyMachine<S: State> {
+///     state: S,
+/// }
+/// ```
+pub use aperturec_state_machine_derive::SelfTransitionable;
+
 /// A state which a [`Stateful`] can be in
 ///
 /// The [`State`] trait itself is bare, only used for type enforcement of generic [`Stateful`] objects.
@@ -160,22 +194,18 @@ mod test {
     macro_rules! empty_states {
         ($($state:ident),+) => {
             $(
-                #[derive(Debug, Eq, PartialEq)]
+                #[derive(State, Debug, Eq, PartialEq)]
                 struct $state;
-                impl State for $state {}
             )*
         };
     }
 
     macro_rules! transitions {
         ($machine:ident, $(($start:ident,$end:ident)),+) => {
-            #[derive(Debug, Eq, PartialEq)]
+            #[derive(Stateful, Debug, Eq, PartialEq)]
+            #[state(S)]
             struct $machine<S: State> {
                 state: S
-            }
-
-            impl<S: State> Stateful for $machine<S> {
-                type State = S;
             }
             $(
                 impl Transitionable<$end> for $machine<$start> {
