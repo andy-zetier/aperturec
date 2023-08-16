@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{parse_macro_input, DeriveInput, Meta, MetaList};
 
 #[proc_macro_derive(State)]
@@ -15,14 +15,20 @@ pub fn state(input: TokenStream) -> TokenStream {
 
     TokenStream::from(expanded)
 }
+
 #[proc_macro_derive(Stateful, attributes(state))]
 pub fn stateful(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    if input.attrs.len() != 1 {
+    let state_attrs: Vec<_> = input
+        .attrs
+        .iter()
+        .filter(|attr| attr.style == syn::AttrStyle::Outer)
+        .map(|attr| attr.path())
+        .filter_map(|path| path.get_ident())
+        .filter(|ident| ident.to_token_stream().to_string() == "state")
+        .collect();
+    if state_attrs.len() != 1 {
         panic!("#[derive(Stateful)] requires specifying the state with #[state(<State>)] attribute")
-    }
-    if input.attrs[0].style != syn::AttrStyle::Outer {
-        panic!("state attribute should be defined for the whole type");
     }
 
     let state_toks: Vec<_> = match input.attrs[0].meta.clone() {
