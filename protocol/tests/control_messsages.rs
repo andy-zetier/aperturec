@@ -70,6 +70,7 @@ fn serde_client_init() {
             },
             client_heartbeat_interval: DurationMs(1000),
             client_heartbeat_response_interval: DurationMs(1000),
+            decoders: vec![Decoder { port: 1024 },]
         }
     );
 }
@@ -150,7 +151,18 @@ fn serde_server_init() {
                     cursor: Cursor::Text,
                     data: vec![40, 50, 66]
                 }
-            ])
+            ]),
+            decoder_areas: vec![DecoderArea {
+                decoder: Decoder { port: 1234 },
+                location: Location {
+                    x_position: 10,
+                    y_position: 20,
+                },
+                dimension: Dimension {
+                    width: 50,
+                    height: 50,
+                }
+            }]
         }
     );
 }
