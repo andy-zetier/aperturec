@@ -28,6 +28,18 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     ...
   }
 
+  Decoder ::= SEQUENCE {
+    port INTEGER(1024..65535),
+    ...
+  }
+
+  DecoderArea ::= SEQUENCE {
+    decoder Decoder,
+    location Location,
+    dimension Dimension,
+    ...
+  }
+
   ClientInfo ::= SEQUENCE {
     version SemVer,
     buildId UTF8String,
@@ -51,6 +63,7 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     clientCaps ClientCaps,
     clientHeartbeatInterval DurationMs,
     clientHeartbeatResponseInterval DurationMs,
+    decoders SEQUENCE OF Decoder,
     ...
   }
 
@@ -97,6 +110,7 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     clientId ClientId,
     serverName UTF8String,
     cursorBitmaps SEQUENCE OF CursorBitmap OPTIONAL,
+    decoderAreas SEQUENCE OF DecoderArea,
     ...
   }
 
