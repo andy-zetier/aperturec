@@ -20,7 +20,7 @@ MediaMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     ...
   }
 
-  ClientToServerMessage ::= CHOICE {
+  ServerToClientMessage ::= CHOICE {
     framebufferUpdate FramebufferUpdate,
     ...
   }
