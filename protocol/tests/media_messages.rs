@@ -83,8 +83,8 @@ fn serde_frame_buffer_update() {
 #[test]
 fn serde_client_to_server_message() {
     serde_type!(
-        ClientToServerMessage,
-        ClientToServerMessage::FramebufferUpdate(FramebufferUpdate {
+        ServerToClientMessage,
+        ServerToClientMessage::FramebufferUpdate(FramebufferUpdate {
             rectangle_updates: vec![]
         })
     );
