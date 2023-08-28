@@ -7,7 +7,6 @@ stages:
 
 variables:
   RUST_BASE_IMAGE: "$CI_REGISTRY_IMAGE/rust/base:$CI_COMMIT_REF_SLUG"
-  RUST_XBACKEND_IMAGE: "$CI_REGISTRY_IMAGE/rust/xbackend:$CI_COMMIT_REF_SLUG"
 
 default:
   interruptible: true
@@ -47,6 +46,18 @@ image:build-push:rust:base:
       changes:
         - images/rust/base/*
 
+image:build-push:rust:asn1c:
+  extends: .image:build-push
+  variables:
+    IMAGE: rust/asn1c
+    BASE_IMAGE: "$RUST_BASE_IMAGE"
+  rules:
+    - if: *rules-event-push
+      changes:
+        - images/rust/asn1c/*
+    - !reference [ image:build-push:rust:base, rules ]
+  <<: *needs-image-rust-base
+
 image:build-push:rust:xbackend:
   extends: .image:build-push
   variables:
@@ -60,16 +71,20 @@ image:build-push:rust:xbackend:
   <<: *needs-image-rust-base
 
 .cargo:
-  image: "$IMAGE"
+  image: "$CI_REGISTRY_IMAGE/$IMAGE:$CI_COMMIT_REF_SLUG"
   before_script:
     - rustup update
     - cd "$SUBDIR"
   variables:
-    IMAGE: "$RUST_BASE_IMAGE"
+    IMAGE: "rust/base"
   <<: *needs-image-rust-base
+  needs:
+    - job: image:build-push:rust:asn1c
+      optional: true
   parallel:
     matrix:
       - SUBDIR: "protocol"
+        IMAGE: "rust/asn1c"
       - SUBDIR: "state_machine"
       - SUBDIR: "state_machine/derive"
 
