@@ -7,12 +7,11 @@ in the ACP Specification.
 ## Overview
 
 - `asn1/`: ASN.1 Definitions of all PDUs in ACP
-- `src/`: Contains only a `lib.rs` which `include!`'s auto-generated Rust
-    bindings for the PDUs
-- `tests/`: Tests which are executable via `cargo test` Additionally this is
-    probably the best place to see how to use the PDUs
+- `src/`: Contains tests and `includes!` to include the auto generated code
 - `build.rs`: Build script which auto-generates the Rust bindings for the PDUs
-    via [asn1rs](https://crates.io/crates/asn1rs).
+    via [asn1rs](https://crates.io/crates/asn1rs). Additionally builds and links
+    [asn1c](https://github.com/vlm/asn1c) for round-trip Rust-to-C-and-back
+    testing
 
 
 ## Usage
