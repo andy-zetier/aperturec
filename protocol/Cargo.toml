@@ -5,8 +5,10 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
-rasn = "0.9.4"
+derive_builder = "0.12"
+derive-new = "0.5"
 pretty_assertions = "1.4"
+rasn = "0.9"
 
 [build-dependencies]
 anyhow = "1.0"
