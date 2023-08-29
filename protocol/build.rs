@@ -232,6 +232,16 @@ fn find_generated_sources_and_headers(out_dir: &Path) -> (Vec<PathBuf>, Vec<Path
             }
         }
     }
+
+    // Enforce consistent header order
+    headers.sort_by_key(|path| {
+        path.clone()
+            .into_os_string()
+            .into_string()
+            .unwrap()
+            .to_lowercase()
+    });
+
     (sources, headers)
 }
 
