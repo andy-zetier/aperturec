@@ -36,7 +36,7 @@ fn common_attributes(should_impl_copy: bool) -> Vec<Attribute> {
         parse_quote! {}
     };
     vec![
-        parse_quote! { #[derive(rasn::AsnType, rasn::Encode, rasn::Decode, Debug, Clone, PartialEq, Eq, #copy)] },
+        parse_quote! { #[derive(rasn::AsnType, rasn::Encode, rasn::Decode, new, Debug, Clone, PartialEq, Eq, #copy)] },
         parse_quote! { #[rasn(automatic_tags, option_type(Option))] },
     ]
 }
@@ -97,6 +97,7 @@ impl VisitMut for RasnDerive {
         }
         if is_extensible {
             i.attrs.push(parse_quote! { #[non_exhaustive] });
+            i.attrs.push(parse_quote! { #[derive(Builder)] });
         }
     }
 
@@ -147,10 +148,20 @@ impl VisitMut for UseChanges {
     fn visit_file_mut(&mut self, i: &mut File) {
         let target: Item = parse_quote! { use asn1rs::prelude::*; };
         i.items.retain(|item| item != &target);
-        i.items.push(parse_quote! {
-            #[allow(unused_imports)]
-            use rasn::AsnType;
-        });
+        i.items.append(&mut vec![
+            parse_quote! {
+                #[allow(unused_imports)]
+                use rasn::AsnType;
+            },
+            parse_quote! {
+                #[allow(unused_imports)]
+                use derive_builder::Builder;
+            },
+            parse_quote! {
+                #[allow(unused_imports)]
+                use derive_new::new;
+            },
+        ]);
     }
 }
 
