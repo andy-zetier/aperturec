@@ -87,6 +87,8 @@ image:build-push:rust:xbackend:
         IMAGE: "rust/asn1c"
       - SUBDIR: "state_machine"
       - SUBDIR: "state_machine/derive"
+      - SUBDIR: "channel"
+        IMAGE: "rust/asn1c"
 
 .cargo:debug:
   extends: .cargo
