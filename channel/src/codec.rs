@@ -1,6 +1,8 @@
 pub mod der {
     super::impl_codec_reliable!(der, tcp, rasn::der::de::Error::Incomplete { .. });
+    super::impl_codec_unreliable!(der, udp);
     super::tcp_test!(der, 8000);
+    super::udp_test!(der, 8500);
 }
 
 pub mod cer {
@@ -10,17 +12,22 @@ pub mod cer {
         rasn::ber::de::Error::Incomplete { .. },
         rasn::ber::de::Error::FieldError { .. }
     );
+    super::impl_codec_unreliable!(der, udp);
     super::tcp_test!(cer, 9000);
+    super::udp_test!(der, 9500);
 }
 
 pub mod ber {
     super::impl_codec_reliable!(ber, tcp, rasn::ber::de::Error::Incomplete { .. });
+    super::impl_codec_unreliable!(der, udp);
     super::tcp_test!(ber, 10000);
+    super::udp_test!(der, 10500);
 }
 
 macro_rules! impl_codec_reliable {
     ($codec:ident, $transport:ident, $( $incomplete_error:pat ),*) => {
         pub mod reliable {
+        use crate::*;
         use crate::reliable::*;
 
         use aperturec_protocol::*;
@@ -398,12 +405,213 @@ macro_rules! impl_codec_reliable {
 }
 pub(crate) use impl_codec_reliable;
 
+macro_rules! impl_codec_unreliable {
+    ($codec:ident, $transport:ident) => {
+        pub mod unreliable {
+            use crate::unreliable::*;
+            use crate::*;
+
+            use aperturec_protocol::*;
+            use async_trait::async_trait;
+            use rasn::$codec;
+            use rasn::{Decode, Encode};
+            use std::marker::PhantomData;
+
+            pub struct ReceiverSimplex<R, RM>
+            where
+                R: RawReceiver,
+                RM: Decode,
+            {
+                receiver: R,
+                buf: [u8; 65536],
+                _receive_message: PhantomData<RM>,
+            }
+
+            impl<R, RM> ReceiverSimplex<R, RM>
+            where
+                R: RawReceiver,
+                RM: Decode,
+            {
+                pub fn new(raw: R) -> Self {
+                    ReceiverSimplex {
+                        receiver: raw,
+                        buf: [0_u8; 65536],
+                        _receive_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> R {
+                    self.receiver
+                }
+            }
+
+            impl<R, RM> Receiver for ReceiverSimplex<R, RM>
+            where
+                R: RawReceiver,
+                RM: Decode,
+            {
+                type Message = RM;
+                fn receive(&mut self) -> anyhow::Result<Self::Message> {
+                    let nbytes_recvd = self.receiver.receive(&mut self.buf)?;
+                    let slice = &self.buf[0..nbytes_recvd];
+                    Ok($codec::decode::<RM>(&slice)?)
+                }
+            }
+
+            pub struct AsyncReceiverSimplex<R, RM>
+            where
+                R: AsyncRawReceiver + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+            {
+                receiver: R,
+                buf: [u8; 65536],
+                _receive_message: PhantomData<RM>,
+            }
+
+            impl<R, RM> AsyncReceiverSimplex<R, RM>
+            where
+                R: AsyncRawReceiver + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+            {
+                pub fn new(raw: R) -> Self {
+                    AsyncReceiverSimplex {
+                        receiver: raw,
+                        buf: [0_u8; 65536],
+                        _receive_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> R {
+                    self.receiver
+                }
+            }
+
+            #[async_trait]
+            impl<R, RM> AsyncReceiver for AsyncReceiverSimplex<R, RM>
+            where
+                R: AsyncRawReceiver + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+            {
+                type Message = RM;
+
+                async fn receive(&mut self) -> anyhow::Result<Self::Message> {
+                    let nbytes_recvd = self.receiver.receive(&mut self.buf).await?;
+                    let slice = &self.buf[0..nbytes_recvd];
+                    Ok($codec::decode::<RM>(&slice)?)
+                }
+            }
+
+            pub struct SenderSimplex<S, SM>
+            where
+                S: RawSender,
+                SM: Encode,
+            {
+                sender: S,
+                _send_message: PhantomData<SM>,
+            }
+
+            impl<S, SM> SenderSimplex<S, SM>
+            where
+                S: RawSender,
+                SM: Encode,
+            {
+                pub fn new(raw: S) -> Self {
+                    SenderSimplex {
+                        sender: raw,
+                        _send_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> S {
+                    self.sender
+                }
+            }
+
+            impl<S, SM> Sender for SenderSimplex<S, SM>
+            where
+                S: RawSender,
+                SM: Encode,
+            {
+                type Message = SM;
+                fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+                    let buf = $codec::encode(&msg)?;
+                    self.sender.send(&buf)?;
+                    Ok(())
+                }
+            }
+
+            pub struct AsyncSenderSimplex<S, SM>
+            where
+                S: AsyncRawSender + Send + Unpin + 'static,
+                SM: Encode + Send + 'static,
+            {
+                sender: S,
+                _send_message: PhantomData<SM>,
+            }
+
+            impl<S, SM> AsyncSenderSimplex<S, SM>
+            where
+                S: AsyncRawSender + Send + Unpin + 'static,
+                SM: Encode + Send + 'static,
+            {
+                pub fn new(raw: S) -> Self {
+                    AsyncSenderSimplex {
+                        sender: raw,
+                        _send_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> S {
+                    self.sender
+                }
+            }
+
+            #[async_trait]
+            impl<S, SM> AsyncSender for AsyncSenderSimplex<S, SM>
+            where
+                S: AsyncRawSender + Send + Unpin + 'static,
+                SM: Encode + Send + 'static,
+            {
+                type Message = SM;
+
+                async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+                    let buf = $codec::encode(&msg)?;
+                    self.sender.send(&buf).await?;
+                    Ok(())
+                }
+            }
+
+            pub type ServerMediaChannel = SenderSimplex<
+                $transport::Client<$transport::Connected>,
+                media_messages::ServerToClientMessage,
+            >;
+
+            pub type ClientMediaChannel = ReceiverSimplex<
+                $transport::Server<$transport::Listening>,
+                media_messages::ServerToClientMessage,
+            >;
+
+            pub type AsyncServerMediaChannel = AsyncSenderSimplex<
+                $transport::Client<$transport::AsyncConnected>,
+                media_messages::ServerToClientMessage,
+            >;
+
+            pub type AsyncClientMediaChannel = AsyncReceiverSimplex<
+                $transport::Server<$transport::AsyncListening>,
+                media_messages::ServerToClientMessage,
+            >;
+        }
+    };
+}
+pub(crate) use impl_codec_unreliable;
+
 macro_rules! tcp_test {
     ($codec:ident, $port_start:literal) => {
         #[cfg(test)]
-        mod test {
+        mod tcp_test {
             use super::reliable::*;
             use crate::reliable::*;
+            use crate::{AsyncReceiver, AsyncSender, Receiver, Sender};
 
             use aperturec_protocol::common_types::*;
             use aperturec_protocol::control_messages;
@@ -643,3 +851,106 @@ macro_rules! tcp_test {
     };
 }
 pub(crate) use tcp_test;
+
+macro_rules! udp_test {
+    ($codec:ident, $port_start:literal) => {
+        #[cfg(test)]
+        mod udp_test {
+            use super::unreliable::*;
+            use crate::unreliable::*;
+            use crate::{AsyncReceiver, AsyncSender, Receiver, Sender};
+
+            use aperturec_protocol::common_types::*;
+            use aperturec_protocol::media_messages::*;
+            use aperturec_state_machine::TryTransitionable;
+            use std::net::SocketAddr;
+
+            macro_rules! udp_client_and_server {
+                ($ip:expr, $port:expr) => {{
+                    let udp_server = udp::Server::new(SocketAddr::from(($ip, $port)))
+                        .try_transition()
+                        .await
+                        .expect("Failed to listen");
+                    let udp_client = udp::Client::new(SocketAddr::from(($ip, $port)))
+                        .try_transition()
+                        .await
+                        .expect("Failed to connect");
+                    (udp_client, udp_server)
+                }};
+            }
+
+            macro_rules! async_udp_client_and_server {
+                ($ip:expr, $port:expr) => {{
+                    let (sync_client, sync_server) = udp_client_and_server!($ip, $port);
+                    let async_client = sync_client
+                        .try_transition()
+                        .await
+                        .expect("Failed to make client async");
+                    let async_server = sync_server
+                        .try_transition()
+                        .await
+                        .expect("Failed to make server async");
+                    (async_client, async_server)
+                }};
+            }
+
+            macro_rules! test_media_message {
+                () => {{
+                    ServerToClientMessage::new_framebuffer_update(FramebufferUpdate::new(vec![
+                        RectangleUpdateBuilder::default()
+                            .sequence_id(SequenceId(1))
+                            .location(Location::new(0, 0))
+                            .rectangle(Rectangle::new(
+                                Codec::new_raw(),
+                                vec![0xc5; 1024].into(),
+                                None,
+                            ))
+                            .build()
+                            .expect("RectangleUpdate build"),
+                    ]))
+                }};
+            }
+
+            #[tokio::test]
+            async fn mc_init() {
+                let (sync_client, sync_server) =
+                    udp_client_and_server!([127, 0, 0, 1], $port_start);
+                let mut server_mc = ServerMediaChannel::new(sync_client);
+                let mut client_mc = ClientMediaChannel::new(sync_server);
+                let msg = test_media_message!();
+                server_mc
+                    .send(msg.clone())
+                    .expect("failed to send media message");
+                let recvd = client_mc
+                    .receive()
+                    .expect("failed to receive media message");
+                assert_eq!(msg, recvd);
+
+                let _sync_client = server_mc.into_inner();
+                let _sync_server = client_mc.into_inner();
+            }
+
+            #[tokio::test]
+            async fn mc_init_async() {
+                let (async_client, async_server) =
+                    async_udp_client_and_server!([127, 0, 0, 1], $port_start + 1);
+                let mut server_mc = AsyncServerMediaChannel::new(async_client);
+                let mut client_mc = AsyncClientMediaChannel::new(async_server);
+                let msg = test_media_message!();
+                server_mc
+                    .send(msg.clone())
+                    .await
+                    .expect("failed to send media message");
+                let recvd = client_mc
+                    .receive()
+                    .await
+                    .expect("failed to receive media message");
+                assert_eq!(msg, recvd);
+
+                let _sync_client = server_mc.into_inner();
+                let _sync_server = client_mc.into_inner();
+            }
+        }
+    };
+}
+pub(crate) use udp_test;

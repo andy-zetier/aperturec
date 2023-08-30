@@ -1,68 +1,57 @@
+use async_trait::async_trait;
+use futures::sink::{self, Sink};
+use futures::stream::{self, Stream};
+
 pub mod codec;
 pub mod reliable;
+pub mod unreliable;
 
-use aperturec_protocol::*;
+pub type ServerControlChannel = codec::der::reliable::ServerControlChannel;
+pub type ClientControlChannel = codec::der::reliable::ClientControlChannel;
+pub type ServerEventChannel = codec::der::reliable::ServerEventChannel;
+pub type ClientEventChannel = codec::der::reliable::ClientEventChannel;
+pub type ServerMediaChannel = codec::der::unreliable::ServerMediaChannel;
+pub type ClientMediaChannel = codec::der::unreliable::ClientMediaChannel;
+pub type AsyncServerControlChannel = codec::der::reliable::AsyncServerControlChannel;
+pub type AsyncClientControlChannel = codec::der::reliable::AsyncClientControlChannel;
+pub type AsyncServerEventChannel = codec::der::reliable::AsyncServerEventChannel;
+pub type AsyncClientEventChannel = codec::der::reliable::AsyncClientEventChannel;
+pub type AsyncServerMediaChannel = codec::der::unreliable::AsyncServerMediaChannel;
+pub type AsyncClientMediaChannel = codec::der::unreliable::AsyncClientMediaChannel;
 
-pub type ServerControlChannel = codec::der::reliable::Duplex<
-    reliable::tcp::Server<reliable::tcp::Accepted>,
-    control_messages::ClientToServerMessage,
-    control_messages::ServerToClientMessage,
->;
+pub trait Receiver {
+    type Message;
+    fn receive(&mut self) -> anyhow::Result<Self::Message>;
+}
 
-pub type ClientControlChannel = codec::der::reliable::Duplex<
-    reliable::tcp::Client<reliable::tcp::Connected>,
-    control_messages::ServerToClientMessage,
-    control_messages::ClientToServerMessage,
->;
+#[async_trait]
+pub trait AsyncReceiver: Send + Sized + 'static {
+    type Message;
 
-pub type ServerEventChannel = codec::der::reliable::ReceiverSimplex<
-    reliable::tcp::Server<reliable::tcp::Accepted>,
-    event_messages::ClientToServerMessage,
->;
+    async fn receive(&mut self) -> anyhow::Result<Self::Message>;
 
-pub type ClientEventChannel = codec::der::reliable::SenderSimplex<
-    reliable::tcp::Client<reliable::tcp::Connected>,
-    event_messages::ClientToServerMessage,
->;
+    fn stream(self) -> Box<dyn Stream<Item = Self::Message>> {
+        Box::new(stream::unfold(self, |mut receiver| async move {
+            let msg = receiver.receive().await.ok()?;
+            Some((msg, receiver))
+        }))
+    }
+}
 
-pub type ServerMediaChannel = codec::der::reliable::SenderSimplex<
-    reliable::tcp::Server<reliable::tcp::Accepted>,
-    media_messages::ServerToClientMessage,
->;
+pub trait Sender {
+    type Message;
+    fn send(&mut self, msg: Self::Message) -> anyhow::Result<()>;
+}
 
-pub type ClientMediaChannel = codec::der::reliable::ReceiverSimplex<
-    reliable::tcp::Client<reliable::tcp::Connected>,
-    media_messages::ServerToClientMessage,
->;
+#[async_trait]
+pub trait AsyncSender: Send + Sized + 'static {
+    type Message;
+    async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()>;
 
-pub type AsyncServerControlChannel = codec::der::reliable::Duplex<
-    reliable::tcp::Server<reliable::tcp::AsyncAccepted>,
-    control_messages::ClientToServerMessage,
-    control_messages::ServerToClientMessage,
->;
-
-pub type AsyncClientControlChannel = codec::der::reliable::Duplex<
-    reliable::tcp::Client<reliable::tcp::AsyncConnected>,
-    control_messages::ServerToClientMessage,
-    control_messages::ClientToServerMessage,
->;
-
-pub type AsyncServerEventChannel = codec::der::reliable::ReceiverSimplex<
-    reliable::tcp::Server<reliable::tcp::AsyncAccepted>,
-    event_messages::ClientToServerMessage,
->;
-
-pub type AsyncClientEventChannel = codec::der::reliable::SenderSimplex<
-    reliable::tcp::Client<reliable::tcp::AsyncConnected>,
-    event_messages::ClientToServerMessage,
->;
-
-pub type AsyncServerMediaChannel = codec::der::reliable::SenderSimplex<
-    reliable::tcp::Server<reliable::tcp::AsyncAccepted>,
-    media_messages::ServerToClientMessage,
->;
-
-pub type AsyncClientMediaChannel = codec::der::reliable::ReceiverSimplex<
-    reliable::tcp::Client<reliable::tcp::AsyncConnected>,
-    media_messages::ServerToClientMessage,
->;
+    fn sink(self) -> Box<dyn Sink<Self::Message, Error = anyhow::Error>> {
+        Box::new(sink::unfold(self, |mut sender, msg| async {
+            sender.send(msg).await?;
+            Ok(sender)
+        }))
+    }
+}
