@@ -1,0 +1,15 @@
+[package]
+name = "aperturec-channel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloca = "0.4"
+aperturec-protocol = { path = "../protocol" }
+aperturec-state-machine = { path = "../state_machine" }
+anyhow = "1.0"
+asn1rs = "0.3"
+async-trait = "0.1"
+futures = "0.3"
+rasn = "0.9"
+tokio = { version = "1.29", features = ["full"] }
