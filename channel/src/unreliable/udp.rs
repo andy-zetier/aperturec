@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 #[derive(Stateful, Debug)]
 #[state(S)]
 pub struct Server<S: State> {
-    state: S,
+    pub state: S,
     local_addr: SocketAddr,
 }
 
@@ -25,7 +25,7 @@ impl SelfTransitionable for Client<Closed> {}
 
 #[derive(State, Debug)]
 pub struct Listening {
-    socket: std::net::UdpSocket,
+    pub socket: std::net::UdpSocket,
 }
 
 #[derive(State, Debug)]
@@ -35,7 +35,7 @@ pub struct AsyncListening {
 
 #[derive(State, Debug)]
 pub struct Connected {
-    socket: std::net::UdpSocket,
+    pub socket: std::net::UdpSocket,
 }
 
 #[derive(State, Debug)]
