@@ -709,6 +709,7 @@ macro_rules! tcp_test {
                         control_messages::ServerInitBuilder::default()
                             .client_id(ClientId(1))
                             .server_name("Some sweet server".into())
+                            .event_port(12345)
                             .cursor_bitmaps(Some(vec![
                                 CursorBitmap {
                                     cursor: Cursor::new_default(),
