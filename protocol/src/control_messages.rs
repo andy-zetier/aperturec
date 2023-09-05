@@ -140,6 +140,7 @@ mod test {
         let server_init = ServerInit {
             client_id: ClientId(567),
             server_name: String::from("Some sweet server"),
+            event_port: 12345,
             cursor_bitmaps: Some(vec![
                 CursorBitmap {
                     cursor: Cursor::Default,
@@ -171,6 +172,7 @@ mod test {
         let server_init = ServerInit {
             client_id: ClientId(567),
             server_name: String::from("Some sweet server"),
+            event_port: 12345,
             cursor_bitmaps: Some(vec![
                 CursorBitmap {
                     cursor: Cursor::Default,

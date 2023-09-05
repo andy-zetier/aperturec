@@ -109,6 +109,7 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   ServerInit ::= SEQUENCE {
     clientId ClientId,
     serverName UTF8String,
+    eventPort INTEGER(1024..65535),
     cursorBitmaps SEQUENCE OF CursorBitmap OPTIONAL,
     decoderAreas SEQUENCE OF DecoderArea,
     ...
