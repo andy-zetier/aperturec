@@ -141,6 +141,10 @@ mod test {
             client_id: ClientId(567),
             server_name: String::from("Some sweet server"),
             event_port: 12345,
+            display_size: Dimension {
+                width: 800,
+                height: 600,
+            },
             cursor_bitmaps: Some(vec![
                 CursorBitmap {
                     cursor: Cursor::Default,
@@ -173,6 +177,10 @@ mod test {
             client_id: ClientId(567),
             server_name: String::from("Some sweet server"),
             event_port: 12345,
+            display_size: Dimension {
+                width: 800,
+                height: 600,
+            },
             cursor_bitmaps: Some(vec![
                 CursorBitmap {
                     cursor: Cursor::Default,
