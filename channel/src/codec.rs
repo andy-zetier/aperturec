@@ -710,6 +710,13 @@ macro_rules! tcp_test {
                             .client_id(ClientId(1))
                             .server_name("Some sweet server".into())
                             .event_port(12345)
+                            .display_size(
+                                DimensionBuilder::default()
+                                    .width(800)
+                                    .height(600)
+                                    .build()
+                                    .expect("ServerInit build"),
+                            )
                             .cursor_bitmaps(Some(vec![
                                 CursorBitmap {
                                     cursor: Cursor::new_default(),
