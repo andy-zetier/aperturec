@@ -9,7 +9,6 @@ variables:
   RUST_BASE_IMAGE: "$CI_REGISTRY_IMAGE/rust/base:$CI_COMMIT_REF_SLUG"
 
 default:
-  interruptible: true
   tags:
     - linux
     - docker
