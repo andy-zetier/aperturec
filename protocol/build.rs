@@ -81,6 +81,25 @@ where
     false
 }
 
+fn is_asn_enumerated<'a, A>(attrs: A) -> bool
+where
+    A: IntoIterator<Item = &'a Attribute>,
+    <A as IntoIterator>::IntoIter: 'a,
+{
+    let meta_list = asn_attr_meta_list(attrs);
+    for meta in meta_list {
+        match meta {
+            Meta::Path(path) => {
+                if path.is_ident("enumerated") {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 struct RasnDerive;
 impl VisitMut for RasnDerive {
     fn visit_item_struct_mut(&mut self, i: &mut ItemStruct) {
@@ -104,23 +123,12 @@ impl VisitMut for RasnDerive {
     fn visit_item_enum_mut(&mut self, i: &mut ItemEnum) {
         let mut should_impl_copy = false;
         let is_extensible = is_extensible(&i.attrs);
-        let meta_list = asn_attr_meta_list(&i.attrs);
         let mut rasn_attrs = vec![];
-        for meta in meta_list {
-            match meta {
-                Meta::Path(syn::Path { segments, .. }) => {
-                    for segment in segments {
-                        if segment.ident == "enumerated" {
-                            rasn_attrs.push(parse_quote! { #[rasn(enumerated)] });
-                            should_impl_copy = true;
-                        }
-                        if segment.ident == "choice" {
-                            rasn_attrs.push(parse_quote! { #[rasn(choice)] });
-                        }
-                    }
-                }
-                _ => {}
-            }
+        if is_asn_enumerated(&i.attrs) {
+            rasn_attrs.push(parse_quote! { #[rasn(enumerated)] });
+            should_impl_copy = true;
+        } else {
+            rasn_attrs.push(parse_quote! { #[rasn(choice)] });
         }
         i.attrs = common_attributes(should_impl_copy);
         i.attrs.append(&mut rasn_attrs);
@@ -133,11 +141,33 @@ impl VisitMut for RasnDerive {
     }
 }
 
+fn has_asn1_variants_impl_items(items: &Vec<ImplItem>) -> bool {
+    let (mut impl_variant, mut impl_variants, mut impl_value_index) = (false, false, false);
+    for item in items {
+        match item {
+            ImplItem::Fn(impl_item_fn) => {
+                if impl_item_fn.sig.ident == "variant" {
+                    impl_variant = true;
+                }
+                if impl_item_fn.sig.ident == "variants" {
+                    impl_variants = true;
+                }
+                if impl_item_fn.sig.ident == "value_index" {
+                    impl_value_index = true;
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    impl_variant && impl_variants && impl_value_index
+}
+
 struct ImplRemove;
 impl VisitMut for ImplRemove {
     fn visit_file_mut(&mut self, i: &mut File) {
         i.items.retain(|item| match item {
-            Item::Impl(_) => false,
+            Item::Impl(ItemImpl { items, .. }) => has_asn1_variants_impl_items(&items),
             _ => true,
         });
     }
@@ -200,8 +230,8 @@ fn generate_rust_bindings(asn1_paths: &Vec<PathBuf>, out_dir: &Path) -> anyhow::
         let mut parsed = syn::parse_file(&fs::read_to_string(&asn1rs_generated).unwrap()).unwrap();
 
         OctetStringFixup.visit_file_mut(&mut parsed);
-        RasnDerive.visit_file_mut(&mut parsed);
         ImplRemove.visit_file_mut(&mut parsed);
+        RasnDerive.visit_file_mut(&mut parsed);
         UseChanges.visit_file_mut(&mut parsed);
 
         let generated_path = out_dir.join(rust_fname);
