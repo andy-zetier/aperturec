@@ -12,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub struct Server<S: State> {
     state: S,
     addr: SocketAddr,
+    is_nonblocking: bool,
 }
 
 #[derive(State, Debug)]
@@ -38,6 +39,15 @@ impl Server<Closed> {
         Server {
             state: Closed,
             addr: addr.into(),
+            is_nonblocking: true,
+        }
+    }
+
+    pub fn new_blocking<A: Into<SocketAddr>>(addr: A) -> Self {
+        Server {
+            state: Closed,
+            addr: addr.into(),
+            is_nonblocking: false,
         }
     }
 }
@@ -56,6 +66,7 @@ impl TryTransitionable<Listening, Closed> for Server<Closed> {
         Ok(Server {
             state: Listening { listener },
             addr: self.addr,
+            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -67,6 +78,7 @@ impl Transitionable<Closed> for Server<Listening> {
         Server {
             addr: self.addr,
             state: Closed,
+            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -83,11 +95,14 @@ impl TryTransitionable<Accepted, Closed> for Server<Listening> {
         let (stream, _) = try_recover!(self.state.listener.accept().await, self);
         let stream = try_recover!(stream.into_std(), self);
 
+        try_recover!(stream.set_nonblocking(self.is_nonblocking), self);
+
         Ok(Server {
             state: Accepted {
                 stream: std::io::BufReader::new(stream),
             },
             addr: self.addr,
+            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -108,6 +123,7 @@ impl TryTransitionable<AsyncAccepted, Closed> for Server<Accepted> {
                 stream: tokio::io::BufReader::new(stream),
             },
             addr: self.addr,
+            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -119,6 +135,7 @@ impl Transitionable<Closed> for Server<Accepted> {
         Server {
             state: Closed,
             addr: self.addr,
+            is_nonblocking: self.is_nonblocking,
         }
     }
 }
