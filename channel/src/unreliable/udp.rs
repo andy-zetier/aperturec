@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 #[derive(Stateful, Debug)]
 #[state(S)]
 pub struct Server<S: State> {
-    pub state: S,
+    state: S,
     local_addr: SocketAddr,
     is_nonblocking: bool,
 }
@@ -26,7 +26,7 @@ impl SelfTransitionable for Client<Closed> {}
 
 #[derive(State, Debug)]
 pub struct Listening {
-    pub socket: std::net::UdpSocket,
+    socket: std::net::UdpSocket,
 }
 
 #[derive(State, Debug)]
@@ -36,12 +36,18 @@ pub struct AsyncListening {
 
 #[derive(State, Debug)]
 pub struct Connected {
-    pub socket: std::net::UdpSocket,
+    socket: std::net::UdpSocket,
 }
 
 #[derive(State, Debug)]
 pub struct AsyncConnected {
     socket: tokio::net::UdpSocket,
+}
+
+impl<T: State> Server<T> {
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
 }
 
 impl Server<Closed> {
@@ -94,12 +100,13 @@ impl TryTransitionable<Listening, Closed> for Server<Closed> {
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let socket = try_recover!(do_udp_bind(&self.local_addr).await, self);
+        let local_addr = try_recover!(socket.local_addr(), self);
 
         try_recover!(socket.set_nonblocking(self.is_nonblocking), self);
 
         Ok(Server {
             state: Listening { socket },
-            local_addr: self.local_addr,
+            local_addr,
             is_nonblocking: self.is_nonblocking,
         })
     }

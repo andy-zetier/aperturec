@@ -34,6 +34,12 @@ pub struct AsyncAccepted {
     stream: tokio::io::BufReader<tokio::net::TcpStream>,
 }
 
+impl<T: State> Server<T> {
+    pub fn local_addr(&self) -> SocketAddr {
+        self.addr
+    }
+}
+
 impl Server<Closed> {
     pub fn new<A: Into<SocketAddr>>(addr: A) -> Self {
         Server {
@@ -62,10 +68,11 @@ impl TryTransitionable<Listening, Closed> for Server<Closed> {
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let listener = try_recover!(tokio::net::TcpListener::bind(self.addr).await, self);
+        let local_addr = try_recover!(listener.local_addr(), self);
 
         Ok(Server {
             state: Listening { listener },
-            addr: self.addr,
+            addr: local_addr,
             is_nonblocking: self.is_nonblocking,
         })
     }
