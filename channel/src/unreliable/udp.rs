@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 pub struct Server<S: State> {
     pub state: S,
     local_addr: SocketAddr,
+    is_nonblocking: bool,
 }
 
 #[derive(Stateful, Debug)]
@@ -48,6 +49,15 @@ impl Server<Closed> {
         Server {
             state: Closed,
             local_addr: local_addr.into(),
+            is_nonblocking: true,
+        }
+    }
+
+    pub fn new_blocking<A: Into<SocketAddr>>(local_addr: A) -> Self {
+        Server {
+            state: Closed,
+            local_addr: local_addr.into(),
+            is_nonblocking: false,
         }
     }
 }
@@ -85,9 +95,12 @@ impl TryTransitionable<Listening, Closed> for Server<Closed> {
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let socket = try_recover!(do_udp_bind(&self.local_addr).await, self);
 
+        try_recover!(socket.set_nonblocking(self.is_nonblocking), self);
+
         Ok(Server {
             state: Listening { socket },
             local_addr: self.local_addr,
+            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -99,6 +112,7 @@ impl Transitionable<Closed> for Server<Listening> {
         Server {
             state: Closed,
             local_addr: self.local_addr,
+            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -116,6 +130,7 @@ impl TryTransitionable<AsyncListening, Closed> for Server<Listening> {
         Ok(Server {
             state: AsyncListening { socket },
             local_addr: self.local_addr,
+            is_nonblocking: self.is_nonblocking,
         })
     }
 }
