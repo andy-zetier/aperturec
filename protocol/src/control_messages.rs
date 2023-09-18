@@ -85,7 +85,10 @@ mod test {
     fn heartbeat_response() {
         let hb_response = HeartbeatResponse {
             heartbeat_id: HeartbeatId(890),
-            last_sequence_id: SequenceId(10),
+            last_sequence_ids: vec![
+                DecoderSequencePair::new(Decoder::new(5000), SequenceId::new(300)),
+                DecoderSequencePair::new(Decoder::new(5001), SequenceId::new(301)),
+            ],
         };
         serde_type_der!(HeartbeatResponse, hb_response);
         c::round_trip_der!(HeartbeatResponse, c::HeartbeatResponse, hb_response);
@@ -116,7 +119,11 @@ mod test {
         serde_type_der!(
             MissedFrameReport,
             MissedFrameReport {
-                sequence_ids: vec![SequenceId(1), SequenceId(2), SequenceId(3),],
+                sequence_ids: vec![
+                    DecoderSequencePair::new(Decoder::new(1024), SequenceId(1)),
+                    DecoderSequencePair::new(Decoder::new(1025), SequenceId(2)),
+                    DecoderSequencePair::new(Decoder::new(1026), SequenceId(3))
+                ],
             }
         );
     }
