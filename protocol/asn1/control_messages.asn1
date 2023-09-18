@@ -33,6 +33,11 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     ...
   }
 
+  DecoderSequencePair ::= SEQUENCE {
+    decoder Decoder,
+    sequenceId SequenceId
+  }
+
   DecoderArea ::= SEQUENCE {
     decoder Decoder,
     location Location,
@@ -82,7 +87,7 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
 
   HeartbeatResponse ::= SEQUENCE {
     heartbeatId HeartbeatId,
-    lastSequenceId SequenceId,
+    lastSequenceIds SEQUENCE OF DecoderSequencePair,
     ...
   }
 
@@ -93,7 +98,7 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   }
 
   MissedFrameReport ::= SEQUENCE {
-    sequenceIds SEQUENCE OF SequenceId,
+    sequenceIds SEQUENCE OF DecoderSequencePair,
     ...
   }
 
