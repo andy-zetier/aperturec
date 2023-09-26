@@ -12,6 +12,7 @@ mod test {
             is_depressed: false,
         };
         serde_type_der!(ButtonState, bs);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(ButtonState, c::ButtonState, bs);
     }
 
@@ -22,6 +23,7 @@ mod test {
             key: 4096,
         };
         serde_type_der!(KeyEvent, ke);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(KeyEvent, c::KeyEvent, ke);
     }
 
@@ -39,6 +41,7 @@ mod test {
             cursor: Cursor::Wait,
         };
         serde_type_der!(PointerEvent, pe);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(PointerEvent, c::PointerEvent, pe);
     }
 
@@ -51,6 +54,7 @@ mod test {
             },
         };
         serde_type_der!(DisplayEvent, de);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(DisplayEvent, c::DisplayEvent, de);
     }
 
@@ -61,6 +65,7 @@ mod test {
             key: 0,
         });
         serde_type_der!(ClientToServerMessage, msg);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(
             ClientToServerMessage,
             c::EventMessages_ClientToServerMessage,

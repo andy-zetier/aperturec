@@ -22,6 +22,7 @@ pub(crate) mod test {
         unused,
         improper_ctypes
     )]
+    #[cfg(feature = "asn1c-tests")]
     pub mod c {
         use std::ffi::c_void;
         use std::ops::{Deref, DerefMut};

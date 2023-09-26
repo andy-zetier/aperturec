@@ -13,6 +13,7 @@ mod test {
             dimension: None,
         };
         serde_type_der!(Rectangle, rect);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(Rectangle, c::Rectangle, rect);
     }
 
@@ -34,6 +35,7 @@ mod test {
             },
         };
         serde_type_der!(RectangleUpdate, ru);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(RectangleUpdate, c::RectangleUpdate, ru);
     }
 
@@ -71,6 +73,7 @@ mod test {
             ],
         };
         serde_type_der!(FramebufferUpdate, fbu);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(FramebufferUpdate, c::FramebufferUpdate, fbu);
     }
 
@@ -80,6 +83,7 @@ mod test {
             rectangle_updates: vec![],
         });
         serde_type_der!(ServerToClientMessage, msg);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(
             ServerToClientMessage,
             c::MediaMessages_ServerToClientMessage,

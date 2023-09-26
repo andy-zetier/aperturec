@@ -22,6 +22,7 @@ mod test {
             height: 1080,
         };
         serde_type_der!(Dimension, dimension);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(Dimension, c::Dimension, dimension);
     }
 
@@ -32,6 +33,7 @@ mod test {
             y_position: 250,
         };
         serde_type_der!(Location, location);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(Location, c::Location, location);
     }
 
@@ -52,6 +54,7 @@ mod test {
             data: vec![].into(),
         };
         serde_type_der!(CursorBitmap, cursor_bitmap);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(CursorBitmap, c::CursorBitmap, cursor_bitmap);
     }
 }
