@@ -31,6 +31,7 @@ mod test {
             },
         };
         serde_type_der!(ClientInfo, client_info);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(ClientInfo, c::ClientInfo, client_info);
     }
 
@@ -68,6 +69,7 @@ mod test {
             decoders: vec![Decoder { port: 1024 }],
         };
         serde_type_der!(ClientInit, client_init);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(ClientInit, c::ClientInit, client_init);
     }
 
@@ -78,6 +80,7 @@ mod test {
             reason: ClientGoodbyeReason::UserRequested,
         };
         serde_type_der!(ClientGoodbye, client_goodbye);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(ClientGoodbye, c::ClientGoodbye, client_goodbye);
     }
 
@@ -91,6 +94,7 @@ mod test {
             ],
         };
         serde_type_der!(HeartbeatResponse, hb_response);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(HeartbeatResponse, c::HeartbeatResponse, hb_response);
     }
 
@@ -107,6 +111,7 @@ mod test {
             },
         };
         serde_type_der!(FramebufferUpdateRequest, fb_update_req);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(
             FramebufferUpdateRequest,
             c::FramebufferUpdateRequest,
@@ -135,6 +140,7 @@ mod test {
             reason: ClientGoodbyeReason::Terminating,
         });
         serde_type_der!(ClientToServerMessage, msg);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(
             ClientToServerMessage,
             c::ControlMessages_ClientToServerMessage,
@@ -175,6 +181,7 @@ mod test {
             }],
         };
         serde_type_der!(ServerInit, server_init);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(ServerInit, c::ServerInit, server_init);
     }
 
@@ -212,6 +219,7 @@ mod test {
         };
         let msg = ServerToClientMessage::ServerInit(server_init);
         serde_type_der!(ServerToClientMessage, msg);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(
             ServerToClientMessage,
             c::ControlMessages_ServerToClientMessage,
@@ -225,6 +233,7 @@ mod test {
             reason: ServerGoodbyeReason::ServerShuttingDown,
         };
         serde_type_der!(ServerGoodbye, goodbye);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(ServerGoodbye, c::ServerGoodbye, goodbye);
     }
 
@@ -235,6 +244,7 @@ mod test {
         };
 
         serde_type_der!(HeartbeatRequest, hb_request);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(HeartbeatRequest, c::HeartbeatRequest, hb_request);
     }
 
@@ -244,6 +254,7 @@ mod test {
             reason: ServerGoodbyeReason::NetworkError,
         });
         serde_type_der!(ServerToClientMessage, msg);
+        #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(
             super::ServerToClientMessage,
             c::ControlMessages_ServerToClientMessage,

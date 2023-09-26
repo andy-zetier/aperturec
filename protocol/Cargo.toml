@@ -3,6 +3,9 @@ name = "aperturec-protocol"
 version = "0.2.0"
 edition = "2021"
 
+[features]
+asn1c-tests = []
+
 [dependencies]
 anyhow = "1.0"
 derive_builder = "0.12"

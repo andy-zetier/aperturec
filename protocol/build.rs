@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use syn::visit_mut::VisitMut;
 use syn::*;
 
+#[cfg(feature = "asn1c-tests")]
 use std::process::Command;
+#[cfg(feature = "asn1c-tests")]
 use syn::visit::Visit;
 
 fn create_dir_if_not_exists(path: &Path) -> anyhow::Result<()> {
@@ -243,6 +245,7 @@ fn generate_rust_bindings(asn1_paths: &Vec<PathBuf>, out_dir: &Path) -> anyhow::
     Ok(())
 }
 
+#[cfg(feature = "asn1c-tests")]
 fn find_generated_sources_and_headers(out_dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut sources = Vec::new();
     let mut headers = Vec::new();
@@ -275,6 +278,7 @@ fn find_generated_sources_and_headers(out_dir: &Path) -> (Vec<PathBuf>, Vec<Path
     (sources, headers)
 }
 
+#[cfg(feature = "asn1c-tests")]
 fn generate_asn1c_files<I>(
     asn1_srcs: I,
     out_dir: &Path,
@@ -332,6 +336,7 @@ impl<'ast> visit::Visit<'ast> for StructFilter {
     }
 }
 
+#[cfg(feature = "asn1c-tests")]
 fn generate_asn1_traits<S>(bindings: S) -> anyhow::Result<String>
 where
     S: AsRef<str>,
@@ -358,6 +363,7 @@ where
     Ok(prettyplease::unparse(&syntax))
 }
 
+#[cfg(feature = "asn1c-tests")]
 fn generate_c_bindings<I>(asn1_srcs: I, out_dir: &Path) -> anyhow::Result<()>
 where
     I: IntoIterator<Item = PathBuf>,
@@ -403,6 +409,8 @@ fn main() -> anyhow::Result<()> {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     generate_rust_bindings(&asn1_srcs, &out_dir)?;
+
+    #[cfg(feature = "asn1c-tests")]
     generate_c_bindings(asn1_srcs, &out_dir.join("c"))?;
 
     Ok(())
