@@ -5,6 +5,7 @@ use clap::Parser;
 use gethostname::gethostname;
 use simple_logger::SimpleLogger;
 use std::time::Duration;
+use sysinfo::{CpuRefreshKind, RefreshKind, SystemExt};
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -59,8 +60,10 @@ fn main() -> Result<()> {
     let decoder_max = if args.decoder_max != 0 {
         args.decoder_max
     } else {
-        let cpu = procfs::CpuInfo::new().expect("Failed to get cpu info!");
-        cpu.num_cores().try_into().unwrap()
+        let sys = sysinfo::System::new_with_specifics(
+            RefreshKind::new().with_cpu(CpuRefreshKind::everything()),
+        );
+        sys.cpus().len().try_into().unwrap()
     };
 
     let dims: Vec<u64> = args

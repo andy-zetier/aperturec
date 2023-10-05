@@ -16,10 +16,9 @@ flate2 = "1.0.27"
 gethostname = "0.4.3"
 gtk = "0.17.1"
 log = "0.4.20"
-procfs = "0.15.1"
 rand = "0.8.5"
 simple_logger = "4.2.0"
-sys-info = "0.9.1"
+sysinfo = "0.29.10"
 tokio = { version = "1.32.0", features = ["full"] }
 
 [package.metadata.deb]

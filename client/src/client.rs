@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 use std::{assert, thread};
+use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
 
 const VERSION_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
 const VERSION_MINOR: &str = env!("CARGO_PKG_VERSION_MINOR");
@@ -354,7 +355,11 @@ impl Client {
     }
 
     fn generate_client_info(&self) -> ClientInfo {
-        let cpu = procfs::CpuInfo::new().expect("Failed to get cpu info!");
+        let sys = sysinfo::System::new_with_specifics(
+            RefreshKind::new()
+                .with_cpu(CpuRefreshKind::everything())
+                .with_memory(),
+        );
         ClientInfoBuilder::default()
             .version(SemVer::new(
                 VERSION_MAJOR
@@ -374,12 +379,7 @@ impl Client {
                 "macos" => Os::Mac,
                 _ => panic!("Unsupported OS"),
             })
-            .os_version(
-                sys_info::linux_os_release()
-                    .expect("Failed to get linux os release!")
-                    .pretty_name()
-                    .to_string(),
-            )
+            .os_version(sys.os_version().unwrap())
             .ssl_library("UNHANDLED".to_string())
             .ssl_version("UNHANDLED".to_string())
             .bitness(if cfg!(target_pointer_width = "64") {
@@ -398,13 +398,9 @@ impl Client {
                 "arm" => Architecture::Arm,
                 _ => panic!("Unsupported architcture"),
             })
-            .cpu_id(
-                cpu.model_name(0)
-                    .expect("Failed to get cpu model!")
-                    .to_string(),
-            )
-            .number_of_cores(cpu.num_cores() as u64)
-            .amount_of_ram(format!("{}", sys_info::mem_info().unwrap().total))
+            .cpu_id(sys.cpus()[0].brand().to_string())
+            .number_of_cores(sys.cpus().len().try_into().unwrap())
+            .amount_of_ram(sys.total_memory().to_string())
             .display_size(Dimension::new(
                 self.config.win_width,
                 self.config.win_height,
