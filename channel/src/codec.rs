@@ -38,20 +38,23 @@ macro_rules! impl_codec_reliable {
         use std::marker::PhantomData;
         use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-        fn do_receive<R: Read, RM: Decode>(reader: &mut R) -> anyhow::Result<RM> {
-            let mut buf: Vec<u8> = vec![];
-
+        fn do_receive<R: Read, RM: Decode>(reader: &mut std::io::BufReader<R>, read_bytes: &mut Vec<u8>) -> anyhow::Result<RM> {
             loop {
-                match $codec::decode::<RM>(&buf) {
+                match $codec::decode::<RM>(read_bytes) {
                     $(
                         Err($incomplete_error) => {
-                            let mut byte = [0_u8; 1];
-                            reader.read(&mut byte)?;
-                            buf.push(byte[0]);
+                            let mut byte = [0_u8];
+                            if reader.read(&mut byte)? == 1 {
+                                read_bytes.push(byte[0]);
+                            }
                         }
                     )*,
-                    Ok(msg) => break Ok(msg),
+                    Ok(msg) => {
+                        read_bytes.clear();
+                        break Ok(msg);
+                    },
                     Err(e) => {
+                        read_bytes.clear();
                         break Err(e.into());
                     }
                 }
@@ -65,21 +68,27 @@ macro_rules! impl_codec_reliable {
         }
 
         async fn do_receive_async<R: AsyncRead + Unpin, RM: Decode>(
-            reader: &mut R,
+            reader: &mut tokio::io::BufReader<R>,
+            read_bytes: &mut Vec<u8>,
         ) -> anyhow::Result<RM> {
-            let mut buf: Vec<u8> = vec![];
-
             loop {
-                match $codec::decode::<RM>(&buf) {
+                match $codec::decode::<RM>(read_bytes) {
                     $(
                         Err($incomplete_error) => {
-                            let mut byte = [0_u8; 1];
-                            reader.read(&mut byte).await?;
-                            buf.push(byte[0]);
+                            let mut byte = [0_u8];
+                            if reader.read(&mut byte).await? == 1 {
+                                read_bytes.push(byte[0]);
+                            }
                         }
                     )*,
-                    Ok(msg) => break Ok(msg),
-                    Err(e) => break Err(e.into()),
+                    Ok(msg) => {
+                        read_bytes.clear();
+                        break Ok(msg);
+                    },
+                    Err(e) => {
+                        read_bytes.clear();
+                        break Err(e.into());
+                    },
                 }
             }
         }
@@ -98,7 +107,8 @@ macro_rules! impl_codec_reliable {
             R: Read,
             RM: Decode,
         {
-            reader: R,
+            reader: std::io::BufReader<R>,
+            recv_buf: Vec<u8>,
             _receive_message: PhantomData<RM>,
         }
 
@@ -109,13 +119,34 @@ macro_rules! impl_codec_reliable {
         {
             pub fn new(reader: R) -> Self {
                 ReceiverSimplex {
-                    reader: reader,
+                    reader: std::io::BufReader::new(reader),
+                    recv_buf: vec![],
                     _receive_message: PhantomData,
                 }
             }
 
             pub fn into_inner(self) -> R {
-                self.reader
+                self.reader.into_inner()
+            }
+        }
+
+        impl<R, RM> AsRef<R> for ReceiverSimplex<R, RM>
+        where
+            R: Read,
+            RM: Decode,
+        {
+            fn as_ref(&self) -> &R {
+                self.reader.get_ref()
+            }
+        }
+
+        impl<R, RM> AsMut<R> for ReceiverSimplex<R, RM>
+        where
+            R: Read,
+            RM: Decode,
+        {
+            fn as_mut(&mut self) -> &mut R {
+                self.reader.get_mut()
             }
         }
 
@@ -127,7 +158,7 @@ macro_rules! impl_codec_reliable {
             type Message = RM;
 
             fn receive(&mut self) -> anyhow::Result<Self::Message> {
-                do_receive(&mut self.reader)
+                do_receive(&mut self.reader, &mut self.recv_buf)
             }
         }
 
@@ -136,7 +167,8 @@ macro_rules! impl_codec_reliable {
             R: AsyncRead,
             RM: Decode,
         {
-            reader: R,
+            reader: tokio::io::BufReader<R>,
+            recv_buf: Vec<u8>,
             _receive_message: PhantomData<RM>,
         }
 
@@ -147,26 +179,47 @@ macro_rules! impl_codec_reliable {
         {
             pub fn new(reader: R) -> Self {
                 AsyncReceiverSimplex {
-                    reader: reader,
+                    reader: tokio::io::BufReader::new(reader),
+                    recv_buf: vec![],
                     _receive_message: PhantomData,
                 }
             }
 
             pub fn into_inner(self) -> R {
-                self.reader
+                self.reader.into_inner()
+            }
+        }
+
+        impl<R, RM> AsRef<R> for AsyncReceiverSimplex<R, RM>
+        where
+            R: AsyncRead + Send + Unpin + 'static,
+            RM: Decode + Send + 'static,
+        {
+            fn as_ref(&self) -> &R {
+                self.reader.get_ref()
+            }
+        }
+
+        impl<R, RM> AsMut<R> for AsyncReceiverSimplex<R, RM>
+        where
+            R: AsyncRead + Send + Unpin + 'static,
+            RM: Decode + Send + 'static,
+        {
+            fn as_mut(&mut self) -> &mut R {
+                self.reader.get_mut()
             }
         }
 
         #[async_trait]
         impl<R, RM> AsyncReceiver for AsyncReceiverSimplex<R, RM>
         where
-            R: AsyncRead + Send + Unpin + 'static,
+            R: AsyncRead + Send + Sync + Unpin + 'static,
             RM: Decode + Send + 'static,
         {
             type Message = RM;
 
             async fn receive(&mut self) -> anyhow::Result<Self::Message> {
-                do_receive_async(&mut self.reader).await
+                do_receive_async(&mut self.reader, &mut self.recv_buf).await
             }
         }
 
@@ -193,6 +246,26 @@ macro_rules! impl_codec_reliable {
 
             pub fn into_inner(self) -> W {
                 self.writer
+            }
+        }
+
+        impl<W, SM> AsRef<W> for SenderSimplex<W, SM>
+        where
+            W: Write,
+            SM: Encode,
+        {
+            fn as_ref(&self) -> &W {
+                &self.writer
+            }
+        }
+
+        impl<W, SM> AsMut<W> for SenderSimplex<W, SM>
+        where
+            W: Write,
+            SM: Encode,
+        {
+            fn as_mut(&mut self) -> &mut W {
+                &mut self.writer
             }
         }
 
@@ -234,6 +307,26 @@ macro_rules! impl_codec_reliable {
             }
         }
 
+        impl<W, SM> AsRef<W> for AsyncSenderSimplex<W, SM>
+        where
+            W: AsyncWrite + Send + Unpin + 'static,
+            SM: Encode + Send + 'static,
+        {
+            fn as_ref(&self) -> &W {
+                &self.writer
+            }
+        }
+
+        impl<W, SM> AsMut<W> for AsyncSenderSimplex<W, SM>
+        where
+            W: AsyncWrite + Send + Unpin + 'static,
+            SM: Encode + Send + 'static,
+        {
+            fn as_mut(&mut self) -> &mut W {
+                &mut self.writer
+            }
+        }
+
         #[async_trait]
         impl<W, SM> AsyncSender for AsyncSenderSimplex<W, SM>
         where
@@ -253,7 +346,8 @@ macro_rules! impl_codec_reliable {
             RM: Decode,
             SM: Encode,
         {
-            common_rw: C,
+            common_rw: std::io::BufReader<C>,
+            recv_buf: Vec<u8>,
             _receive_message: PhantomData<RM>,
             _send_message: PhantomData<SM>,
         }
@@ -266,14 +360,37 @@ macro_rules! impl_codec_reliable {
         {
             pub fn new(common_rw: C) -> Self {
                 Duplex {
-                    common_rw,
+                    common_rw: std::io::BufReader::new(common_rw),
+                    recv_buf: vec![],
                     _receive_message: PhantomData,
                     _send_message: PhantomData,
                 }
             }
 
             pub fn into_inner(self) -> C {
-                self.common_rw
+                self.common_rw.into_inner()
+            }
+        }
+
+        impl<C, RM, SM> AsRef<C> for Duplex<C, RM, SM>
+        where
+            C: Read + Write,
+            RM: Decode,
+            SM: Encode,
+        {
+            fn as_ref(&self) -> &C {
+                self.common_rw.get_ref()
+            }
+        }
+
+        impl<C, RM, SM> AsMut<C> for Duplex<C, RM, SM>
+        where
+            C: Read + Write,
+            RM: Decode,
+            SM: Encode,
+        {
+            fn as_mut(&mut self) -> &mut C {
+                self.common_rw.get_mut()
             }
         }
 
@@ -285,7 +402,7 @@ macro_rules! impl_codec_reliable {
         {
             type Message = RM;
             fn receive(&mut self) -> anyhow::Result<RM> {
-                do_receive(&mut self.common_rw)
+                do_receive(&mut self.common_rw, &mut self.recv_buf)
             }
         }
 
@@ -297,7 +414,7 @@ macro_rules! impl_codec_reliable {
         {
             type Message = SM;
             fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-                do_send(&mut self.common_rw, msg)
+                do_send(self.common_rw.get_mut(), msg)
             }
         }
 
@@ -307,7 +424,8 @@ macro_rules! impl_codec_reliable {
             RM: Decode + Send + 'static,
             SM: Encode + Send + 'static,
         {
-            common_rw: C,
+            common_rw: tokio::io::BufReader<C>,
+            recv_buf: Vec<u8>,
             _receive_message: PhantomData<RM>,
             _send_message: PhantomData<SM>,
         }
@@ -320,27 +438,50 @@ macro_rules! impl_codec_reliable {
         {
             pub fn new(common_rw: C) -> Self {
                 AsyncDuplex {
-                    common_rw,
+                    common_rw: tokio::io::BufReader::new(common_rw),
+                    recv_buf: vec![],
                     _receive_message: PhantomData,
                     _send_message: PhantomData,
                 }
             }
 
             pub fn into_inner(self) -> C {
-                self.common_rw
+                self.common_rw.into_inner()
+            }
+        }
+
+        impl<C, RM, SM> AsRef<C> for AsyncDuplex<C, RM, SM>
+        where
+            C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+            RM: Decode + Send + 'static,
+            SM: Encode + Send + 'static,
+        {
+            fn as_ref(&self) -> &C {
+                self.common_rw.get_ref()
+            }
+        }
+
+        impl<C, RM, SM> AsMut<C> for AsyncDuplex<C, RM, SM>
+        where
+            C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+            RM: Decode + Send + 'static,
+            SM: Encode + Send + 'static,
+        {
+            fn as_mut(&mut self) -> &mut C {
+                self.common_rw.get_mut()
             }
         }
 
         #[async_trait]
         impl<C, RM, SM> AsyncReceiver for AsyncDuplex<C, RM, SM>
         where
-            C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+            C: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
             RM: Decode + Send + 'static,
             SM: Encode + Send + 'static,
         {
             type Message = RM;
             async fn receive(&mut self) -> anyhow::Result<RM> {
-                do_receive_async(&mut self.common_rw).await
+                do_receive_async(&mut self.common_rw, &mut self.recv_buf).await
             }
         }
 
