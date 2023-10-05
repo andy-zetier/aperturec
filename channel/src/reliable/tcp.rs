@@ -104,6 +104,9 @@ impl TryTransitionable<Accepted, Closed> for Server<Listening> {
 
         try_recover!(stream.set_nonblocking(self.is_nonblocking), self);
 
+        // Disable Nagle's algorithm for lower latency
+        try_recover!(stream.set_nodelay(true), self);
+
         Ok(Server {
             state: Accepted {
                 stream: std::io::BufReader::new(stream),
@@ -236,6 +239,10 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
         };
         let stream = try_recover!(socket.connect(self.addr).await, self);
         let stream = try_recover!(stream.into_std(), self);
+
+        // Disable Nagle's algorithm for lower latency
+        try_recover!(stream.set_nodelay(true), self);
+
         Ok(Client {
             addr: self.addr,
             state: Connected {
