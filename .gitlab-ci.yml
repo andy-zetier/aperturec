@@ -2,6 +2,7 @@ stages:
   - build-images
   - check
   - build
+  - package
   - test
   - doc
 
@@ -34,6 +35,11 @@ default:
 .needs:image:rust:base: &needs-image-rust-base
   needs:
     - job: image:build-push:rust:base
+      optional: true
+
+.needs:image:rust:asn1c: &needs-image-rust-asn1c
+  needs:
+    - job: image:build-push:rust:asn1c
       optional: true
 
 image:build-push:rust:base:
@@ -69,6 +75,18 @@ image:build-push:rust:xbackend:
     - !reference [ image:build-push:rust:base, rules ]
   <<: *needs-image-rust-base
 
+image:build-push:rust:client:
+  extends: .image:build-push
+  variables:
+    IMAGE: rust/client
+    BASE_IMAGE: "$RUST_BASE_IMAGE"
+  rules:
+    - if: *rules-event-push
+      changes:
+        - images/rust/client/*
+    - !reference [ image:build-push:rust:asn1c, rules ]
+  <<: *needs-image-rust-asn1c
+
 .cargo:
   image: "$CI_REGISTRY_IMAGE/$IMAGE:$CI_COMMIT_REF_SLUG"
   before_script:
@@ -80,6 +98,8 @@ image:build-push:rust:xbackend:
   needs:
     - job: image:build-push:rust:asn1c
       optional: true
+    - job: image:build-push:rust:client
+      optional: true
   parallel:
     matrix:
       - SUBDIR: "protocol"
@@ -89,6 +109,8 @@ image:build-push:rust:xbackend:
       - SUBDIR: "state_machine/derive"
       - SUBDIR: "channel"
         IMAGE: "rust/asn1c"
+      - SUBDIR: "client"
+        IMAGE: "rust/client"
 
 .cargo:debug:
   extends: .cargo
@@ -160,3 +182,26 @@ cargo:doc:debug:
 cargo:doc:release:
   extends: .cargo:release
   <<: *cargo-doc
+
+cargo:package:deb:client:
+  stage: package
+  image: "$IMAGE"
+  before_script:
+    - apt update
+    - DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y ca-certificates curl build-essential pkg-config libgtk-3-dev
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    - source "$HOME/.cargo/env"
+    - cargo install cargo-deb
+    - cd "client"
+  script:
+    - cargo deb
+  needs:
+    - job: cargo:build:release
+  artifacts:
+    paths:
+      - client/target/debian/aperturec-client_*_amd64.deb
+  parallel:
+    matrix:
+      - IMAGE: "ubuntu:18.04"
+      - IMAGE: "ubuntu:20.04"
+      - IMAGE: "ubuntu:22.04"
