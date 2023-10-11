@@ -84,8 +84,8 @@ image:build-push:rust:client:
     - if: *rules-event-push
       changes:
         - images/rust/client/*
-    - !reference [ image:build-push:rust:asn1c, rules ]
-  <<: *needs-image-rust-asn1c
+    - !reference [ image:build-push:rust:base, rules ]
+  <<: *needs-image-rust-base
 
 .cargo:
   image: "$CI_REGISTRY_IMAGE/$IMAGE:$CI_COMMIT_REF_SLUG"
