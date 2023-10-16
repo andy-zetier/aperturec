@@ -804,9 +804,7 @@ impl Client {
                     }
                     Err(err) => match err.downcast::<std::io::Error>() {
                         Ok(ioe) => match ioe.kind() {
-                            ErrorKind::WouldBlock => {
-                                // EAGAIN is expected if no data has been sent
-                            }
+                            ErrorKind::WouldBlock | ErrorKind::Interrupted => (),
                             _ => {
                                 let _ = control_to_ui_tx
                                     .send(UiMessage::QuitMessage(format!("{:?}", ioe)));
@@ -864,14 +862,8 @@ impl Client {
 
                 if !missing.is_empty() {
                     let mfr = MissedFrameReportBuilder::default()
-                        .sequence_ids(
-                            missing
-                                .iter()
-                                .map(|s| {
-                                    DecoderSequencePair::new(Decoder::new(dec), SequenceId::new(*s))
-                                })
-                                .collect(),
-                        )
+                        .decoder(Decoder::new(dec))
+                        .frames(missing.iter().map(|s| SequenceId::new(*s)).collect())
                         .build()
                         .expect("Failed to build MissedFrameReport!");
 

@@ -8,6 +8,8 @@ stages:
 
 variables:
   RUST_BASE_IMAGE: "$CI_REGISTRY_IMAGE/rust/base:$CI_COMMIT_REF_SLUG"
+  RUST_ASN1C_IMAGE: "$CI_REGISTRY_IMAGE/rust/asn1c:$CI_COMMIT_REF_SLUG"
+  RUST_XBACKEND_IMAGE: "$CI_REGISTRY_IMAGE/rust/base:$CI_COMMIT_REF_SLUG"
 
 default:
   tags:
@@ -100,6 +102,8 @@ image:build-push:rust:client:
       optional: true
     - job: image:build-push:rust:client
       optional: true
+    - job: image:build-push:rust:xbackend
+      optional: true
   parallel:
     matrix:
       - SUBDIR: "protocol"
@@ -111,6 +115,8 @@ image:build-push:rust:client:
         IMAGE: "rust/asn1c"
       - SUBDIR: "client"
         IMAGE: "rust/client"
+      - SUBDIR: "server"
+        IMAGE: "rust/xbackend"
 
 .cargo:debug:
   extends: .cargo
@@ -147,7 +153,6 @@ cargo:check:release:
   script:
     - cargo build $FLAGS --features "$FEATURES_BUILD"
 
-
 cargo:build:debug:
   extends: .cargo:debug
   <<: *cargo-build
@@ -160,7 +165,6 @@ cargo:build:release:
   stage: test
   script:
     - cargo test $FLAGS --features "$FEATURES_TEST"
-
 
 cargo:test:debug:
   extends: .cargo:debug

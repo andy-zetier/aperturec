@@ -1,547 +1,647 @@
 pub mod der {
-    super::impl_codec_reliable!(der, tcp, rasn::der::de::Error::Incomplete { .. });
+    super::impl_codec_reliable!(der, tcp);
     super::impl_codec_unreliable!(der, udp);
     super::tcp_test!(der, 8000);
     super::udp_test!(der, 8500);
 }
 
 pub mod cer {
-    super::impl_codec_reliable!(
-        cer,
-        tcp,
-        rasn::ber::de::Error::Incomplete { .. },
-        rasn::ber::de::Error::FieldError { .. }
-    );
-    super::impl_codec_unreliable!(der, udp);
+    super::impl_codec_reliable!(cer, tcp);
+    super::impl_codec_unreliable!(cer, udp);
     super::tcp_test!(cer, 9000);
     super::udp_test!(der, 9500);
 }
 
 pub mod ber {
-    super::impl_codec_reliable!(ber, tcp, rasn::ber::de::Error::Incomplete { .. });
+    super::impl_codec_reliable!(ber, tcp);
     super::impl_codec_unreliable!(der, udp);
     super::tcp_test!(ber, 10000);
     super::udp_test!(der, 10500);
 }
 
 macro_rules! impl_codec_reliable {
-    ($codec:ident, $transport:ident, $( $incomplete_error:pat ),*) => {
+    ($codec:ident, $transport:ident) => {
         pub mod reliable {
-        use crate::*;
-        use crate::reliable::*;
+            use crate::reliable::*;
+            use crate::*;
 
-        use aperturec_protocol::*;
-        use async_trait::async_trait;
-        use rasn::$codec;
-        use rasn::{Decode, Encode};
-        use std::io::{Read, Write};
-        use std::marker::PhantomData;
-        use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+            use aperturec_protocol::*;
+            use async_trait::async_trait;
+            use rasn::de::Needed;
+            use rasn::$codec;
+            use rasn::{Decode, Encode};
+            use std::io::{self, BufRead, Read, Write};
+            use std::marker::PhantomData;
+            use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 
-        fn do_receive<R: Read, RM: Decode>(reader: &mut std::io::BufReader<R>, read_bytes: &mut Vec<u8>) -> anyhow::Result<RM> {
-            loop {
-                match $codec::decode::<RM>(read_bytes) {
-                    $(
-                        Err($incomplete_error) => {
-                            let mut byte = [0_u8];
-                            if reader.read(&mut byte)? == 1 {
-                                read_bytes.push(byte[0]);
+            const BUF_READER_CAPACITY: usize = 4096 * 32;
+
+            fn do_receive<R: Read, RM: Decode>(
+                reader: &mut std::io::BufReader<R>,
+                read_bytes: &mut Vec<u8>,
+                is_nonblocking: bool,
+            ) -> anyhow::Result<RM> {
+                let mut nbytes_to_decode = 0;
+                loop {
+                    while nbytes_to_decode > read_bytes.len() {
+                        match reader.fill_buf() {
+                            Ok(bytes_filled) => {
+                                read_bytes.extend(bytes_filled);
+                                let nbytes_consumed = bytes_filled.len();
+                                reader.consume(nbytes_consumed);
+                            }
+                            Err(e) => {
+                                if is_nonblocking
+                                    || (e.kind() != io::ErrorKind::Interrupted
+                                        && e.kind() != io::ErrorKind::WouldBlock)
+                                {
+                                    return Err(e.into());
+                                }
                             }
                         }
-                    )*,
-                    Ok(msg) => {
-                        read_bytes.clear();
-                        break Ok(msg);
-                    },
-                    Err(e) => {
-                        read_bytes.clear();
-                        break Err(e.into());
+                    }
+                    match $codec::decode(&read_bytes[..nbytes_to_decode]) {
+                        Err(rasn::ber::de::Error::Incomplete {
+                            needed: Needed::Unknown,
+                        })
+                        | Err(rasn::ber::de::Error::FieldError { .. }) => {
+                            nbytes_to_decode += 1;
+                        }
+                        Err(rasn::ber::de::Error::Incomplete {
+                            needed: Needed::Size(size),
+                        }) => {
+                            nbytes_to_decode += size.get();
+                        }
+                        Ok(msg) => {
+                            read_bytes.drain(..nbytes_to_decode);
+                            return Ok(msg);
+                        }
+                        Err(e) => {
+                            return Err(e.into());
+                        }
                     }
                 }
             }
-        }
 
-        fn do_send<W: Write, SM: Encode>(writer: &mut W, msg: SM) -> anyhow::Result<()> {
-            let buf = $codec::encode(&msg)?;
-            writer.write(&buf)?;
-            Ok(())
-        }
+            fn do_send<W: Write + NonblockableIO, SM: Encode>(
+                writer: &mut W,
+                msg: SM,
+                write_bytes: &mut Vec<u8>,
+                is_nonblocking: bool,
+            ) -> anyhow::Result<()> {
+                write_bytes.extend($codec::encode(&msg)?);
 
-        async fn do_receive_async<R: AsyncRead + Unpin, RM: Decode>(
-            reader: &mut tokio::io::BufReader<R>,
-            read_bytes: &mut Vec<u8>,
-        ) -> anyhow::Result<RM> {
-            loop {
-                match $codec::decode::<RM>(read_bytes) {
-                    $(
-                        Err($incomplete_error) => {
-                            let mut byte = [0_u8];
-                            if reader.read(&mut byte).await? == 1 {
-                                read_bytes.push(byte[0]);
+                while !write_bytes.is_empty() {
+                    match writer.write(&write_bytes) {
+                        Ok(nbytes_written) => {
+                            write_bytes.drain(..nbytes_written);
+                        }
+                        Err(e) => {
+                            if (!is_nonblocking
+                                && (e.kind() != io::ErrorKind::WouldBlock
+                                    || e.kind() != io::ErrorKind::Interrupted))
+                                || is_nonblocking
+                            {
+                                return Err(e.into());
                             }
                         }
-                    )*,
-                    Ok(msg) => {
-                        read_bytes.clear();
-                        break Ok(msg);
-                    },
-                    Err(e) => {
-                        read_bytes.clear();
-                        break Err(e.into());
-                    },
+                    }
                 }
+                writer.flush()?;
+                Ok(())
             }
-        }
 
-        async fn do_send_async<W: AsyncWrite + Unpin, SM: Encode>(
-            writer: &mut W,
-            msg: SM,
-        ) -> anyhow::Result<()> {
-            let buf = $codec::encode(&msg)?;
-            writer.write(&buf).await?;
-            Ok(())
-        }
+            async fn do_receive_async<R: AsyncRead + Unpin, RM: Decode>(
+                reader: &mut tokio::io::BufReader<R>,
+                read_bytes: &mut Vec<u8>,
+            ) -> anyhow::Result<RM> {
+                let mut nbytes_to_decode = 0;
+                loop {
+                    while nbytes_to_decode > read_bytes.len() {
+                        let bytes_filled = reader.fill_buf().await?;
+                        read_bytes.extend(bytes_filled);
+                        let nbytes_consumed = bytes_filled.len();
+                        reader.consume(nbytes_consumed);
+                    }
 
-        pub struct ReceiverSimplex<R, RM>
-        where
-            R: Read,
-            RM: Decode,
-        {
-            reader: std::io::BufReader<R>,
-            recv_buf: Vec<u8>,
-            _receive_message: PhantomData<RM>,
-        }
-
-        impl<R, RM> ReceiverSimplex<R, RM>
-        where
-            R: Read,
-            RM: Decode,
-        {
-            pub fn new(reader: R) -> Self {
-                ReceiverSimplex {
-                    reader: std::io::BufReader::new(reader),
-                    recv_buf: vec![],
-                    _receive_message: PhantomData,
+                    match $codec::decode(&read_bytes[..nbytes_to_decode]) {
+                        Err(rasn::ber::de::Error::Incomplete {
+                            needed: Needed::Unknown,
+                        })
+                        | Err(rasn::ber::de::Error::FieldError { .. }) => {
+                            nbytes_to_decode += 1;
+                        }
+                        Err(rasn::ber::de::Error::Incomplete {
+                            needed: Needed::Size(size),
+                        }) => {
+                            nbytes_to_decode += size.get();
+                        }
+                        Ok(msg) => {
+                            read_bytes.drain(..nbytes_to_decode);
+                            return Ok(msg);
+                        }
+                        Err(e) => {
+                            return Err(e.into());
+                        }
+                    }
                 }
             }
 
-            pub fn into_inner(self) -> R {
-                self.reader.into_inner()
+            async fn do_send_async<W: AsyncWrite + Unpin, SM: Encode>(
+                writer: &mut W,
+                msg: SM,
+            ) -> anyhow::Result<()> {
+                let mut buf = $codec::encode(&msg)?;
+                let total_write_size = buf.len();
+                let mut buf_slice: &[u8] = &mut buf;
+                let mut nbytes_written = 0;
+                loop {
+                    nbytes_written += writer.write_buf(&mut buf_slice).await?;
+                    if nbytes_written >= total_write_size {
+                        break;
+                    }
+                }
+                writer.flush().await?;
+                Ok(())
             }
-        }
 
-        impl<R, RM> AsRef<R> for ReceiverSimplex<R, RM>
-        where
-            R: Read,
-            RM: Decode,
-        {
-            fn as_ref(&self) -> &R {
-                self.reader.get_ref()
+            pub struct ReceiverSimplex<R, RM>
+            where
+                R: Read,
+                RM: Decode,
+            {
+                reader: std::io::BufReader<R>,
+                read_bytes: Vec<u8>,
+                _receive_message: PhantomData<RM>,
             }
-        }
 
-        impl<R, RM> AsMut<R> for ReceiverSimplex<R, RM>
-        where
-            R: Read,
-            RM: Decode,
-        {
-            fn as_mut(&mut self) -> &mut R {
-                self.reader.get_mut()
-            }
-        }
+            impl<R, RM> ReceiverSimplex<R, RM>
+            where
+                R: Read,
+                RM: Decode,
+            {
+                pub fn new(reader: R) -> Self {
+                    ReceiverSimplex {
+                        reader: std::io::BufReader::with_capacity(BUF_READER_CAPACITY, reader),
+                        read_bytes: vec![],
+                        _receive_message: PhantomData,
+                    }
+                }
 
-        impl<R, RM> Receiver for ReceiverSimplex<R, RM>
-        where
-            R: Read,
-            RM: Decode,
-        {
-            type Message = RM;
-
-            fn receive(&mut self) -> anyhow::Result<Self::Message> {
-                do_receive(&mut self.reader, &mut self.recv_buf)
-            }
-        }
-
-        pub struct AsyncReceiverSimplex<R, RM>
-        where
-            R: AsyncRead,
-            RM: Decode,
-        {
-            reader: tokio::io::BufReader<R>,
-            recv_buf: Vec<u8>,
-            _receive_message: PhantomData<RM>,
-        }
-
-        impl<R, RM> AsyncReceiverSimplex<R, RM>
-        where
-            R: AsyncRead + Send + Unpin + 'static,
-            RM: Decode + Send + 'static,
-        {
-            pub fn new(reader: R) -> Self {
-                AsyncReceiverSimplex {
-                    reader: tokio::io::BufReader::new(reader),
-                    recv_buf: vec![],
-                    _receive_message: PhantomData,
+                pub fn into_inner(self) -> R {
+                    self.reader.into_inner()
                 }
             }
 
-            pub fn into_inner(self) -> R {
-                self.reader.into_inner()
-            }
-        }
-
-        impl<R, RM> AsRef<R> for AsyncReceiverSimplex<R, RM>
-        where
-            R: AsyncRead + Send + Unpin + 'static,
-            RM: Decode + Send + 'static,
-        {
-            fn as_ref(&self) -> &R {
-                self.reader.get_ref()
-            }
-        }
-
-        impl<R, RM> AsMut<R> for AsyncReceiverSimplex<R, RM>
-        where
-            R: AsyncRead + Send + Unpin + 'static,
-            RM: Decode + Send + 'static,
-        {
-            fn as_mut(&mut self) -> &mut R {
-                self.reader.get_mut()
-            }
-        }
-
-        #[async_trait]
-        impl<R, RM> AsyncReceiver for AsyncReceiverSimplex<R, RM>
-        where
-            R: AsyncRead + Send + Sync + Unpin + 'static,
-            RM: Decode + Send + 'static,
-        {
-            type Message = RM;
-
-            async fn receive(&mut self) -> anyhow::Result<Self::Message> {
-                do_receive_async(&mut self.reader, &mut self.recv_buf).await
-            }
-        }
-
-        pub struct SenderSimplex<W, SM>
-        where
-            W: Write,
-            SM: Encode,
-        {
-            writer: W,
-            _send_message: PhantomData<SM>,
-        }
-
-        impl<W, SM> SenderSimplex<W, SM>
-        where
-            W: Write,
-            SM: Encode,
-        {
-            pub fn new(writer: W) -> Self {
-                SenderSimplex {
-                    writer,
-                    _send_message: PhantomData,
+            impl<R, RM> AsRef<R> for ReceiverSimplex<R, RM>
+            where
+                R: Read,
+                RM: Decode,
+            {
+                fn as_ref(&self) -> &R {
+                    self.reader.get_ref()
                 }
             }
 
-            pub fn into_inner(self) -> W {
-                self.writer
-            }
-        }
-
-        impl<W, SM> AsRef<W> for SenderSimplex<W, SM>
-        where
-            W: Write,
-            SM: Encode,
-        {
-            fn as_ref(&self) -> &W {
-                &self.writer
-            }
-        }
-
-        impl<W, SM> AsMut<W> for SenderSimplex<W, SM>
-        where
-            W: Write,
-            SM: Encode,
-        {
-            fn as_mut(&mut self) -> &mut W {
-                &mut self.writer
-            }
-        }
-
-        impl<W, SM> Sender for SenderSimplex<W, SM>
-        where
-            W: Write,
-            SM: Encode,
-        {
-            type Message = SM;
-
-            fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-                do_send(&mut self.writer, msg)
-            }
-        }
-
-        pub struct AsyncSenderSimplex<W, SM>
-        where
-            W: AsyncWrite + Send + Unpin + 'static,
-            SM: Encode + Send + 'static,
-        {
-            writer: W,
-            _send_message: PhantomData<SM>,
-        }
-
-        impl<W, SM> AsyncSenderSimplex<W, SM>
-        where
-            W: AsyncWrite + Send + Unpin + 'static,
-            SM: Encode + Send + 'static,
-        {
-            pub fn new(writer: W) -> Self {
-                AsyncSenderSimplex {
-                    writer,
-                    _send_message: PhantomData,
+            impl<R, RM> AsMut<R> for ReceiverSimplex<R, RM>
+            where
+                R: Read,
+                RM: Decode,
+            {
+                fn as_mut(&mut self) -> &mut R {
+                    self.reader.get_mut()
                 }
             }
 
-            pub fn into_inner(self) -> W {
-                self.writer
-            }
-        }
+            impl<R, RM> Receiver for ReceiverSimplex<R, RM>
+            where
+                R: Read + NonblockableIO,
+                RM: Decode,
+            {
+                type Message = RM;
 
-        impl<W, SM> AsRef<W> for AsyncSenderSimplex<W, SM>
-        where
-            W: AsyncWrite + Send + Unpin + 'static,
-            SM: Encode + Send + 'static,
-        {
-            fn as_ref(&self) -> &W {
-                &self.writer
-            }
-        }
-
-        impl<W, SM> AsMut<W> for AsyncSenderSimplex<W, SM>
-        where
-            W: AsyncWrite + Send + Unpin + 'static,
-            SM: Encode + Send + 'static,
-        {
-            fn as_mut(&mut self) -> &mut W {
-                &mut self.writer
-            }
-        }
-
-        #[async_trait]
-        impl<W, SM> AsyncSender for AsyncSenderSimplex<W, SM>
-        where
-            W: AsyncWrite + Send + Unpin + 'static,
-            SM: Encode + Send + 'static,
-        {
-            type Message = SM;
-
-            async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-                do_send_async(&mut self.writer, msg).await
-            }
-        }
-
-        pub struct Duplex<C, RM, SM>
-        where
-            C: Read + Write,
-            RM: Decode,
-            SM: Encode,
-        {
-            common_rw: std::io::BufReader<C>,
-            recv_buf: Vec<u8>,
-            _receive_message: PhantomData<RM>,
-            _send_message: PhantomData<SM>,
-        }
-
-        impl<C, RM, SM> Duplex<C, RM, SM>
-        where
-            C: Read + Write,
-            RM: Decode,
-            SM: Encode,
-        {
-            pub fn new(common_rw: C) -> Self {
-                Duplex {
-                    common_rw: std::io::BufReader::new(common_rw),
-                    recv_buf: vec![],
-                    _receive_message: PhantomData,
-                    _send_message: PhantomData,
+                fn receive(&mut self) -> anyhow::Result<Self::Message> {
+                    let is_nonblocking = self.reader.get_ref().is_nonblocking();
+                    do_receive(&mut self.reader, &mut self.read_bytes, is_nonblocking)
                 }
             }
 
-            pub fn into_inner(self) -> C {
-                self.common_rw.into_inner()
+            pub struct AsyncReceiverSimplex<R, RM>
+            where
+                R: AsyncRead,
+                RM: Decode,
+            {
+                reader: tokio::io::BufReader<R>,
+                read_bytes: Vec<u8>,
+                _receive_message: PhantomData<RM>,
             }
-        }
 
-        impl<C, RM, SM> AsRef<C> for Duplex<C, RM, SM>
-        where
-            C: Read + Write,
-            RM: Decode,
-            SM: Encode,
-        {
-            fn as_ref(&self) -> &C {
-                self.common_rw.get_ref()
-            }
-        }
+            impl<R, RM> AsyncReceiverSimplex<R, RM>
+            where
+                R: AsyncRead + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+            {
+                pub fn new(reader: R) -> Self {
+                    AsyncReceiverSimplex {
+                        reader: tokio::io::BufReader::with_capacity(BUF_READER_CAPACITY, reader),
+                        read_bytes: vec![],
+                        _receive_message: PhantomData,
+                    }
+                }
 
-        impl<C, RM, SM> AsMut<C> for Duplex<C, RM, SM>
-        where
-            C: Read + Write,
-            RM: Decode,
-            SM: Encode,
-        {
-            fn as_mut(&mut self) -> &mut C {
-                self.common_rw.get_mut()
-            }
-        }
-
-        impl<C, RM, SM> Receiver for Duplex<C, RM, SM>
-        where
-            C: Read + Write,
-            RM: Decode,
-            SM: Encode,
-        {
-            type Message = RM;
-            fn receive(&mut self) -> anyhow::Result<RM> {
-                do_receive(&mut self.common_rw, &mut self.recv_buf)
-            }
-        }
-
-        impl<C, RM, SM> Sender for Duplex<C, RM, SM>
-        where
-            C: Read + Write,
-            RM: Decode,
-            SM: Encode,
-        {
-            type Message = SM;
-            fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-                do_send(self.common_rw.get_mut(), msg)
-            }
-        }
-
-        pub struct AsyncDuplex<C, RM, SM>
-        where
-            C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-            RM: Decode + Send + 'static,
-            SM: Encode + Send + 'static,
-        {
-            common_rw: tokio::io::BufReader<C>,
-            recv_buf: Vec<u8>,
-            _receive_message: PhantomData<RM>,
-            _send_message: PhantomData<SM>,
-        }
-
-        impl<C, RM, SM> AsyncDuplex<C, RM, SM>
-        where
-            C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-            RM: Decode + Send + 'static,
-            SM: Encode + Send + 'static,
-        {
-            pub fn new(common_rw: C) -> Self {
-                AsyncDuplex {
-                    common_rw: tokio::io::BufReader::new(common_rw),
-                    recv_buf: vec![],
-                    _receive_message: PhantomData,
-                    _send_message: PhantomData,
+                pub fn into_inner(self) -> R {
+                    self.reader.into_inner()
                 }
             }
 
-            pub fn into_inner(self) -> C {
-                self.common_rw.into_inner()
+            impl<R, RM> AsRef<R> for AsyncReceiverSimplex<R, RM>
+            where
+                R: AsyncRead + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+            {
+                fn as_ref(&self) -> &R {
+                    self.reader.get_ref()
+                }
             }
-        }
 
-        impl<C, RM, SM> AsRef<C> for AsyncDuplex<C, RM, SM>
-        where
-            C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-            RM: Decode + Send + 'static,
-            SM: Encode + Send + 'static,
-        {
-            fn as_ref(&self) -> &C {
-                self.common_rw.get_ref()
+            impl<R, RM> AsMut<R> for AsyncReceiverSimplex<R, RM>
+            where
+                R: AsyncRead + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+            {
+                fn as_mut(&mut self) -> &mut R {
+                    self.reader.get_mut()
+                }
             }
-        }
 
-        impl<C, RM, SM> AsMut<C> for AsyncDuplex<C, RM, SM>
-        where
-            C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-            RM: Decode + Send + 'static,
-            SM: Encode + Send + 'static,
-        {
-            fn as_mut(&mut self) -> &mut C {
-                self.common_rw.get_mut()
+            #[async_trait]
+            impl<R, RM> AsyncReceiver for AsyncReceiverSimplex<R, RM>
+            where
+                R: AsyncRead + Send + Sync + Unpin + 'static,
+                RM: Decode + Send + 'static,
+            {
+                type Message = RM;
+
+                async fn receive(&mut self) -> anyhow::Result<Self::Message> {
+                    do_receive_async(&mut self.reader, &mut self.read_bytes).await
+                }
             }
-        }
 
-        #[async_trait]
-        impl<C, RM, SM> AsyncReceiver for AsyncDuplex<C, RM, SM>
-        where
-            C: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
-            RM: Decode + Send + 'static,
-            SM: Encode + Send + 'static,
-        {
-            type Message = RM;
-            async fn receive(&mut self) -> anyhow::Result<RM> {
-                do_receive_async(&mut self.common_rw, &mut self.recv_buf).await
+            pub struct SenderSimplex<W, SM>
+            where
+                W: Write + NonblockableIO,
+                SM: Encode,
+            {
+                writer: W,
+                write_bytes: Vec<u8>,
+                _send_message: PhantomData<SM>,
             }
-        }
 
-        #[async_trait]
-        impl<C, RM, SM> AsyncSender for AsyncDuplex<C, RM, SM>
-        where
-            C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-            RM: Decode + Send + 'static,
-            SM: Encode + Send + 'static,
-        {
-            type Message = SM;
-            async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-                do_send_async(&mut self.common_rw, msg).await
+            impl<W, SM> SenderSimplex<W, SM>
+            where
+                W: Write + NonblockableIO,
+                SM: Encode,
+            {
+                pub fn new(writer: W) -> Self {
+                    SenderSimplex {
+                        writer,
+                        write_bytes: vec![],
+                        _send_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> W {
+                    self.writer
+                }
             }
+
+            impl<W, SM> AsRef<W> for SenderSimplex<W, SM>
+            where
+                W: Write + NonblockableIO,
+                SM: Encode,
+            {
+                fn as_ref(&self) -> &W {
+                    &self.writer
+                }
+            }
+
+            impl<W, SM> AsMut<W> for SenderSimplex<W, SM>
+            where
+                W: Write + NonblockableIO,
+                SM: Encode,
+            {
+                fn as_mut(&mut self) -> &mut W {
+                    &mut self.writer
+                }
+            }
+
+            impl<W, SM> Sender for SenderSimplex<W, SM>
+            where
+                W: Write + NonblockableIO,
+                SM: Encode,
+            {
+                type Message = SM;
+
+                fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+                    let is_nonblocking = self.writer.is_nonblocking();
+                    do_send(&mut self.writer, msg, &mut self.write_bytes, is_nonblocking)
+                }
+            }
+
+            pub struct AsyncSenderSimplex<W, SM>
+            where
+                W: AsyncWrite + Send + Unpin + 'static,
+                SM: Encode + Send + 'static,
+            {
+                writer: W,
+                _send_message: PhantomData<SM>,
+            }
+
+            impl<W, SM> AsyncSenderSimplex<W, SM>
+            where
+                W: AsyncWrite + Send + Unpin + 'static,
+                SM: Encode + Send + 'static,
+            {
+                pub fn new(writer: W) -> Self {
+                    AsyncSenderSimplex {
+                        writer,
+                        _send_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> W {
+                    self.writer
+                }
+            }
+
+            impl<W, SM> AsRef<W> for AsyncSenderSimplex<W, SM>
+            where
+                W: AsyncWrite + Send + Unpin + 'static,
+                SM: Encode + Send + 'static,
+            {
+                fn as_ref(&self) -> &W {
+                    &self.writer
+                }
+            }
+
+            impl<W, SM> AsMut<W> for AsyncSenderSimplex<W, SM>
+            where
+                W: AsyncWrite + Send + Unpin + 'static,
+                SM: Encode + Send + 'static,
+            {
+                fn as_mut(&mut self) -> &mut W {
+                    &mut self.writer
+                }
+            }
+
+            #[async_trait]
+            impl<W, SM> AsyncSender for AsyncSenderSimplex<W, SM>
+            where
+                W: AsyncWrite + Send + Unpin + 'static,
+                SM: Encode + Send + 'static,
+            {
+                type Message = SM;
+
+                async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+                    do_send_async(&mut self.writer, msg).await
+                }
+            }
+
+            pub struct Duplex<C, RM, SM>
+            where
+                C: Read + Write + NonblockableIO,
+                RM: Decode,
+                SM: Encode,
+            {
+                common_rw: std::io::BufReader<C>,
+                read_bytes: Vec<u8>,
+                write_bytes: Vec<u8>,
+                _receive_message: PhantomData<RM>,
+                _send_message: PhantomData<SM>,
+            }
+
+            impl<C, RM, SM> Duplex<C, RM, SM>
+            where
+                C: Read + Write + NonblockableIO,
+                RM: Decode,
+                SM: Encode,
+            {
+                pub fn new(common_rw: C) -> Self {
+                    Duplex {
+                        common_rw: std::io::BufReader::with_capacity(
+                            BUF_READER_CAPACITY,
+                            common_rw,
+                        ),
+                        read_bytes: vec![],
+                        write_bytes: vec![],
+                        _receive_message: PhantomData,
+                        _send_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> C {
+                    self.common_rw.into_inner()
+                }
+            }
+
+            impl<C, RM, SM> AsRef<C> for Duplex<C, RM, SM>
+            where
+                C: Read + Write + NonblockableIO,
+                RM: Decode,
+                SM: Encode,
+            {
+                fn as_ref(&self) -> &C {
+                    self.common_rw.get_ref()
+                }
+            }
+
+            impl<C, RM, SM> AsMut<C> for Duplex<C, RM, SM>
+            where
+                C: Read + Write + NonblockableIO,
+                RM: Decode,
+                SM: Encode,
+            {
+                fn as_mut(&mut self) -> &mut C {
+                    self.common_rw.get_mut()
+                }
+            }
+
+            impl<C, RM, SM> Receiver for Duplex<C, RM, SM>
+            where
+                C: Read + Write + NonblockableIO,
+                RM: Decode,
+                SM: Encode,
+            {
+                type Message = RM;
+                fn receive(&mut self) -> anyhow::Result<RM> {
+                    let is_nonblocking = self.common_rw.get_ref().is_nonblocking();
+                    do_receive(&mut self.common_rw, &mut self.read_bytes, is_nonblocking)
+                }
+            }
+
+            impl<C, RM, SM> Sender for Duplex<C, RM, SM>
+            where
+                C: Read + Write + NonblockableIO,
+                RM: Decode,
+                SM: Encode,
+            {
+                type Message = SM;
+                fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+                    let is_nonblocking = self.common_rw.get_ref().is_nonblocking();
+                    do_send(
+                        self.common_rw.get_mut(),
+                        msg,
+                        &mut self.write_bytes,
+                        is_nonblocking,
+                    )
+                }
+            }
+
+            pub struct AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                common_rw: tokio::io::BufReader<C>,
+                read_bytes: Vec<u8>,
+                _receive_message: PhantomData<RM>,
+                _send_message: PhantomData<SM>,
+            }
+
+            impl<C, RM, SM> AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                pub fn new(common_rw: C) -> Self {
+                    AsyncDuplex {
+                        common_rw: tokio::io::BufReader::with_capacity(
+                            BUF_READER_CAPACITY,
+                            common_rw,
+                        ),
+                        read_bytes: vec![],
+                        _receive_message: PhantomData,
+                        _send_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> C {
+                    self.common_rw.into_inner()
+                }
+
+                pub fn split(
+                    self,
+                ) -> (
+                    AsyncSenderSimplex<tokio::io::WriteHalf<C>, SM>,
+                    AsyncReceiverSimplex<tokio::io::ReadHalf<C>, RM>,
+                ) {
+                    let (rh, wh) = tokio::io::split(self.common_rw.into_inner());
+                    (AsyncSenderSimplex::new(wh), AsyncReceiverSimplex::new(rh))
+                }
+
+                pub fn unsplit(
+                    tx: AsyncSenderSimplex<tokio::io::WriteHalf<C>, SM>,
+                    rx: AsyncReceiverSimplex<tokio::io::ReadHalf<C>, RM>,
+                ) -> Self {
+                    let common_rw = rx.into_inner().unsplit(tx.into_inner());
+                    AsyncDuplex::new(common_rw)
+                }
+            }
+
+            impl<C, RM, SM> AsRef<C> for AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                fn as_ref(&self) -> &C {
+                    self.common_rw.get_ref()
+                }
+            }
+
+            impl<C, RM, SM> AsMut<C> for AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                fn as_mut(&mut self) -> &mut C {
+                    self.common_rw.get_mut()
+                }
+            }
+
+            #[async_trait]
+            impl<C, RM, SM> AsyncReceiver for AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                type Message = RM;
+                async fn receive(&mut self) -> anyhow::Result<RM> {
+                    do_receive_async(&mut self.common_rw, &mut self.read_bytes).await
+                }
+            }
+
+            #[async_trait]
+            impl<C, RM, SM> AsyncSender for AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                type Message = SM;
+                async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+                    do_send_async(&mut self.common_rw, msg).await
+                }
+            }
+
+            pub type ServerControlChannel = Duplex<
+                $transport::Server<$transport::Accepted>,
+                control_messages::ClientToServerMessage,
+                control_messages::ServerToClientMessage,
+            >;
+
+            pub type ClientControlChannel = Duplex<
+                $transport::Client<$transport::Connected>,
+                control_messages::ServerToClientMessage,
+                control_messages::ClientToServerMessage,
+            >;
+
+            pub type ServerEventChannel = ReceiverSimplex<
+                $transport::Server<$transport::Accepted>,
+                event_messages::ClientToServerMessage,
+            >;
+
+            pub type ClientEventChannel = SenderSimplex<
+                $transport::Client<$transport::Connected>,
+                event_messages::ClientToServerMessage,
+            >;
+
+            pub type AsyncServerControlChannel = AsyncDuplex<
+                $transport::Server<$transport::AsyncAccepted>,
+                control_messages::ClientToServerMessage,
+                control_messages::ServerToClientMessage,
+            >;
+
+            pub type AsyncClientControlChannel = AsyncDuplex<
+                $transport::Client<$transport::AsyncConnected>,
+                control_messages::ServerToClientMessage,
+                control_messages::ClientToServerMessage,
+            >;
+
+            pub type AsyncServerEventChannel = AsyncReceiverSimplex<
+                $transport::Server<$transport::AsyncAccepted>,
+                event_messages::ClientToServerMessage,
+            >;
+
+            pub type AsyncClientEventChannel = AsyncSenderSimplex<
+                $transport::Client<$transport::AsyncConnected>,
+                event_messages::ClientToServerMessage,
+            >;
         }
-
-        pub type ServerControlChannel = Duplex<
-            $transport::Server<$transport::Accepted>,
-            control_messages::ClientToServerMessage,
-            control_messages::ServerToClientMessage,
-        >;
-
-        pub type ClientControlChannel = Duplex<
-            $transport::Client<$transport::Connected>,
-            control_messages::ServerToClientMessage,
-            control_messages::ClientToServerMessage,
-        >;
-
-        pub type ServerEventChannel = ReceiverSimplex<
-            $transport::Server<$transport::Accepted>,
-            event_messages::ClientToServerMessage,
-        >;
-
-        pub type ClientEventChannel = SenderSimplex<
-            $transport::Client<$transport::Connected>,
-            event_messages::ClientToServerMessage,
-        >;
-
-        pub type AsyncServerControlChannel = AsyncDuplex<
-            $transport::Server<$transport::AsyncAccepted>,
-            control_messages::ClientToServerMessage,
-            control_messages::ServerToClientMessage,
-        >;
-
-        pub type AsyncClientControlChannel = AsyncDuplex<
-            $transport::Client<$transport::AsyncConnected>,
-            control_messages::ServerToClientMessage,
-            control_messages::ClientToServerMessage,
-        >;
-
-        pub type AsyncServerEventChannel = AsyncReceiverSimplex<
-            $transport::Server<$transport::AsyncAccepted>,
-            event_messages::ClientToServerMessage,
-        >;
-
-        pub type AsyncClientEventChannel = AsyncSenderSimplex<
-            $transport::Client<$transport::AsyncConnected>,
-            event_messages::ClientToServerMessage,
-        >;
-    }
     };
 }
 pub(crate) use impl_codec_reliable;

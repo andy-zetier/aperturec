@@ -46,7 +46,18 @@ macro_rules! try_recover {
     ($try_expr:expr, $recoverable:expr) => {{
         match $try_expr {
             Ok(ok) => ok,
-            Err(err) => return Err(Recovered::new($recoverable.transition(), err.into())),
+            Err(err) => {
+                return Err(Recovered::new($recoverable.transition(), err.into()));
+            }
+        }
+    }};
+    ($try_expr:expr, $recoverable:expr, $new_state:ty) => {{
+        match $try_expr {
+            Ok(ok) => ok,
+            Err(err) => {
+                let new_stateful = <_ as Transitionable<$new_state>>::transition($recoverable);
+                return Err(Recovered::new(new_stateful, err.into()));
+            }
         }
     }};
 }
@@ -89,7 +100,7 @@ macro_rules! try_recover {
 #[macro_export]
 macro_rules! return_recover {
     ($recoverable:expr, $($arg:tt)*) => {{
-        return Err(Recovered::new($recoverable.transition(), anyhow!($($arg)*)));
+        return Err(Recovered::new($recoverable.transition(), anyhow::anyhow!($($arg)*)));
     }};
 }
 
@@ -144,9 +155,42 @@ macro_rules! try_transition_continue {
         match $stateful.try_transition().await {
             Ok(ok) => ok,
             Err(recovered) => {
+                log::error!("Transition failed with error: {}", recovered.error);
                 $original_binding = recovered.stateful;
                 continue;
             }
         }
+    }};
+}
+
+/// Attempt to transition a [`TryTransitionable`](crate::TryTransitionable) within another
+/// [`TryTransitionable`](crate::TryTransitionable) machine, recovering the outer state
+/// machine if the inner transition fails
+///
+/// A recovery expression must be provided as the third argument, which will be used to re-construct
+/// the outer state machine's state during the recovery process
+#[macro_export]
+macro_rules! try_transition_inner_recover {
+    ($inner:expr, $inner_recovered_state:ty, $recover_constructor:expr) => {{
+        match $inner.try_transition().await {
+            Ok(ok) => ok,
+            Err(recovered) => {
+                let inner_recovered =
+                    <_ as Transitionable<$inner_recovered_state>>::transition(recovered.stateful);
+                let new_stateful = $recover_constructor(inner_recovered);
+                let error = recovered.error;
+                return Err(Recovered::new(new_stateful, error));
+            }
+        }
+    }};
+}
+
+/// Explicitly transition a [`Transitionable`](crate::Transitionable) [`Stateful`](crate::Stateful)
+/// to a provided state. This is useful when there are more than one valid transitions for a
+/// [`Stateful`](crate::Stateful).
+#[macro_export]
+macro_rules! transition {
+    ($stateful:expr, $state:ty) => {{
+        <_ as Transitionable<$state>>::transition($stateful)
     }};
 }
