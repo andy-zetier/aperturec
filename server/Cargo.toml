@@ -1,0 +1,32 @@
+[package]
+name = "aperturec-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+aperturec-channel = { path = "../channel" }
+aperturec-protocol = { path = "../protocol" }
+aperturec-state-machine = { path = "../state_machine" }
+async-trait = "0.1"
+async-stream = "0.3"
+bytes = "1.4"
+clap = { version = "4.3", features = ["derive", "string"] }
+derive_builder = "0.12"
+euclid = "0.22"
+futures = "0.3"
+gethostname = "0.4"
+linear-map = "1.2"
+log = "^0.4"
+ndarray = { version = "0.15", features = ["rayon"] }
+parking_lot = { version = "0.12", features = ["send_guard", "hardware-lock-elision"] }
+rand = { version = "0.8", features = ["std", "std_rng"] }
+simple_logger = "4.2"
+shlex = "1.2"
+tokio = { version = "1.29", features = ["full", "tracing"] }
+tokio-stream = { version = "0.1", features = ["sync", "fs"] }
+tokio-util = "0.7"
+xcb = { version = "1.2.2", features = ["damage", "randr", "xtest" ] }
+
+[dev-dependencies]
+serial_test = "2.0"

@@ -1,3 +1,5 @@
+use super::*;
+
 use aperturec_state_machine::*;
 use async_trait::async_trait;
 use std::io;
@@ -23,15 +25,30 @@ impl SelfTransitionable for Server<Closed> {}
 pub struct Listening {
     listener: tokio::net::TcpListener,
 }
+impl SelfTransitionable for Server<Listening> {}
 
 #[derive(State, Debug)]
 pub struct Accepted {
-    stream: std::io::BufReader<std::net::TcpStream>,
+    stream: std::net::TcpStream,
+    listener: tokio::net::TcpListener,
+}
+
+impl AsRef<std::net::TcpStream> for Server<Accepted> {
+    fn as_ref(&self) -> &std::net::TcpStream {
+        &self.state.stream
+    }
 }
 
 #[derive(State, Debug)]
 pub struct AsyncAccepted {
-    stream: tokio::io::BufReader<tokio::net::TcpStream>,
+    stream: tokio::net::TcpStream,
+    listener: tokio::net::TcpListener,
+}
+
+impl AsRef<tokio::net::TcpStream> for Server<AsyncAccepted> {
+    fn as_ref(&self) -> &tokio::net::TcpStream {
+        &self.state.stream
+    }
 }
 
 impl<T: State> Server<T> {
@@ -91,25 +108,26 @@ impl Transitionable<Closed> for Server<Listening> {
 }
 
 #[async_trait]
-impl TryTransitionable<Accepted, Closed> for Server<Listening> {
+impl TryTransitionable<Accepted, Listening> for Server<Listening> {
     type SuccessStateful = Server<Accepted>;
-    type FailureStateful = Server<Closed>;
+    type FailureStateful = Server<Listening>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let (stream, _) = try_recover!(self.state.listener.accept().await, self);
-        let stream = try_recover!(stream.into_std(), self);
-
-        try_recover!(stream.set_nonblocking(self.is_nonblocking), self);
+        let (stream, _) = try_recover!(self.state.listener.accept().await, self, Listening);
+        let stream = try_recover!(stream.into_std(), self, Listening);
 
         // Disable Nagle's algorithm for lower latency
-        try_recover!(stream.set_nodelay(true), self);
+        try_recover!(stream.set_nodelay(true), self, Listening);
+
+        try_recover!(stream.set_nonblocking(self.is_nonblocking), self, Listening);
 
         Ok(Server {
             state: Accepted {
-                stream: std::io::BufReader::new(stream),
+                stream,
+                listener: self.state.listener,
             },
             addr: self.addr,
             is_nonblocking: self.is_nonblocking,
@@ -118,32 +136,50 @@ impl TryTransitionable<Accepted, Closed> for Server<Listening> {
 }
 
 #[async_trait]
-impl TryTransitionable<AsyncAccepted, Closed> for Server<Accepted> {
+impl TryTransitionable<AsyncAccepted, Listening> for Server<Accepted> {
     type SuccessStateful = Server<AsyncAccepted>;
-    type FailureStateful = Server<Closed>;
+    type FailureStateful = Server<Listening>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let std = try_recover!(self.state.stream.get_ref().try_clone(), self);
-        let stream = try_recover!(tokio::net::TcpStream::from_std(std), self);
+        let std = try_recover!(self.state.stream.try_clone(), self, Listening);
+        try_recover!(std.set_nonblocking(true), self);
+        let stream = try_recover!(tokio::net::TcpStream::from_std(std), self, Listening);
         Ok(Server {
             state: AsyncAccepted {
-                stream: tokio::io::BufReader::new(stream),
+                stream,
+                listener: self.state.listener,
             },
             addr: self.addr,
-            is_nonblocking: self.is_nonblocking,
+            is_nonblocking: true,
         })
     }
 }
 
-impl Transitionable<Closed> for Server<Accepted> {
-    type NextStateful = Server<Closed>;
+impl Transitionable<Listening> for Server<Accepted> {
+    type NextStateful = Server<Listening>;
 
     fn transition(self) -> Self::NextStateful {
         Server {
-            state: Closed,
+            state: Listening {
+                listener: self.state.listener,
+            },
+            addr: self.addr,
+            is_nonblocking: self.is_nonblocking,
+        }
+    }
+}
+
+impl Transitionable<Listening> for Server<AsyncAccepted> {
+    type NextStateful = Server<Listening>;
+
+    fn transition(self) -> Self::NextStateful {
+        Server {
+            state: Listening {
+                listener: self.state.listener,
+            },
             addr: self.addr,
             is_nonblocking: self.is_nonblocking,
         }
@@ -158,11 +194,17 @@ impl Read for Server<Accepted> {
 
 impl Write for Server<Accepted> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.state.stream.get_mut().write(buf)
+        self.state.stream.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.state.stream.get_mut().flush()
+        self.state.stream.flush()
+    }
+}
+
+impl NonblockableIO for Server<Accepted> {
+    fn is_nonblocking(&self) -> bool {
+        self.is_nonblocking
     }
 }
 
@@ -201,13 +243,14 @@ impl AsyncWrite for Server<AsyncAccepted> {
 pub struct Client<S: State> {
     state: S,
     addr: SocketAddr,
+    is_nonblocking: bool,
 }
 
 impl SelfTransitionable for Client<Closed> {}
 
 #[derive(State, Debug)]
 pub struct Connected {
-    stream: std::io::BufReader<std::net::TcpStream>,
+    stream: std::net::TcpStream,
 }
 
 #[derive(State, Debug)]
@@ -220,6 +263,15 @@ impl Client<Closed> {
         Client {
             state: Closed,
             addr: addr.into(),
+            is_nonblocking: true,
+        }
+    }
+
+    pub fn new_blocking<A: Into<SocketAddr>>(addr: A) -> Self {
+        Client {
+            state: Closed,
+            addr: addr.into(),
+            is_nonblocking: false,
         }
     }
 }
@@ -237,17 +289,19 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
             SocketAddr::V4(_) => try_recover!(tokio::net::TcpSocket::new_v4(), self),
             SocketAddr::V6(_) => try_recover!(tokio::net::TcpSocket::new_v6(), self),
         };
+
         let stream = try_recover!(socket.connect(self.addr).await, self);
         let stream = try_recover!(stream.into_std(), self);
 
         // Disable Nagle's algorithm for lower latency
         try_recover!(stream.set_nodelay(true), self);
 
+        try_recover!(stream.set_nonblocking(self.is_nonblocking), self);
+
         Ok(Client {
             addr: self.addr,
-            state: Connected {
-                stream: std::io::BufReader::new(stream),
-            },
+            state: Connected { stream },
+            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -261,11 +315,14 @@ impl TryTransitionable<AsyncConnected, Closed> for Client<Connected> {
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let std: std::net::TcpStream = try_recover!(self.state.stream.get_ref().try_clone(), self);
+        let std: std::net::TcpStream = try_recover!(self.state.stream.try_clone(), self);
+        try_recover!(std.set_nonblocking(true), self, Closed);
         let stream = try_recover!(tokio::net::TcpStream::from_std(std), self);
+
         Ok(Client {
             state: AsyncConnected { stream },
             addr: self.addr,
+            is_nonblocking: true,
         })
     }
 }
@@ -277,6 +334,7 @@ impl Transitionable<Closed> for Client<Connected> {
         Client {
             state: Closed,
             addr: self.addr,
+            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -289,11 +347,17 @@ impl Read for Client<Connected> {
 
 impl Write for Client<Connected> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.state.stream.get_mut().write(buf)
+        self.state.stream.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.state.stream.get_mut().flush()
+        self.state.stream.flush()
+    }
+}
+
+impl NonblockableIO for Client<Connected> {
+    fn is_nonblocking(&self) -> bool {
+        self.is_nonblocking
     }
 }
 

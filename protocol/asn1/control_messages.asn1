@@ -98,7 +98,8 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   }
 
   MissedFrameReport ::= SEQUENCE {
-    sequenceIds SEQUENCE OF DecoderSequencePair,
+    decoder Decoder,
+    frames SEQUENCE OF SequenceId,
     ...
   }
 

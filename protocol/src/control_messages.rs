@@ -124,11 +124,8 @@ mod test {
         serde_type_der!(
             MissedFrameReport,
             MissedFrameReport {
-                sequence_ids: vec![
-                    DecoderSequencePair::new(Decoder::new(1024), SequenceId(1)),
-                    DecoderSequencePair::new(Decoder::new(1025), SequenceId(2)),
-                    DecoderSequencePair::new(Decoder::new(1026), SequenceId(3))
-                ],
+                decoder: Decoder::new(1234),
+                frames: vec![SequenceId(1), SequenceId(2), SequenceId(3),],
             }
         );
     }
