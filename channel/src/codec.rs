@@ -928,7 +928,7 @@ macro_rules! tcp_test {
                             )
                             .client_caps(
                                 ClientCapsBuilder::default()
-                                    .supported_codecs(vec![Codec::new_avif()])
+                                    .supported_codecs(vec![Codec::new_zlib()])
                                     .build()
                                     .expect("ClientCaps build"),
                             )

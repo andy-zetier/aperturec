@@ -349,7 +349,7 @@ impl Client {
 
     fn generate_client_caps(&self) -> ClientCaps {
         ClientCapsBuilder::default()
-            .supported_codecs(vec![Codec::Raw])
+            .supported_codecs(vec![Codec::Raw, Codec::Zlib])
             .build()
             .expect("Failed to generate ClientCaps!")
     }
@@ -469,7 +469,7 @@ impl Client {
             let should_stop = self.should_stop.clone();
 
             thread::spawn(move || {
-                let mut current_seq_id = SequenceId(0);
+                let mut current_seq_id = None;
 
                 //
                 // Receive an initial Image from the UI thread
@@ -554,7 +554,6 @@ impl Client {
                     );*/
 
                     let mut missing_seq: BTreeSet<u64> = BTreeSet::new();
-
                     for ru in fbu.rectangle_updates {
                         //
                         // Handle out-of-sequence RectangleUpdates
@@ -568,23 +567,24 @@ impl Client {
                         // seem to happen very often in my ad-hoc testing, so I'll leave them
                         // dropped for now with a warning.
                         //
-                        if ru.sequence_id.0 <= current_seq_id.0 && current_seq_id.0 != 0 {
+                        if current_seq_id.map_or(false, |csi: u64| csi >= ru.sequence_id.0) {
                             log::warn!(
                                 "[decoder {}] Dropping Rectangle {}, already received {}",
                                 port,
                                 ru.sequence_id.0,
-                                current_seq_id.0
+                                current_seq_id.unwrap()
                             );
 
-                            missing_seq.remove(&ru.sequence_id.0);
-
                             continue;
-                        } else if ru.sequence_id.0 > (current_seq_id.0 + 1) && current_seq_id.0 != 0
-                        {
-                            missing_seq.extend(current_seq_id.0..ru.sequence_id.0);
+                        } else if current_seq_id.is_none() && ru.sequence_id.0 != 0 {
+                            missing_seq.extend(0..ru.sequence_id.0)
+                        } else if let Some(current_seq_id) = current_seq_id {
+                            if current_seq_id < ru.sequence_id.0 {
+                                missing_seq.extend(current_seq_id + 1..ru.sequence_id.0);
+                            }
                         }
 
-                        current_seq_id = ru.sequence_id.clone();
+                        current_seq_id = Some(ru.sequence_id.0);
 
                         //
                         // Write rectangle data to the Image with the appropriate Codec
@@ -611,11 +611,32 @@ impl Client {
                                     log::debug!("[decoder {}] {:#?}", port, &ru);
                                 }
                             },
+                            Codec::Zlib => match image.draw_raw_zlib(
+                                &ru.rectangle.data,
+                                ru.location.x_position,
+                                ru.location.y_position,
+                                ru.rectangle
+                                    .dimension
+                                    .as_ref()
+                                    .expect("Width is required")
+                                    .width,
+                                ru.rectangle
+                                    .dimension
+                                    .as_ref()
+                                    .expect("Height is required")
+                                    .height,
+                            ) {
+                                Ok(_) => (),
+                                Err(err) => {
+                                    log::warn!("[decoder {}] Codec::Zlib failed: {}", port, err);
+                                    log::debug!("[decoder {}] {:#?}", port, &ru);
+                                }
+                            },
                             _ => {
                                 log::warn!(
                                     "[decoder {}] Dropping Rectangle {}, unsupported codec",
                                     port,
-                                    current_seq_id.0
+                                    current_seq_id.unwrap()
                                 );
                             }
                         }
@@ -646,12 +667,15 @@ impl Client {
                         }
                     };
 
+                    if !missing_seq.is_empty() {
+                        log::debug!("[decoder {}] MFRs generated for {:?}", port, missing_seq);
+                    }
                     //
                     // Notify Control thread of last SequenceId and missing SequenceIds
                     //
                     match control_tx.send(ControlMessage::UpdateReceivedMessage(
                         port,
-                        current_seq_id.0,
+                        current_seq_id.unwrap(),
                         missing_seq.into_iter().collect(),
                     )) {
                         Ok(_) => (),

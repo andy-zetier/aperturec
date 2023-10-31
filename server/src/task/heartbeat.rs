@@ -10,7 +10,7 @@ use futures::StreamExt;
 use linear_map::set::LinearSet;
 use std::time::Duration;
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -26,10 +26,9 @@ pub struct Task<S: State> {
 pub struct Created {
     hb_req_interval: Duration,
     hb_resp_interval: Duration,
-    curr_hb_id_tx: watch::Sender<HeartbeatId>,
     hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
     cc_send_tx: mpsc::Sender<cm::ServerToClientMessage>,
-    acked_seq_tx: mpsc::UnboundedSender<(HeartbeatId, cm::DecoderSequencePair)>,
+    acked_seq_tx: mpsc::UnboundedSender<cm::DecoderSequencePair>,
     ct: CancellationToken,
 }
 
@@ -46,15 +45,13 @@ impl Task<Created> {
     pub fn new(
         hb_req_interval: Duration,
         hb_resp_interval: Duration,
-        curr_hb_id_tx: watch::Sender<HeartbeatId>,
-        acked_seq_tx: mpsc::UnboundedSender<(HeartbeatId, cm::DecoderSequencePair)>,
+        acked_seq_tx: mpsc::UnboundedSender<cm::DecoderSequencePair>,
         hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
         cc_send_tx: mpsc::Sender<cm::ServerToClientMessage>,
     ) -> (Self, CancellationToken) {
         let ct = CancellationToken::new();
         let task = Task {
             state: Created {
-                curr_hb_id_tx,
                 cc_send_tx,
                 hb_req_interval,
                 hb_resp_interval,
@@ -106,7 +103,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                         } else {
                             unacked_hb_reqs.retain(|hb_id: &HeartbeatId| hb_id.0 > hb_resp.heartbeat_id.0);
                             for pair in hb_resp.last_sequence_ids {
-                                self.state.acked_seq_tx.send((hb_resp.heartbeat_id.clone(), pair))?;
+                                self.state.acked_seq_tx.send(pair)?;
                             }
                         }
                     }
@@ -130,7 +127,6 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                         let msg = cm::ServerToClientMessage::new_heartbeat_request(req);
                         self.state.cc_send_tx.send(msg).await?;
 
-                        self.state.curr_hb_id_tx.send_replace(HeartbeatId(hb_id.0 + 1));
 
                         unacked_hb_reqs.insert(hb_id.clone());
                         let task_hb_id = hb_id.clone();

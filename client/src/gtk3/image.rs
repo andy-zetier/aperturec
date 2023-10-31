@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
-use flate2::read::ZlibDecoder;
+use flate2::bufread::ZlibDecoder;
+use flate2::Decompress;
 use gtk::cairo::{Format, ImageSurface};
 use std::io::Read;
 
@@ -177,10 +178,19 @@ impl Image {
         width: u64,
         height: u64,
     ) -> Result<()> {
-        let mut z = ZlibDecoder::new(data);
-        let mut decompressed_data = Vec::new();
-        z.read_to_end(&mut decompressed_data)?;
-        self.draw_raw(decompressed_data.as_slice(), x, y, width, height)
+        let mut z = ZlibDecoder::new_with_decompress(data, Decompress::new(false));
+        let mut decompressed = Vec::new();
+        z.read_to_end(&mut decompressed)?;
+        if (decompressed.len() as u64) < (width * height * 3) {
+            log::warn!(
+                "Decompressed < {}x{}x3 = {}",
+                width,
+                height,
+                width * height * 3
+            );
+        }
+        let max_idx = std::cmp::min(decompressed.len(), (width * height * 3) as usize);
+        self.draw_raw(&decompressed[..max_idx], x, y, width, height)
     }
 
     pub fn draw_raw(&mut self, data: &[u8], x: u64, y: u64, width: u64, height: u64) -> Result<()> {
@@ -365,18 +375,21 @@ mod tests {
     #[test]
     fn draw_raw_zlib() {
         use flate2::read::ZlibEncoder;
-        use flate2::Compression;
+        use flate2::{Compress, Compression};
 
         let mut image = Image::new(3, 4);
         let data = vec![1; 2 * 3 * 3];
         let mut compressed = Vec::new();
 
-        let mut z = ZlibEncoder::new(data.as_slice(), Compression::fast());
+        let mut z = ZlibEncoder::new_with_compress(
+            data.as_slice(),
+            Compress::new(Compression::new(1), false),
+        );
         z.read_to_end(&mut compressed).unwrap();
 
         image
             .draw_raw_zlib(compressed.as_slice(), 0, 1, 2, 3)
-            .unwrap();
+            .expect("draw zlib");
         assert_eq!(
             image.get_data(),
             vec![

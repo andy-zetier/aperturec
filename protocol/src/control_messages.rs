@@ -62,7 +62,7 @@ mod test {
                 },
             },
             client_caps: ClientCaps {
-                supported_codecs: vec![Codec::Avif],
+                supported_codecs: vec![Codec::Zlib],
             },
             client_heartbeat_interval: DurationMs(1000),
             client_heartbeat_response_interval: DurationMs(1000),

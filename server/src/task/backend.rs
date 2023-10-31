@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -35,9 +35,9 @@ pub struct Created<B: Backend + 'static> {
     event_rx: mpsc::UnboundedReceiver<Event>,
     fb_update_req_rx: mpsc::UnboundedReceiver<cm::FramebufferUpdateRequest>,
     missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
-    acked_seq_rx: mpsc::UnboundedReceiver<(HeartbeatId, cm::DecoderSequencePair)>,
-    curr_hb_id_rx: watch::Receiver<HeartbeatId>,
+    acked_seq_rx: mpsc::UnboundedReceiver<cm::DecoderSequencePair>,
     decoder_areas: Vec<cm::DecoderArea>,
+    codecs: BTreeMap<u16, Codec>,
     client_addr: SocketAddr,
     ct: CancellationToken,
 }
@@ -72,14 +72,14 @@ impl<B: Backend + 'static> Task<Terminated<B>> {
 }
 
 pub struct Channels {
-    pub acked_seq_tx: mpsc::UnboundedSender<(HeartbeatId, cm::DecoderSequencePair)>,
-    pub curr_hb_id_tx: watch::Sender<HeartbeatId>,
+    pub acked_seq_tx: mpsc::UnboundedSender<cm::DecoderSequencePair>,
 }
 
 impl<B: Backend + 'static> Task<Created<B>> {
     pub fn new<'d, I>(
         backend: B,
         decoder_areas: I,
+        codecs: BTreeMap<u16, Codec>,
         client_addr: &SocketAddr,
         event_rx: mpsc::UnboundedReceiver<Event>,
         fb_update_req_rx: mpsc::UnboundedReceiver<cm::FramebufferUpdateRequest>,
@@ -89,7 +89,6 @@ impl<B: Backend + 'static> Task<Created<B>> {
         I: IntoIterator<Item = &'d cm::DecoderArea>,
     {
         let (acked_seq_tx, acked_seq_rx) = mpsc::unbounded_channel();
-        let (curr_hb_id_tx, curr_hb_id_rx) = watch::channel(HeartbeatId(0));
         let ct = CancellationToken::new();
 
         let task = Task {
@@ -99,21 +98,14 @@ impl<B: Backend + 'static> Task<Created<B>> {
                 fb_update_req_rx,
                 missed_frame_rx,
                 acked_seq_rx,
-                curr_hb_id_rx,
                 decoder_areas: decoder_areas.into_iter().cloned().collect(),
+                codecs,
                 client_addr: *client_addr,
                 ct: ct.clone(),
             },
         };
 
-        (
-            task,
-            Channels {
-                curr_hb_id_tx,
-                acked_seq_tx,
-            },
-            ct,
-        )
+        (task, Channels { acked_seq_tx }, ct)
     }
 }
 
@@ -140,12 +132,13 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
             let async_client =
                 try_transition_inner_recover!(connected_client, udp::Closed, |_| self);
             let mc = AsyncServerMediaChannel::new(async_client);
-            let (encoder, encoder_channels, encoder_ct) = Encoder::new(
-                decoder_area.clone(),
-                mc,
-                Codec::new_raw(),
-                self.state.curr_hb_id_rx.clone(),
-            );
+            let codec = self
+                .state
+                .codecs
+                .remove(&decoder_area.decoder.port)
+                .unwrap_or(Codec::new_raw());
+            let (encoder, encoder_channels, encoder_ct) =
+                Encoder::new(decoder_area.clone(), mc, codec);
             let running = try_transition_inner_recover!(
                 encoder,
                 encoder::Created<AsyncServerMediaChannel>,
@@ -177,9 +170,9 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
                         log::info!("Acked sequence subtask cancelled");
                         break Ok(())
                     }
-                    Some((hb_id, acked_seq_pair)) = acked_seq_stream.next() => {
+                    Some(acked_seq_pair) = acked_seq_stream.next() => {
                         match acked_frame_txs.get(&acked_seq_pair.decoder.port) {
-                            Some(channel) => channel.send((hb_id, acked_seq_pair.sequence_id)).await?,
+                            Some(channel) => channel.send(acked_seq_pair.sequence_id).await?,
                             None => log::warn!("Received HB for untracked decoder {}", acked_seq_pair.decoder.port),
                         }
                     }

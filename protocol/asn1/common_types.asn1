@@ -25,8 +25,8 @@ CommonTypes DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   }
 
   Codec ::= ENUMERATED {
-    avif,
     raw,
+    zlib,
     ...
   }
 

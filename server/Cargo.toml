@@ -9,16 +9,16 @@ aperturec-channel = { path = "../channel" }
 aperturec-protocol = { path = "../protocol" }
 aperturec-state-machine = { path = "../state_machine" }
 async-trait = "0.1"
-async-stream = "0.3"
 bytes = "1.4"
 clap = { version = "4.3", features = ["derive", "string"] }
 derive_builder = "0.12"
 euclid = "0.22"
+flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
 futures = "0.3"
 gethostname = "0.4"
 linear-map = "1.2"
 log = "^0.4"
-ndarray = { version = "0.15", features = ["rayon"] }
+ndarray = "0.15"
 parking_lot = { version = "0.12", features = ["send_guard", "hardware-lock-elision"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
 simple_logger = "4.2"

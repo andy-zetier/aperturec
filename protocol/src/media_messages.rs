@@ -26,7 +26,7 @@ mod test {
                 y_position: 600,
             },
             rectangle: Rectangle {
-                codec: Codec::Avif,
+                codec: Codec::Zlib,
                 data: vec![180, 10, 220].into(),
                 dimension: Some(Dimension {
                     width: 800,
@@ -50,7 +50,7 @@ mod test {
                         y_position: 40,
                     },
                     rectangle: Rectangle {
-                        codec: Codec::Avif,
+                        codec: Codec::Zlib,
                         data: vec![].into(),
                         dimension: None,
                     },
@@ -62,7 +62,7 @@ mod test {
                         y_position: 30,
                     },
                     rectangle: Rectangle {
-                        codec: Codec::Avif,
+                        codec: Codec::Raw,
                         data: vec![89, 123, 41, 30, 60, 91].into(),
                         dimension: Some(Dimension {
                             width: 1,

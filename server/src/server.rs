@@ -13,6 +13,7 @@ use aperturec_protocol::*;
 use aperturec_state_machine::*;
 use async_trait::async_trait;
 use derive_builder::Builder;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -69,6 +70,7 @@ pub struct AuthenticatedClient<B: Backend + 'static> {
     client_hb_interval: Duration,
     client_hb_response_interval: Duration,
     decoder_areas: Vec<cm::DecoderArea>,
+    codecs: BTreeMap<u16, Codec>,
 }
 
 #[derive(State)]
@@ -79,6 +81,7 @@ pub struct ChannelsAccepted<B: Backend + 'static> {
     client_hb_interval: Duration,
     client_hb_response_interval: Duration,
     decoder_areas: Vec<cm::DecoderArea>,
+    codecs: BTreeMap<u16, Codec>,
 }
 
 #[derive(State)]
@@ -355,6 +358,23 @@ impl<B: Backend + 'static> TryTransitionable<AuthenticatedClient<B>, ChannelsLis
 
         let client_resolution = &client_init.client_info.display_size;
         let (resolution, decoder_areas) = partition(client_resolution, &client_init.decoders);
+        let codecs = decoder_areas
+            .iter()
+            .map(|decoder_area| {
+                (
+                    decoder_area.decoder.port,
+                    if client_init
+                        .client_caps
+                        .supported_codecs
+                        .contains(&Codec::new_zlib())
+                    {
+                        Codec::new_zlib()
+                    } else {
+                        Codec::new_raw()
+                    },
+                )
+            })
+            .collect();
         try_recover!(self.state.backend.set_resolution(&resolution).await, self);
         log::trace!("Resolution set to {:?}", resolution);
         let cursor_bitmaps = try_recover!(self.state.backend.cursor_bitmaps().await, self);
@@ -394,6 +414,7 @@ impl<B: Backend + 'static> TryTransitionable<AuthenticatedClient<B>, ChannelsLis
                     client_init.client_heartbeat_response_interval.0,
                 ),
                 decoder_areas,
+                codecs,
             },
             config: self.config,
         })
@@ -459,6 +480,7 @@ impl<B: Backend + 'static> TryTransitionable<ChannelsAccepted<B>, ChannelsListen
                 client_hb_interval: self.state.client_hb_interval,
                 client_hb_response_interval: self.state.client_hb_response_interval,
                 decoder_areas: self.state.decoder_areas,
+                codecs: self.state.codecs,
             },
             config: self.config,
         })
@@ -486,6 +508,7 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, ChannelsListening<B>>
             backend::Task::<backend::Created<B>>::new(
                 self.state.backend,
                 &self.state.decoder_areas,
+                self.state.codecs,
                 &remote_addr,
                 ec_handler_channels.event_rx,
                 cc_handler_channels.fb_update_req_rx,
@@ -494,7 +517,6 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, ChannelsListening<B>>
         let (heartbeat_task, heartbeat_ct) = heartbeat::Task::<heartbeat::Created>::new(
             self.state.client_hb_interval,
             self.state.client_hb_response_interval,
-            backend_channels.curr_hb_id_tx,
             backend_channels.acked_seq_tx.clone(),
             cc_handler_channels.hb_resp_rx,
             cc_handler_channels.to_send_tx.clone(),
@@ -828,7 +850,7 @@ mod test {
                 )
                 .client_caps(
                     ClientCapsBuilder::default()
-                        .supported_codecs(vec![Codec::new_avif()])
+                        .supported_codecs(vec![Codec::new_zlib()])
                         .build()
                         .expect("ClientCaps build"),
                 )
