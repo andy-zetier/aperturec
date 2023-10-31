@@ -229,7 +229,7 @@ impl Backend for X {
                         // (https://xcb.freedesktop.org/manual/group__XCB____API.html)
                         5
                     } as u8;
-                    log::info!("event_type_num: {}", event_type_num);
+                    log::debug!("event_type_num: {}", event_type_num);
                     let req = xtest::FakeInput {
                         r#type: event_type_num,
                         detail: u8_for_button(&button_state.button) + 1,
