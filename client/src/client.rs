@@ -791,6 +791,7 @@ impl Client {
                 //
                 match client_cc.receive() {
                     Ok(CM_S2C::HeartbeatRequest(hr)) => {
+                        log::trace!("Received {:?}", hr);
                         let hbr = HeartbeatResponseBuilder::default()
                             .heartbeat_id(HeartbeatId::new(hr.request_id.0))
                             .last_sequence_ids(
