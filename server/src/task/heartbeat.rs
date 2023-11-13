@@ -16,6 +16,8 @@ use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 
+use crate::metrics;
+
 #[derive(Stateful, SelfTransitionable, Debug)]
 #[state(S)]
 pub struct Task<S: State> {
@@ -101,6 +103,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                         if !unacked_hb_reqs.contains(&hb_resp.heartbeat_id) {
                             log::warn!("Received unsolicied HB response {:?}", hb_resp);
                         } else {
+                            metrics::rtt_incoming(hb_resp.heartbeat_id.0);
                             unacked_hb_reqs.retain(|hb_id: &HeartbeatId| hb_id.0 > hb_resp.heartbeat_id.0);
                             for pair in hb_resp.last_sequence_ids {
                                 self.state.acked_seq_tx.send(pair)?;
@@ -125,6 +128,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                         hb_id.0 += 1;
                         let req = cm::HeartbeatRequest::new(hb_id.clone());
                         let msg = cm::ServerToClientMessage::new_heartbeat_request(req);
+                        metrics::rtt_outgoing(hb_id.0);
                         self.state.cc_send_tx.send(msg).await?;
 
 

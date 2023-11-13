@@ -46,6 +46,7 @@ macro_rules! impl_codec_reliable {
                     while nbytes_to_decode > read_bytes.len() {
                         match reader.fill_buf() {
                             Ok(bytes_filled) => {
+                                aperturec_metrics::builtins::rx_bytes(bytes_filled.len());
                                 read_bytes.extend(bytes_filled);
                                 let nbytes_consumed = bytes_filled.len();
                                 reader.consume(nbytes_consumed);
@@ -94,6 +95,7 @@ macro_rules! impl_codec_reliable {
                 while !write_bytes.is_empty() {
                     match writer.write(&write_bytes) {
                         Ok(nbytes_written) => {
+                            aperturec_metrics::builtins::tx_bytes(nbytes_written);
                             write_bytes.drain(..nbytes_written);
                         }
                         Err(e) => {
@@ -119,6 +121,7 @@ macro_rules! impl_codec_reliable {
                 loop {
                     while nbytes_to_decode > read_bytes.len() {
                         let bytes_filled = reader.fill_buf().await?;
+                        aperturec_metrics::builtins::rx_bytes(bytes_filled.len());
                         read_bytes.extend(bytes_filled);
                         let nbytes_consumed = bytes_filled.len();
                         reader.consume(nbytes_consumed);
@@ -157,6 +160,7 @@ macro_rules! impl_codec_reliable {
                 let mut nbytes_written = 0;
                 loop {
                     nbytes_written += writer.write_buf(&mut buf_slice).await?;
+                    aperturec_metrics::builtins::tx_bytes(nbytes_written);
                     if nbytes_written >= total_write_size {
                         break;
                     }
@@ -694,6 +698,7 @@ macro_rules! impl_codec_unreliable {
                 type Message = RM;
                 fn receive(&mut self) -> anyhow::Result<Self::Message> {
                     let nbytes_recvd = self.receiver.receive(&mut self.buf)?;
+                    aperturec_metrics::builtins::rx_bytes(nbytes_recvd);
                     let slice = &self.buf[0..nbytes_recvd];
                     Ok($codec::decode::<RM>(&slice)?)
                 }
@@ -737,6 +742,7 @@ macro_rules! impl_codec_unreliable {
 
                 async fn receive(&mut self) -> anyhow::Result<Self::Message> {
                     let nbytes_recvd = self.receiver.receive(&mut self.buf).await?;
+                    aperturec_metrics::builtins::rx_bytes(nbytes_recvd);
                     let slice = &self.buf[0..nbytes_recvd];
                     Ok($codec::decode::<RM>(&slice)?)
                 }
@@ -776,7 +782,8 @@ macro_rules! impl_codec_unreliable {
                 type Message = SM;
                 fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
                     let buf = $codec::encode(&msg)?;
-                    self.sender.send(&buf)?;
+                    let nbytes_sent = self.sender.send(&buf)?;
+                    aperturec_metrics::builtins::tx_bytes(nbytes_sent);
                     Ok(())
                 }
             }
@@ -817,7 +824,8 @@ macro_rules! impl_codec_unreliable {
 
                 async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
                     let buf = $codec::encode(&msg)?;
-                    self.sender.send(&buf).await?;
+                    let nbytes_sent = self.sender.send(&buf).await?;
+                    aperturec_metrics::builtins::tx_bytes(nbytes_sent);
                     Ok(())
                 }
             }

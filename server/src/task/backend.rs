@@ -250,6 +250,7 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
                         break Ok(());
                     }
                     Some(missed_frame_report) = missed_frame_stream.next() => {
+                        aperturec_metrics::builtins::packet_lost(missed_frame_report.frames.len());
                         match missed_frame_txs.get(&missed_frame_report.decoder.port) {
                             Some(channel) => {
                                 for frame in &missed_frame_report.frames {

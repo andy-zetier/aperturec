@@ -553,6 +553,8 @@ impl Client {
                         fbu.rectangle_updates.last().unwrap().sequence_id.0
                     );*/
 
+                    aperturec_metrics::builtins::packet_sent(fbu.rectangle_updates.len());
+
                     let mut missing_seq: BTreeSet<u64> = BTreeSet::new();
                     for ru in fbu.rectangle_updates {
                         //
@@ -669,6 +671,7 @@ impl Client {
 
                     if !missing_seq.is_empty() {
                         log::debug!("[decoder {}] MFRs generated for {:?}", port, missing_seq);
+                        aperturec_metrics::builtins::packet_lost(missing_seq.len());
                     }
                     //
                     // Notify Control thread of last SequenceId and missing SequenceIds
