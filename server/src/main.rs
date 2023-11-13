@@ -1,6 +1,7 @@
 use anyhow::Result;
 use aperturec_protocol::common_types::ClientId;
 use aperturec_server::backend;
+use aperturec_server::metrics;
 use aperturec_server::server::*;
 use aperturec_state_machine::*;
 use clap::Parser;
@@ -41,6 +42,18 @@ struct Args {
     /// verbosity. The maximum is 4.
     #[arg(short, action = clap::ArgAction::Count)]
     verbosity: u8,
+
+    /// Log metric data at the DEBUG level (-vvv)
+    #[arg(long)]
+    metrics_log: bool,
+
+    /// Log metric data to a CSV file at the provided path
+    #[arg(long, default_value = None)]
+    metrics_csv: Option<String>,
+
+    /// Send metric data to Pushgateway instance at the provided URL
+    #[arg(long, default_value = None)]
+    metrics_pushgateway: Option<String>,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -70,6 +83,13 @@ async fn main() -> Result<()> {
     if dims.len() != 2 {
         panic!("Invalid resolution");
     }
+
+    metrics::setup_server_metrics(
+        args.metrics_log,
+        args.metrics_csv,
+        args.metrics_pushgateway,
+        args.control_port,
+    );
 
     let config = ConfigurationBuilder::default()
         .control_channel_addr(format!("{}:{}", args.bind_address, args.control_port).parse()?)

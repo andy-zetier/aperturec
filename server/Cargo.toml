@@ -8,6 +8,7 @@ anyhow = "1.0"
 aperturec-channel = { path = "../channel" }
 aperturec-protocol = { path = "../protocol" }
 aperturec-state-machine = { path = "../state_machine" }
+aperturec-metrics = { path = "../metrics" }
 async-trait = "0.1"
 bytes = "1.4"
 clap = { version = "4.3", features = ["derive", "string"] }
@@ -27,6 +28,7 @@ tokio = { version = "1.29", features = ["full", "tracing"] }
 tokio-stream = { version = "0.1", features = ["sync", "fs"] }
 tokio-util = "0.7"
 xcb = { version = "1.2.2", features = ["damage", "randr", "xtest" ] }
+ctrlc = "3.4.1"
 
 [dev-dependencies]
 serial_test = "2.0"

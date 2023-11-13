@@ -1,4 +1,5 @@
 use aperturec_client::client;
+use aperturec_metrics::exporters::{CsvExporter, Exporter, LogExporter, PushgatewayExporter};
 
 use anyhow::Result;
 use clap::Parser;
@@ -39,7 +40,19 @@ struct Args {
     /// Initial UDP port number for the decoders. A total of decoder_max ports must be open
     /// starting with this one.
     #[arg(short = 'p', long = "port", default_value_t = 46454)]
-    decoder_port_start: u64,
+    decoder_port_start: u16,
+
+    /// Log metric data at the DEBUG level (-vvv)
+    #[arg(long)]
+    metrics_log: bool,
+
+    /// Log metric data to a CSV file at the provided path
+    #[arg(long, default_value = None)]
+    metrics_csv: Option<String>,
+
+    /// Send metric data to Pushgateway instance at the provided URL
+    #[arg(long, default_value = None)]
+    metrics_pushgateway: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -101,7 +114,45 @@ fn main() -> Result<()> {
 
     log::debug!("{:#?}", config);
 
+    if args.metrics_log || args.metrics_csv.is_some() || args.metrics_pushgateway.is_some() {
+        let mut exporters: Vec<Exporter> = vec![];
+        if args.metrics_log {
+            match LogExporter::new(log::Level::Debug) {
+                Ok(le) => exporters.push(Exporter::Log(le)),
+                Err(err) => log::warn!("Failed to setup Log exporter: {}, disabling", err),
+            }
+        }
+        if let Some(path) = args.metrics_csv {
+            match CsvExporter::new(path) {
+                Ok(csve) => exporters.push(Exporter::Csv(csve)),
+                Err(err) => log::warn!("Failed to setup CSV exporter: {}, disabling", err),
+            }
+        }
+        if let Some(url) = args.metrics_pushgateway {
+            match PushgatewayExporter::new(
+                url.to_owned(),
+                "aperturec_client".to_owned(),
+                args.decoder_port_start,
+            ) {
+                Ok(pge) => exporters.push(Exporter::Pushgateway(pge)),
+                Err(err) => log::warn!("Failed to setup Pushgateway exporter: {}, disabling", err),
+            }
+        }
+        aperturec_metrics::MetricsInitializer::default()
+            .with_poll_rate_from_secs(3)
+            .with_exporters(exporters)
+            .init()
+            .expect("Failed to setup metrics");
+
+        ctrlc::set_handler(move || {
+            aperturec_metrics::stop();
+            std::process::exit(0);
+        })
+        .expect("ctrlc");
+    }
+
     client::run_client(config.clone())?;
+    aperturec_metrics::stop();
 
     Ok(())
 }

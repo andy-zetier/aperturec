@@ -901,6 +901,7 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
                                 }
                                 MutexGuard::unlock_fair(responsible_sequence_nos_locked);
                                 MutexGuard::unlock_fair(in_flight_locked);
+                                let rus_count = rus.len();
                                 let message = mm::ServerToClientMessage::new_framebuffer_update(mm::FramebufferUpdate::new(rus));
                                 if let Err(e) = sender.send(message).await {
                                     if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
@@ -914,6 +915,8 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
                                         break 'select Err(e);
                                     }
                                 } else {
+                                    // Each RectangleUpdate is one "packet sent"
+                                    aperturec_metrics::builtins::packet_sent(rus_count);
                                     const TAIL_FBU_RTT: Duration = Duration::from_millis(100);
                                     tail_fbu_timeout = tokio::spawn(async move {
                                         tokio::time::sleep(TAIL_FBU_RTT).await;

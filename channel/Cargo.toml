@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 aperturec-protocol = { path = "../protocol" }
 aperturec-state-machine = { path = "../state_machine" }
+aperturec-metrics = { path = "../metrics" }
 anyhow = "1.0"
 asn1rs = "0.3"
 async-trait = "0.1"
