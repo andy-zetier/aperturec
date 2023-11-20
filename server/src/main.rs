@@ -38,8 +38,8 @@ struct Args {
     #[arg(short, long, default_value_t = String::from("gnome-shell"))]
     initial_program: String,
 
-    /// Log level verbosity, defaults to Error if not specified. Multiple -v options increase the
-    /// verbosity. The maximum is 4.
+    /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
+    /// verbosity. The maximum is 3.
     #[arg(short, action = clap::ArgAction::Count)]
     verbosity: u8,
 
@@ -61,10 +61,9 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     SimpleLogger::new()
         .with_level(match args.verbosity {
-            0 => log::LevelFilter::Error,
-            1 => log::LevelFilter::Warn,
-            2 => log::LevelFilter::Info,
-            3 => log::LevelFilter::Debug,
+            0 => log::LevelFilter::Warn,
+            1 => log::LevelFilter::Info,
+            2 => log::LevelFilter::Debug,
             _ => log::LevelFilter::Trace,
         })
         .init()
