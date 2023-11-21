@@ -145,8 +145,8 @@ pub struct GoodbyeMessage {
 }
 
 impl GoodbyeMessage {
-    const NETWORK_ERROR: &str = "Network Error";
-    const TERMINATING: &str = "Terminating";
+    const NETWORK_ERROR: &'static str = "Network Error";
+    const TERMINATING: &'static str = "Terminating";
 
     pub fn to_client_goodbye(&self, client_id: ClientId) -> ClientGoodbye {
         match self.reason.as_str() {

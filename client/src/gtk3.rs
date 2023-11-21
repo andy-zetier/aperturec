@@ -8,9 +8,9 @@ use crate::client::{
 use crate::gtk3::image::Image;
 
 use gtk::cairo::{Context, ImageSurface};
-use gtk::gdk::{EventMask, ScrollDirection};
+use gtk::gdk::{keys, Display, EventMask, ModifierType, ScrollDirection, WindowState};
 use gtk::prelude::*;
-use gtk::{glib, ApplicationWindow, DrawingArea};
+use gtk::{glib, Adjustment, ApplicationWindow, DrawingArea, ScrolledWindow};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -65,6 +65,46 @@ impl ItcChannels {
         }
 
         this
+    }
+}
+
+pub fn get_fullscreen_dims() -> (i32, i32) {
+    gtk::init().expect("Failed to initialize GTK");
+    let display = Display::default().expect("Failed to get default GTK display");
+    let monitor = display.primary_monitor().unwrap_or_else(|| {
+        if display.n_monitors() > 0 {
+            display.monitor(0).expect("No GTK monitor 0")
+        } else {
+            display
+                .monitor_at_point(0, 0)
+                .expect("No GTK monitor at (0,0)")
+        }
+    });
+    let geo = monitor.geometry();
+
+    (geo.width(), geo.height())
+}
+
+enum KeyboardShortcut {
+    ToggleFullscreen,
+    Disconnect,
+}
+
+impl KeyboardShortcut {
+    fn from_event(key_event: &gtk::gdk::EventKey) -> Option<Self> {
+        let state = key_event.state() & ModifierType::MODIFIER_MASK;
+
+        if !state.contains(ModifierType::CONTROL_MASK & ModifierType::MOD1_MASK) {
+            None
+        } else if key_event.keyval() == keys::constants::Return {
+            Some(Self::ToggleFullscreen)
+        } else if key_event.keyval() == keys::constants::F12
+            && state.contains(ModifierType::SHIFT_MASK)
+        {
+            Some(Self::Disconnect)
+        } else {
+            None
+        }
     }
 }
 
@@ -146,11 +186,16 @@ fn build_ui(
         .application(app)
         .default_width(width)
         .default_height(height)
-        .resizable(false)
+        .resizable(true)
         .title("ApertureC Client")
         .build();
+
+    let scrolled_window =
+        ScrolledWindow::new(None as Option<&Adjustment>, None as Option<&Adjustment>);
     let area = DrawingArea::new();
-    window.add(&area);
+
+    scrolled_window.add(&area);
+    window.add(&scrolled_window);
 
     area.set_size_request(width, height);
     area.set_can_focus(true);
@@ -209,6 +254,13 @@ fn build_ui(
     );
 
     //
+    // Setup Window state tracking
+    //
+    let window_state = Rc::new(Cell::new(WindowState::empty()));
+    let ws_update = window_state.clone();
+    let ws_key = window_state.clone();
+
+    //
     // Setup mouse tracking
     //
     let last_mouse_pos = Rc::new(Cell::new(Point(0, 0)));
@@ -231,17 +283,29 @@ fn build_ui(
     area.connect_key_press_event(glib::clone!(@strong window => move |_, key| {
         log::trace!("GTK KeyPressEvent: {:?} : {:?}", key.keyval(), key.state());
 
-        key_press_tx.send(
-            EventMessage::KeyEventMessage(
-                KeyEventMessageBuilder::default()
-                    .key(key.keycode().expect("Failed to get keycode!").into())
-                    .is_pressed(true)
-                    .build()
-                    .expect("GTK failed to build KeyEventMessage!")
-            )
-        ).unwrap_or_else(|err| {
-            log::warn!("GTK failed to tx KeyEventMessage: {}", err)
-        });
+        match KeyboardShortcut::from_event(key) {
+            Some(KeyboardShortcut::ToggleFullscreen) => {
+                if ws_key.get().contains(WindowState::FULLSCREEN) {
+                    window.unfullscreen();
+                } else {
+                    window.fullscreen();
+                }
+            },
+            Some(KeyboardShortcut::Disconnect) => window.close(),
+            None => {
+                key_press_tx.send(
+                    EventMessage::KeyEventMessage(
+                        KeyEventMessageBuilder::default()
+                        .key(key.keycode().expect("Failed to get keycode!").into())
+                        .is_pressed(true)
+                        .build()
+                        .expect("GTK failed to build KeyEventMessage!")
+                        )
+                    ).unwrap_or_else(|err| {
+                    log::warn!("GTK failed to tx KeyEventMessage: {}", err)
+                });
+            },
+        }
 
         gtk::Inhibit(false)
     }));
@@ -379,6 +443,11 @@ fn build_ui(
         gtk::Inhibit(false)
     });
 
+    window.connect_window_state_event(move |_, event| {
+        ws_update.set(event.new_window_state());
+        gtk::Inhibit(false)
+    });
+
     itc.img_from_decoder_rx
         .take()
         .expect("GTK failed to attach decoder channel!")
@@ -435,6 +504,16 @@ fn build_ui(
                     glib::source::Continue(true)
             }),
         );
+
+    //
+    // Set to fullscreen
+    //
+    if get_fullscreen_dims() == (width, height) {
+        window.set_default_width(width / 2);
+        window.set_default_height(height / 2);
+        window.fullscreen();
+    }
+
     log::debug!("GTK UI built, showing {}x{} window", width, height);
     window.show_all()
 }
