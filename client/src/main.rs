@@ -1,4 +1,4 @@
-use aperturec_client::client;
+use aperturec_client::{client, gtk3};
 use aperturec_metrics::exporters::{CsvExporter, Exporter, LogExporter, PushgatewayExporter};
 
 use anyhow::Result;
@@ -53,6 +53,11 @@ struct Args {
     /// Send metric data to Pushgateway instance at the provided URL
     #[arg(long, default_value = None)]
     metrics_pushgateway: Option<String>,
+
+    /// Set SCREEN_SIZE to your primary display's current size and startup in fullscreen mode.
+    /// Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
+    #[arg(short, long, action = clap::ArgAction::SetTrue)]
+    fullscreen: bool,
 }
 
 fn main() -> Result<()> {
@@ -78,7 +83,7 @@ fn main() -> Result<()> {
         sys.cpus().len().try_into().unwrap()
     };
 
-    let dims: Vec<u64> = args
+    let mut dims: Vec<u64> = args
         .screen_size
         .to_lowercase()
         .split('x')
@@ -90,6 +95,12 @@ fn main() -> Result<()> {
 
     if dims.len() != 2 {
         panic!("Invalid resolution");
+    }
+
+    if args.fullscreen {
+        let full = gtk3::get_fullscreen_dims();
+        dims[0] = full.0 as u64;
+        dims[1] = full.1 as u64;
     }
 
     let config = client::ConfigurationBuilder::default()
