@@ -151,15 +151,18 @@ macro_rules! return_recover {
 /// ```
 #[macro_export]
 macro_rules! try_transition_continue {
-    ($stateful:expr, $original_binding:ident) => {{
+    ($stateful:expr, $original_binding:ident, $error_handling:expr) => {{
         match $stateful.try_transition().await {
             Ok(ok) => ok,
             Err(recovered) => {
-                log::error!("Transition failed with error: {}", recovered.error);
+                $error_handling(recovered.error);
                 $original_binding = recovered.stateful;
                 continue;
             }
         }
+    }};
+    ($stateful:expr, $original_binding:ident) => {{
+        try_transition_continue!($stateful, $original_binding, |_| {})
     }};
 }
 

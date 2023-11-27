@@ -10,7 +10,6 @@ readme = "README.md"
 anyhow = "1.0.72"
 async-trait = "0.1.72"
 aperturec-state-machine-derive = { path = "derive" }
-log = "^0.4"
 
 [dev-dependencies]
 tokio = { version = "1.29.1", features = ["full"] }

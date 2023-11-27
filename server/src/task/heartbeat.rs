@@ -4,6 +4,7 @@ use aperturec_protocol::control_messages as cm;
 use aperturec_state_machine::{
     Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
 };
+use aperturec_trace::log;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;

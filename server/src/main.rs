@@ -4,11 +4,13 @@ use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
 use aperturec_state_machine::*;
+use aperturec_trace::{self as trace, log, Level};
 use clap::Parser;
 use gethostname::gethostname;
-use simple_logger::SimpleLogger;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
 struct Args {
     /// External IP address for the server to listen on
     #[arg(short, long, default_value = "0.0.0.0")]
@@ -39,7 +41,8 @@ struct Args {
     initial_program: String,
 
     /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
-    /// verbosity. The maximum is 3.
+    /// verbosity. The maximum is 3. Overwrites the behavior set via AC_TRACE_FILTER environment
+    /// variable and --trace-filter argument
     #[arg(short, action = clap::ArgAction::Count)]
     verbosity: u8,
 
@@ -54,20 +57,37 @@ struct Args {
     /// Send metric data to Pushgateway instance at the provided URL
     #[arg(long, default_value = None)]
     metrics_pushgateway: Option<String>,
+
+    /// Output directory for tracing data
+    #[arg(long, env=trace::OUTDIR_ENV_VAR, default_value = trace::default_output_path_display())]
+    trace_output_directory: PathBuf,
+
+    /// Trace filter directive as defined by the
+    /// [`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)
+    /// documentation
+    #[arg(long, env=trace::FILTER_ENV_VAR, default_value = trace::default_filter_directive())]
+    trace_filter: String,
+
+    /// Log to rotating files in the specified output directory in addition to stdout/stderr
+    #[arg(long, default_value_t = false)]
+    log_to_file: bool,
 }
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    SimpleLogger::new()
-        .with_level(match args.verbosity {
-            0 => log::LevelFilter::Warn,
-            1 => log::LevelFilter::Info,
-            2 => log::LevelFilter::Debug,
-            _ => log::LevelFilter::Trace,
-        })
-        .init()
-        .expect("Failed to initialize logging");
+    let log_verbosity = match args.verbosity {
+        0 => Level::WARN,
+        1 => Level::INFO,
+        2 => Level::DEBUG,
+        _ => Level::TRACE,
+    };
+    trace::Configuration::new("server")
+        .cmdline_verbosity(log_verbosity)
+        .output_directory(&args.trace_output_directory)
+        .trace_filter(&args.trace_filter)
+        .log_to_file(args.log_to_file)
+        .initialize()?;
 
     let dims: Vec<usize> = args
         .screen_size
@@ -108,12 +128,25 @@ async fn main() -> Result<()> {
     let mut listening = server.try_transition().await.expect("failed listening");
 
     loop {
-        let cc_accepted: Server<ControlChannelAccepted<_>> =
-            try_transition_continue!(listening, listening);
-        let client_authed = try_transition_continue!(cc_accepted, listening);
-        let channels_accepted = try_transition_continue!(client_authed, listening);
+        let cc_accepted: Server<ControlChannelAccepted<_>> = try_transition_continue!(
+            listening,
+            listening,
+            |e| log::error!("Error accepting CC: {}", e)
+        );
+        let client_authed = try_transition_continue!(cc_accepted, listening, |e| log::error!(
+            "Error authenticating client: {}",
+            e
+        ));
+        let channels_accepted = try_transition_continue!(
+            client_authed,
+            listening,
+            |e| log::error!("Error accepting EC: {}", e)
+        );
 
-        let running = try_transition_continue!(channels_accepted, listening);
+        let running = try_transition_continue!(channels_accepted, listening, |e| log::error!(
+            "Error starting session: {}",
+            e
+        ));
 
         let session_complete = match running.try_transition().await {
             Ok(session_complete) => {

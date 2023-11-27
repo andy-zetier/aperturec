@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use aperturec_trace::log;
 use flate2::bufread::ZlibDecoder;
 use flate2::Decompress;
 use gtk::cairo::{Format, ImageSurface};

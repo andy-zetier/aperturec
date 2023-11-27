@@ -8,22 +8,25 @@ use aperturec_protocol::media_messages as mm;
 use aperturec_state_machine::{
     Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
 };
+use aperturec_trace::log;
+use aperturec_trace::queue::{self, deq_group, enq_group, trace_queue_group};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use euclid::{Point2D, Size2D, UnknownUnit};
 use flate2::{Compress, Compression, FlushCompress};
 use futures::{future::join, stream, StreamExt};
-use linear_map::set::LinearSet;
 use ndarray::{arr0, s, Array1, Array2, ArrayView2, AssignElem, Axis, ShapeBuilder, Zip};
 use parking_lot::{Mutex, MutexGuard};
 use std::cmp::{min, Ordering};
-use std::collections::{btree_map::Entry, BTreeMap, LinkedList};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet, LinkedList};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tokio_util::sync::CancellationToken;
+
+const DISPATCH_QUEUE: queue::QueueGroup = trace_queue_group!("encoder:dispatch");
 
 pub const RAW_BYTES_PER_PIXEL: usize = 4;
 const ENC_BYTES_PER_PIXEL: usize = 3;
@@ -866,7 +869,7 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
 
                                 let mut in_flight_locked = in_flight.lock();
                                 let mut responsible_sequence_nos_locked = responsible_sequence_nos.lock();
-                                let mut old_sequence_nos = LinearSet::new();
+                                let mut old_sequence_nos = BTreeSet::new();
                                 for ru in &mut rus {
                                     let mm::RectangleUpdate { ref mut sequence_id, ref location, ref rectangle, ..} = ru;
 
@@ -908,15 +911,18 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
                                         if let Some(raw_os_error) = io_err.raw_os_error() {
                                             if raw_os_error == 90 { /* Message too big */
                                                 log::warn!("Message too big");
+                                                deq_group!(DISPATCH_QUEUE, id: decoder_area.decoder.port, rus_count);
                                                 continue;
                                             }
                                         }
                                     } else {
+                                        deq_group!(DISPATCH_QUEUE, id: decoder_area.decoder.port, rus_count);
                                         break 'select Err(e);
                                     }
                                 } else {
                                     // Each RectangleUpdate is one "packet sent"
                                     aperturec_metrics::builtins::packet_sent(rus_count);
+                                    deq_group!(DISPATCH_QUEUE, id: decoder_area.decoder.port, rus_count);
                                     const TAIL_FBU_RTT: Duration = Duration::from_millis(100);
                                     tail_fbu_timeout = tokio::spawn(async move {
                                         tokio::time::sleep(TAIL_FBU_RTT).await;
@@ -970,8 +976,10 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
                                                 Some(Dimension::new(dim.width as u64, dim.height as u64)),
                                         ))
                                 })
-                                .collect();
+                                .collect::<Vec<_>>();
                             MutexGuard::unlock_fair(cached_fb_locked);
+
+                            enq_group!(DISPATCH_QUEUE, id: decoder_area.decoder.port, updates.len());
                             permit.send(updates);
                         }
                     }

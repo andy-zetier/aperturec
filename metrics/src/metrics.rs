@@ -3,6 +3,7 @@ use crate::exporters::Exporter;
 use crate::{Metric, MetricUpdate, SysinfoMetric};
 
 use anyhow::Result;
+use aperturec_trace::log;
 use std::any;
 use std::collections::BTreeMap;
 use std::sync::{mpsc, Mutex, Once, OnceLock};
@@ -108,13 +109,14 @@ pub fn stop() {
 ///
 /// Example:
 /// ```
+/// # use aperturec_trace::Level;
 /// use aperturec_metrics::MetricsInitializer;
 /// use aperturec_metrics::builtins;
 /// use aperturec_metrics::exporters::{Exporter, LogExporter};
 ///
 /// MetricsInitializer::default()
 ///     .with_poll_rate_from_secs(3)
-///     .with_exporter(Exporter::Log(LogExporter::new(log::Level::Debug).unwrap()))
+///     .with_exporter(Exporter::Log(LogExporter::new(Level::DEBUG).unwrap()))
 ///     .with_builtin(builtins::BuiltinMetric::PacketLoss)
 ///     .init()
 ///     .expect("Failed to init metrics");
