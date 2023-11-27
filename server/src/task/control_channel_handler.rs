@@ -5,6 +5,8 @@ use aperturec_protocol::control_messages as cm;
 use aperturec_state_machine::{
     transition, Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
 };
+use aperturec_trace::log;
+use aperturec_trace::queue::{self, enq, trace_queue};
 use async_trait::async_trait;
 use futures::StreamExt;
 use tokio::runtime::Handle;
@@ -12,6 +14,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
+
+pub(crate) const MISSED_FRAME_QUEUE: queue::Queue = trace_queue!("cc:missed_frame");
 
 #[derive(Stateful, SelfTransitionable, Debug)]
 #[state(S)]
@@ -162,6 +166,8 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                             Ok(cm::ClientToServerMessage::MissedFrameReport(report)) => {
                                 if let Err(err) = self.state.missed_frame_tx.send(report) {
                                     break Err(anyhow!("Could not forward missed frame report to missed frame report channel: {}", err));
+                                } else {
+                                    enq!(MISSED_FRAME_QUEUE);
                                 }
                             }
                             Err(e) => break Err(anyhow!("Failed to receive on control channel: {}", e)),

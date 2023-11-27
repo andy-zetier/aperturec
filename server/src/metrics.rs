@@ -1,5 +1,6 @@
 use aperturec_metrics::exporters::{CsvExporter, Exporter, LogExporter, PushgatewayExporter};
 use aperturec_metrics::{Measurement, Metric, MetricUpdate, MetricsInitializer};
+use aperturec_trace::{log, Level};
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -43,7 +44,7 @@ impl Metric for Rtt {
                     diff * diff
                 })
                 .sum::<f64>()
-                / count as f64;
+                / count;
 
             period_avg = Some(avg * scale);
             period_max = Some(max * scale);
@@ -168,7 +169,7 @@ pub fn setup_server_metrics(
     if metrics_log || metrics_csv.is_some() || metrics_prom.is_some() {
         let mut exporters: Vec<Exporter> = vec![];
         if metrics_log {
-            match LogExporter::new(log::Level::Debug) {
+            match LogExporter::new(Level::DEBUG) {
                 Ok(le) => exporters.push(Exporter::Log(le)),
                 Err(err) => log::warn!("Failed to setup Log exporter: {}, disabling", err),
             }

@@ -4,6 +4,8 @@ use crate::task::encoder::*;
 use anyhow::{anyhow, bail, Result};
 use aperturec_protocol::common_types::*;
 use aperturec_protocol::event_messages as em;
+use aperturec_trace::log;
+use aperturec_trace::queue::{self, deq, enq, trace_queue};
 use async_trait::async_trait;
 use futures::{future, stream, Stream, StreamExt};
 use ndarray::{Array2, ShapeBuilder};
@@ -25,6 +27,8 @@ use xcb::damage::{self, Damage};
 use xcb::x::{self, Drawable, GetImage, ImageFormat, ScreenBuf};
 use xcb::{randr, xtest, BaseEvent, Connection, Extension};
 use xcb::{CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply};
+
+const X_DAMAGE_QUEUE: queue::Queue = trace_queue!("x:damage");
 
 fn u8_for_button(button: &em::Button) -> u8 {
     match button {
@@ -86,7 +90,7 @@ impl Backend for X {
             .chain(
                 self.connection
                     .event_stream()?
-                    .filter_map(|event| match &*event {
+                    .filter_map(|event| match &event.0 {
                         xcb::Event::Damage(damage::Event::Notify(notify_event)) => {
                             future::ready(Some(notify_event.area()))
                         }
@@ -494,7 +498,7 @@ struct XConnection {
     min_keycode: x::Keycode,
     max_keycode: x::Keycode,
     _event_task: JoinHandle<Result<()>>,
-    event_broadcast_rx: broadcast::Receiver<Arc<xcb::Event>>,
+    event_broadcast_rx: broadcast::Receiver<Arc<XEvent>>,
 }
 
 impl Debug for XConnection {
@@ -508,7 +512,7 @@ impl Debug for XConnection {
     }
 }
 
-type XEventStream = Pin<Box<dyn Stream<Item = Arc<xcb::Event>> + Send>>;
+type XEventStream = Pin<Box<dyn Stream<Item = Arc<XEvent>> + Send>>;
 
 impl XConnection {
     fn event_stream(&self) -> Result<XEventStream> {
@@ -585,10 +589,20 @@ impl XConnection {
             max_keycode,
             _event_task: tokio::task::spawn_blocking(move || loop {
                 let event = event_task_inner.wait_for_event()?;
-                event_broadcast_tx.send(Arc::new(event))?;
+                event_broadcast_tx.send(Arc::new(XEvent(event)))?;
+                enq!(X_DAMAGE_QUEUE);
             }),
             event_broadcast_rx,
         })
+    }
+}
+
+#[derive(Debug)]
+pub struct XEvent(xcb::Event);
+
+impl Drop for XEvent {
+    fn drop(&mut self) {
+        deq!(X_DAMAGE_QUEUE);
     }
 }
 
@@ -597,17 +611,15 @@ mod test {
     use super::*;
 
     use serial_test::serial;
-    use simple_logger::SimpleLogger;
     use std::sync::Once;
 
     static INIT: Once = Once::new();
 
     fn setup() {
         INIT.call_once(|| {
-            SimpleLogger::new()
-                .env()
-                .init()
-                .expect("Failed to initialize logging");
+            aperturec_trace::Configuration::new("test")
+                .initialize()
+                .expect("trace init");
         });
     }
 

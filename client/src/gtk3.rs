@@ -7,6 +7,7 @@ use crate::client::{
 };
 use crate::gtk3::image::Image;
 
+use aperturec_trace::log;
 use gtk::cairo::{Context, ImageSurface};
 use gtk::gdk::{keys, Display, EventMask, ModifierType, ScrollDirection, WindowState};
 use gtk::prelude::*;

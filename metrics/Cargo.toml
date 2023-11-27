@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+aperturec-trace = { path = "../trace" }
 anyhow = "1.0"
 chrono = "0.4.31"
-log = "0.4"
 prometheus = { version = "0.13.3", features = ["push"] }
 reqwest = "0.11.22"
 sysinfo = "0.29.10"

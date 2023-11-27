@@ -1,10 +1,10 @@
 use aperturec_client::{client, gtk3};
 use aperturec_metrics::exporters::{CsvExporter, Exporter, LogExporter, PushgatewayExporter};
+use aperturec_trace::{self as trace, log, Level};
 
 use anyhow::Result;
 use clap::Parser;
 use gethostname::gethostname;
-use simple_logger::SimpleLogger;
 use std::time::Duration;
 use sysinfo::{CpuRefreshKind, RefreshKind, SystemExt};
 
@@ -62,15 +62,15 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    SimpleLogger::new()
-        .with_level(match args.verbosity {
-            0 => log::LevelFilter::Warn,
-            1 => log::LevelFilter::Info,
-            2 => log::LevelFilter::Debug,
-            _ => log::LevelFilter::Trace,
-        })
-        .init()
-        .expect("Failed to initialize logging");
+    let log_verbosity = match args.verbosity {
+        0 => Level::WARN,
+        1 => Level::INFO,
+        2 => Level::DEBUG,
+        _ => Level::TRACE,
+    };
+    trace::Configuration::new("client")
+        .cmdline_verbosity(log_verbosity)
+        .initialize()?;
 
     log::info!("ApertureC Client Startup");
 
@@ -127,7 +127,7 @@ fn main() -> Result<()> {
     if args.metrics_log || args.metrics_csv.is_some() || args.metrics_pushgateway.is_some() {
         let mut exporters: Vec<Exporter> = vec![];
         if args.metrics_log {
-            match LogExporter::new(log::Level::Debug) {
+            match LogExporter::new(Level::DEBUG) {
                 Ok(le) => exporters.push(Exporter::Log(le)),
                 Err(err) => log::warn!("Failed to setup Log exporter: {}, disabling", err),
             }

@@ -11,6 +11,7 @@ use aperturec_protocol::common_types::*;
 use aperturec_protocol::control_messages as cm;
 use aperturec_protocol::*;
 use aperturec_state_machine::*;
+use aperturec_trace::log;
 use async_trait::async_trait;
 use derive_builder::Builder;
 use std::collections::BTreeMap;

@@ -1,5 +1,6 @@
 use crate::backend::{Backend, Event};
 use crate::task::encoder::{self, Encoder};
+use crate::task::event_channel_handler::EVENT_QUEUE;
 
 use anyhow::{anyhow, Result};
 use aperturec_channel::unreliable::udp;
@@ -10,6 +11,8 @@ use aperturec_state_machine::{
     try_recover, try_transition_inner_recover, Recovered, SelfTransitionable, State, Stateful,
     Transitionable, TryTransitionable,
 };
+use aperturec_trace::log;
+use aperturec_trace::queue::deq;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
@@ -230,6 +233,7 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
                             log::warn!("Failed to notify backend of event: {}", e);
                             continue;
                         }
+                        deq!(EVENT_QUEUE);
                     }
                     else => break Err(anyhow!("event stream exhausted"))
                 }

@@ -6,11 +6,15 @@ use aperturec_channel::*;
 use aperturec_state_machine::{
     transition, Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
 };
+use aperturec_trace::log;
+use aperturec_trace::queue::{self, enq, trace_queue};
 use async_trait::async_trait;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+pub(crate) const EVENT_QUEUE: queue::Queue = trace_queue!("ec:event");
 
 #[derive(Stateful, SelfTransitionable, Debug)]
 #[state(S)]
@@ -89,7 +93,9 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                         };
 
                         match self.state.event_tx.send(ec_msg) {
-                            Ok(()) => {},
+                            Ok(()) => {
+                                enq!(EVENT_QUEUE);
+                            },
                             Err(err) => break Err(anyhow!("Could not send event to backend: {}", err)),
                         }
                     }

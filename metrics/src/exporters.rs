@@ -8,6 +8,7 @@
 use crate::Measurement;
 
 use anyhow::Result;
+use aperturec_trace::{log, Level};
 use chrono::{SecondsFormat, Utc};
 use prometheus::{Gauge, Opts, Registry};
 use std::collections::HashMap;
@@ -45,32 +46,30 @@ impl Exporter {
 }
 
 ///
-/// Writes metric data to the initialized log at the spcified [`log::Level`]
+/// Writes metric data to the initialized log at the spcified [`Level`]
 ///
 pub struct LogExporter {
-    log_level: log::Level,
+    log_level: Level,
 }
 
 impl LogExporter {
-    pub fn new(log_level: log::Level) -> Result<Self> {
+    pub fn new(log_level: Level) -> Result<Self> {
         Ok(Self { log_level })
     }
 
     fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
-        if log::log_enabled!(self.log_level) {
-            let s = results
-                .iter()
-                .map(|r| format!("[{}]", r))
-                .collect::<Vec<_>>()
-                .join("");
-            match self.log_level {
-                log::Level::Error => log::error!("{}", s),
-                log::Level::Warn => log::warn!("{}", s),
-                log::Level::Info => log::info!("{}", s),
-                log::Level::Debug => log::debug!("{}", s),
-                log::Level::Trace => log::trace!("{}", s),
-            };
-        }
+        let s = results
+            .iter()
+            .map(|r| format!("[{}]", r))
+            .collect::<Vec<_>>()
+            .join("");
+        match self.log_level {
+            Level::ERROR => log::error!("{}", s),
+            Level::WARN => log::warn!("{}", s),
+            Level::INFO => log::info!("{}", s),
+            Level::DEBUG => log::debug!("{}", s),
+            Level::TRACE => log::trace!("{}", s),
+        };
         Ok(())
     }
 }
@@ -320,10 +319,8 @@ impl Drop for PushgatewayExporter {
 mod test {
     use super::*;
     use crate::measurement::Measurement;
-    use log::{LevelFilter, Metadata, Record};
     use rouille::{Response, Server};
     use std::io::Read;
-    use std::ops::Deref;
     use std::sync::{Arc, Mutex};
     use tempfile::NamedTempFile;
 
@@ -340,41 +337,34 @@ mod test {
         ]
     }
 
-    struct TestLogger {
-        out: Mutex<String>,
-    }
+    #[derive(Clone)]
+    struct TestWriter(Arc<Mutex<Vec<u8>>>);
 
-    impl log::Log for TestLogger {
-        fn enabled(&self, _metadata: &Metadata) -> bool {
-            true
+    impl Write for TestWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("lock").write(buf)
         }
 
-        fn log(&self, record: &Record) {
-            if self.enabled(record.metadata()) {
-                let mut out = self.out.lock().unwrap();
-                *out = format!("{}", record.args());
-            }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.lock().expect("lock").flush()
         }
-
-        fn flush(&self) {}
     }
-
-    static LOGGER: TestLogger = TestLogger {
-        out: Mutex::new(String::new()),
-    };
 
     #[test]
     fn log_exporter() {
-        log::set_logger(&LOGGER)
-            .map(|()| log::set_max_level(LevelFilter::Debug))
-            .expect("test logger");
+        let log_writer = TestWriter(Arc::default());
+        aperturec_trace::Configuration::new("test")
+            .cmdline_verbosity(aperturec_trace::Level::DEBUG)
+            .writer(log_writer.clone())
+            .simple(true)
+            .initialize()
+            .expect("log initialize");
 
-        let mut le = LogExporter::new(log::Level::Debug).expect("LogExporter");
+        let mut le = LogExporter::new(aperturec_trace::Level::DEBUG).expect("LogExporter");
         le.do_export(&generate_measurements()).expect("export");
 
-        assert_eq!(
-            LOGGER.out.lock().unwrap().deref(),
-            &format!(
+        assert!(
+            String::from_utf8_lossy(&log_writer.0.lock().expect("lock")).contains(&format!(
                 "[{}]",
                 generate_measurements()
                     .iter()
@@ -382,7 +372,7 @@ mod test {
                     .collect::<Vec<_>>()
                     .join("][")
                     .as_str()
-            )
+            ))
         );
     }
 

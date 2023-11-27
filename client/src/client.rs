@@ -19,6 +19,7 @@ use aperturec_protocol::event_messages::{
     MappedButton, PointerEvent, PointerEventBuilder,
 };
 use aperturec_state_machine::TryTransitionable;
+use aperturec_trace::log;
 
 use anyhow::Result;
 use derive_builder::Builder;
@@ -1025,7 +1026,6 @@ mod test {
         ClientToServerMessage as CM_C2S, ServerToClientMessage as CM_S2C,
     };
     use aperturec_state_machine::TryTransitionable;
-    use simple_logger::SimpleLogger;
     use std::net::SocketAddr;
     use std::net::UdpSocket;
     use std::sync::Once;
@@ -1036,10 +1036,9 @@ mod test {
 
     fn setup() {
         INIT.call_once(|| {
-            SimpleLogger::new()
-                .env()
-                .init()
-                .expect("Failed to initialize logging");
+            aperturec_trace::Configuration::new("test")
+                .initialize()
+                .expect("trace init");
         });
     }
 

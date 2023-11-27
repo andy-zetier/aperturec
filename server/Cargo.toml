@@ -2,6 +2,7 @@
 name = "aperturec-server"
 version = "0.1.0"
 edition = "2021"
+description = "Server component of ApertureC"
 
 [dependencies]
 anyhow = "1.0"
@@ -9,20 +10,19 @@ aperturec-channel = { path = "../channel" }
 aperturec-protocol = { path = "../protocol" }
 aperturec-state-machine = { path = "../state_machine" }
 aperturec-metrics = { path = "../metrics" }
+aperturec-trace = { path = "../trace", features = ["queue"] }
 async-trait = "0.1"
 bytes = "1.4"
-clap = { version = "4.3", features = ["derive", "string"] }
+clap = { version = "4.3", features = ["derive", "env", "string"] }
 derive_builder = "0.12"
 euclid = "0.22"
 flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
 futures = "0.3"
 gethostname = "0.4"
 linear-map = "1.2"
-log = "^0.4"
 ndarray = "0.15"
 parking_lot = { version = "0.12", features = ["send_guard", "hardware-lock-elision"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
-simple_logger = "4.2"
 shlex = "1.2"
 tokio = { version = "1.29", features = ["full", "tracing"] }
 tokio-stream = { version = "0.1", features = ["sync", "fs"] }
