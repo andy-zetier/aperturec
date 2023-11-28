@@ -448,6 +448,30 @@ macro_rules! impl_codec_reliable {
                 }
             }
 
+            impl<C, RM, SM> Duplex<C, RM, SM>
+            where
+                C: Read + Write + NonblockableIO + Clone,
+                RM: Decode,
+                SM: Encode,
+            {
+                pub fn split(self) -> (ReceiverSimplex<C, RM>, SenderSimplex<C, SM>) {
+                    let wh = self.common_rw.get_ref().clone();
+
+                    (
+                        ReceiverSimplex {
+                            reader: self.common_rw,
+                            read_bytes: self.read_bytes,
+                            _receive_message: PhantomData,
+                        },
+                        SenderSimplex {
+                            writer: wh,
+                            write_bytes: self.write_bytes,
+                            _send_message: PhantomData,
+                        },
+                    )
+                }
+            }
+
             impl<C, RM, SM> AsRef<C> for Duplex<C, RM, SM>
             where
                 C: Read + Write + NonblockableIO,

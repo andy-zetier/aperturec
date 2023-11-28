@@ -21,13 +21,14 @@ use aperturec_protocol::event_messages::{
 use aperturec_state_machine::TryTransitionable;
 
 use anyhow::Result;
+use crossbeam_channel::{select, unbounded};
 use derive_builder::Builder;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{assert, thread};
 use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
@@ -220,7 +221,7 @@ async fn new_async_tcp_client_retry(
     retry: Duration,
 ) -> tcp::Client<tcp::Connected> {
     loop {
-        let client = tcp::Client::new(addr).try_transition().await;
+        let client = tcp::Client::new_blocking(addr).try_transition().await;
         match client {
             Ok(client) => return client,
             Err(err) => log::warn!(
@@ -713,25 +714,15 @@ impl Client {
         let ci = self.generate_client_init();
         log::debug!("{:#?}", &ci);
 
-        let mut client_cc = ClientControlChannel::new(tcp_client);
-        client_cc.send(CM_C2S::ClientInit(ci))?;
+        let client_cc = ClientControlChannel::new(tcp_client);
+        let (mut client_cc_read, mut client_cc_write) = client_cc.split();
+        client_cc_write.send(CM_C2S::ClientInit(ci))?;
 
         log::debug!("Client Init sent, waiting for ServerInit...");
-        let si = loop {
-            match client_cc.receive() {
-                Ok(CM_S2C::ServerInit(si)) => break si,
-                Ok(_) => panic!("Unexpected message received, expected ServerInit"),
-                Err(err) => match err.downcast::<std::io::Error>() {
-                    Ok(ioe) => match ioe.kind() {
-                        ErrorKind::WouldBlock => {
-                            // EAGAIN is expected while wating for the ServerInit
-                            continue;
-                        }
-                        _ => panic!("Failed to read ServerInit: {:?}", ioe),
-                    },
-                    Err(other) => panic!("Failed to read ServerInit: {:?}", other),
-                },
-            }
+        let si = match client_cc_read.receive() {
+            Ok(CM_S2C::ServerInit(si)) => si,
+            Ok(_) => panic!("Unexpected message received, expected ServerInit"),
+            Err(other) => panic!("Failed to read ServerInit: {:?}", other),
         };
 
         log::debug!("{:#?}", si);
@@ -762,23 +753,47 @@ impl Client {
         );
 
         //
-        // The control channel thread needs to monitor both the TCP connection with the server and
-        // the ITC channel with the UI and other internal components. Ideally this would be
-        // performed with a select() on the TCP socket and the ITC channel fds, however, it does
-        // not seem to be possible to select() across a std::net::TcpStream and a std::sync::mpsc.
-        // Tokio has implemented such a select!() construct for async code, but there does not
-        // seem to be an equivalent for synchronous code.
+        // Setup Control Channel TX/RX threads
         //
-        // The workaround here is to perform a non-blocking read on the TCP connection followed by
-        // a blocking read on the ITC channel. To do this, we need to come up with a reasonable
-        // timeout value for the ITC read. We must break out of the ITC receive in time to make
-        // sure we are responding to HeartbeatRequets in a timely manner. Therefore, wait for ITC
-        // messages at most 75% of the shortest heartbeat interval.
+        // The TCP tx/rx threads read/write network control channel messages from/to appropriate
+        // ITC channels. This allows the core Control Channel thread to select!() on unbounded ITC
+        // channels to drive execution and avoid mixing TCP and ITC reads.
         //
-        let seq_update_timeout =
-            (std::cmp::min(self.heartbeat_response_interval, self.heartbeat_interval) * 75) / 100;
-        log::debug!("ITC control message timeout: {:?}", seq_update_timeout);
+        let (control_tx_tx, control_tx_rx) = unbounded();
+        let (control_rx_tx, control_rx_rx) = unbounded();
 
+        thread::spawn(move || {
+            loop {
+                match client_cc_read.receive() {
+                    Ok(cm_s2c) => {
+                        if let Err(err) = control_rx_tx.send(Ok(cm_s2c)) {
+                            log::error!("Failed to send: {}", err);
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        log::error!("Failed to receive: {}", err);
+                        control_rx_tx.send(Err(err)).unwrap();
+                        break;
+                    }
+                }
+            }
+            log::trace!("Control channel rx exiting");
+        });
+
+        thread::spawn(move || {
+            while let Ok(cm_c2s) = control_tx_rx.recv() {
+                if let Err(err) = client_cc_write.send(cm_c2s) {
+                    log::error!("Failed to send: {}", err);
+                    break;
+                }
+            }
+            log::trace!("Control channel tx exiting");
+        });
+
+        //
+        // Setup core Control Channel thread
+        //
         let client_id = self.id.clone();
         let should_stop = self.should_stop.clone();
         let control_rx = itc.notify_control_rx.take().unwrap();
@@ -789,122 +804,120 @@ impl Client {
 
             log::debug!("Control channel started");
             loop {
-                //
-                // Check for Control channel messages from the server, this is non-blocking
-                //
-                match client_cc.receive() {
-                    Ok(CM_S2C::HeartbeatRequest(hr)) => {
-                        log::trace!("Received {:?}", hr);
-                        let hbr = HeartbeatResponseBuilder::default()
-                            .heartbeat_id(HeartbeatId::new(hr.request_id.0))
-                            .last_sequence_ids(
-                                decoder_seq
+                select! {
+                    recv(control_rx_rx) -> msg => match msg {
+                        Ok(Ok(CM_S2C::HeartbeatRequest(hr))) => {
+                            log::trace!("Recv HeartbeatRequest  {}", hr.request_id.0);
+                            let hbr = HeartbeatResponseBuilder::default()
+                                .heartbeat_id(HeartbeatId::new(hr.request_id.0))
+                                .last_sequence_ids(
+                                    decoder_seq
                                     .iter()
                                     .map(|(d, s)| {
                                         DecoderSequencePair::new(
                                             Decoder::new(*d),
                                             SequenceId::new(*s),
-                                        )
+                                            )
                                     })
                                     .collect(),
-                            )
-                            .build()
-                            .expect("Failed to generate HeartbeatResponse!");
-                        match client_cc.send(CM_C2S::new_heartbeat_response(hbr)) {
-                            Err(err) => log::warn!(
-                                "Failed to send HeartbeatResponse {:?}: {}",
-                                hr.request_id.0,
-                                err
-                            ),
-                            _ => log::trace!("Sent HeartbeatResponse {}", hr.request_id.0),
-                        };
-                    }
-                    Ok(CM_S2C::ServerGoodbye(_)) => {
-                        if let Err(err) =
-                            control_to_ui_tx.send(UiMessage::QuitMessage(String::from("Gooebyde!")))
-                        {
-                            log::warn!("Failed to send QuitMessage: {}", err);
-                        }
-                        break;
-                    }
-                    Ok(_) => {
-                        log::warn!("Unexpected message received on control channel");
-                    }
-                    Err(err) => match err.downcast::<std::io::Error>() {
-                        Ok(ioe) => match ioe.kind() {
-                            ErrorKind::WouldBlock | ErrorKind::Interrupted => (),
-                            _ => {
+                                    )
+                                .build()
+                                .expect("Failed to generate HeartbeatResponse!");
+                            match control_tx_tx.send(CM_C2S::new_heartbeat_response(hbr)) {
+                                Err(err) => log::warn!(
+                                    "Failed to send HeartbeatResponse {:?}: {}",
+                                    hr.request_id.0,
+                                    err
+                                    ),
+                                _ => log::trace!("Sent HeartbeatResponse {}", hr.request_id.0),
+                            };
+                        },
+                        Ok(Ok(CM_S2C::ServerGoodbye(_))) => {
+                            if let Err(err) =
+                                control_to_ui_tx.send(UiMessage::QuitMessage(String::from("Gooebyde!")))
+                                {
+                                    log::warn!("Failed to send QuitMessage: {}", err);
+                                }
+                            break;
+                        },
+                        Ok(Ok(_)) => {
+                            log::warn!("Unexpected message received on control channel");
+                        },
+                        Ok(Err(err)) => match err.downcast::<std::io::Error>() {
+                            Ok(ioe) => match ioe.kind() {
+                                ErrorKind::WouldBlock | ErrorKind::Interrupted => (),
+                                _ => {
+                                    let _ = control_to_ui_tx
+                                        .send(UiMessage::QuitMessage(format!("{:?}", ioe)));
+                                    let _ = control_tx_tx.send(CM_C2S::new_client_goodbye(
+                                            ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating),
+                                            ));
+                                    log::trace!("Sent ClientGoodbye: Terminating");
+                                    log::error!("Fatal I/O error reading control message: {:?}", ioe);
+                                    break;
+                                }
+                            },
+                            Err(other) => {
                                 let _ = control_to_ui_tx
-                                    .send(UiMessage::QuitMessage(format!("{:?}", ioe)));
-                                let _ = client_cc.send(CM_C2S::new_client_goodbye(
-                                    ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating),
-                                ));
+                                    .send(UiMessage::QuitMessage(format!("{:?}", other)));
+                                let _ = control_tx_tx.send(CM_C2S::new_client_goodbye(ClientGoodbye::new(
+                                            client_id,
+                                            ClientGoodbyeReason::Terminating,
+                                            )));
                                 log::trace!("Sent ClientGoodbye: Terminating");
-                                log::error!("Fatal I/O error reading control message: {:?}", ioe);
+                                log::error!("Fatal error reading control message: {:?}", other);
                                 break;
                             }
                         },
-                        Err(other) => {
-                            let _ = control_to_ui_tx
-                                .send(UiMessage::QuitMessage(format!("{:?}", other)));
-                            let _ = client_cc.send(CM_C2S::new_client_goodbye(ClientGoodbye::new(
-                                client_id,
-                                ClientGoodbyeReason::Terminating,
-                            )));
-                            log::trace!("Sent ClientGoodbye: Terminating");
-                            log::error!("Fatal error reading control message: {:?}", other);
+                        Err(err) => {
+                            log::error!("Failed to recv from RX ITC channel: {}", err);
                             break;
                         }
                     },
-                } // client_cc.receive()
+                    recv(control_rx) -> msg => match msg {
+                        Ok(ControlMessage::UpdateReceivedMessage(dec, seq, missing)) => {
+                            decoder_seq.insert(dec, seq);
 
-                //
-                // Check the ITC control channel for messages from internal components, this is
-                // blocking for seq_update_timeout
-                //
-                let (dec, seq, missing) = match control_rx.recv_timeout(seq_update_timeout) {
-                    Ok(ControlMessage::UpdateReceivedMessage(d, s, m)) => (d, s, m),
-                    Ok(ControlMessage::UiClosed(gm)) => {
-                        let _ = client_cc
-                            .send(CM_C2S::new_client_goodbye(gm.to_client_goodbye(client_id)));
-                        log::trace!("Sent ClientGoodbye: User Requested");
-                        log::info!("Disconnecting from server, sent ClientGoodbye");
-                        break;
-                    }
-                    Ok(ControlMessage::EventChannelDied(gm)) => {
-                        let _ = control_to_ui_tx
-                            .send(UiMessage::QuitMessage("Event Channel Died".to_string()));
-                        let _ = client_cc
-                            .send(CM_C2S::new_client_goodbye(gm.to_client_goodbye(client_id)));
-                        log::trace!("Sent ClientGoodbye: Network Error");
-                        break;
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        log::error!("Decoder ITC channel disconnected!");
-                        break;
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                };
+                            if !missing.is_empty() {
+                                let mfr = MissedFrameReportBuilder::default()
+                                    .decoder(Decoder::new(dec))
+                                    .frames(missing.iter().map(|s| SequenceId::new(*s)).collect())
+                                    .build()
+                                    .expect("Failed to build MissedFrameReport!");
 
-                decoder_seq.insert(dec, seq);
+                                match control_tx_tx.send(CM_C2S::new_missed_frame_report(mfr)) {
+                                    Err(err) => log::warn!("Failed to send MissedFrameReport: {}", err),
+                                    _ => {
+                                        log::trace!(
+                                            "Sent MissedFrameReport for Decoder {}, missed {}",
+                                            dec,
+                                            missing.len()
+                                            );
+                                    }
+                                };
+                            }
 
-                if !missing.is_empty() {
-                    let mfr = MissedFrameReportBuilder::default()
-                        .decoder(Decoder::new(dec))
-                        .frames(missing.iter().map(|s| SequenceId::new(*s)).collect())
-                        .build()
-                        .expect("Failed to build MissedFrameReport!");
-
-                    match client_cc.send(CM_C2S::new_missed_frame_report(mfr)) {
-                        Err(err) => log::warn!("Failed to send MissedFrameReport: {}", err),
-                        _ => {
-                            log::trace!(
-                                "Sent MissedFrameReport for Decoder {}, missed {}",
-                                dec,
-                                missing.len()
-                            );
+                        },
+                        Ok(ControlMessage::UiClosed(gm)) => {
+                            let _ = control_tx_tx
+                                .send(CM_C2S::new_client_goodbye(gm.to_client_goodbye(client_id)));
+                            log::trace!("Sent ClientGoodbye: User Requested");
+                            log::info!("Disconnecting from server, sent ClientGoodbye");
+                            break;
+                        },
+                        Ok(ControlMessage::EventChannelDied(gm)) => {
+                            let _ = control_to_ui_tx
+                                .send(UiMessage::QuitMessage("Event Channel Died".to_string()));
+                            let _ = control_tx_tx
+                                .send(CM_C2S::new_client_goodbye(gm.to_client_goodbye(client_id)));
+                            log::trace!("Sent ClientGoodbye: Network Error");
+                            break;
+                        },
+                        Err(err) => {
+                            log::error!("Failed to recv from ITC channel: {}", err);
+                            break;
                         }
-                    };
+                    }
                 }
             } // loop
 
