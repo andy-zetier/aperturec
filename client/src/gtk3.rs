@@ -14,24 +14,25 @@ use gtk::prelude::*;
 use gtk::{glib, Adjustment, ApplicationWindow, DrawingArea, ScrolledWindow};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::Duration;
+
+use crossbeam_channel::{unbounded, Receiver, Sender};
 
 pub struct ItcChannels {
     control_to_ui_rx: Cell<Option<glib::Receiver<UiMessage>>>,
     pub control_to_ui_tx: glib::Sender<UiMessage>,
 
-    pub notify_control_tx: mpsc::Sender<ControlMessage>,
-    pub notify_control_rx: Cell<Option<mpsc::Receiver<ControlMessage>>>,
+    pub notify_control_tx: Sender<ControlMessage>,
+    pub notify_control_rx: Cell<Option<Receiver<ControlMessage>>>,
 
-    pub event_from_ui_rx: Cell<Option<mpsc::Receiver<EventMessage>>>,
-    event_from_ui_tx: mpsc::Sender<EventMessage>,
+    pub event_from_ui_rx: Cell<Option<Receiver<EventMessage>>>,
+    event_from_ui_tx: Sender<EventMessage>,
 
     img_from_decoder_rx: Cell<Option<glib::Receiver<Image>>>,
     pub img_from_decoder_tx: glib::Sender<Image>,
 
-    pub img_to_decoder_rxs: Vec<Cell<Option<mpsc::Receiver<Image>>>>,
-    img_to_decoder_txs: Vec<Cell<Option<mpsc::Sender<Image>>>>,
+    pub img_to_decoder_rxs: Vec<Cell<Option<Receiver<Image>>>>,
+    img_to_decoder_txs: Vec<Cell<Option<Sender<Image>>>>,
 }
 
 impl ItcChannels {
@@ -39,8 +40,8 @@ impl ItcChannels {
         let (control_to_ui_tx, control_to_ui_rx) =
             glib::MainContext::channel(glib::Priority::default());
 
-        let (notify_control_tx, notify_control_rx) = mpsc::channel();
-        let (event_from_ui_tx, event_from_ui_rx) = mpsc::channel();
+        let (notify_control_tx, notify_control_rx) = unbounded();
+        let (event_from_ui_tx, event_from_ui_rx) = unbounded();
 
         let (img_from_decoder_tx, img_from_decoder_rx) =
             glib::MainContext::channel(glib::Priority::default());
@@ -60,7 +61,7 @@ impl ItcChannels {
 
         // Generate channels for the decoders
         for _ in 0..config.decoder_max {
-            let (tx, rx) = mpsc::channel();
+            let (tx, rx) = unbounded();
             this.img_to_decoder_rxs.push(Cell::new(Some(rx)));
             this.img_to_decoder_txs.push(Cell::new(Some(tx)));
         }
@@ -226,9 +227,9 @@ fn build_ui(
         //
         // Generate two Images for each ClientDecoder: one is pushed on the local image vec to be
         // displayed at the first (and subsequent) redraw events. The other is sent to the
-        // ClientDecoder over the associated mpsc so that new data can be written to it when a
-        // FramebufferUpdate is received. The images are swapped as new data is received from the
-        // ClientDecoder.
+        // ClientDecoder over the associated unbounded channel so that new data can be written to
+        // it when a FramebufferUpdate is received. The images are swapped as new data is received
+        // from the ClientDecoder.
         //
         let origin = (decoder.origin.0, decoder.origin.1);
         images.push(RefCell::new(image0.clone_with_decoder_info(i, origin)));

@@ -276,6 +276,22 @@ impl Client<Closed> {
     }
 }
 
+impl Clone for Client<Connected> {
+    fn clone(&self) -> Self {
+        Self {
+            state: Connected {
+                stream: self
+                    .state
+                    .stream
+                    .try_clone()
+                    .expect("clone connected client"),
+            },
+            addr: self.addr.clone(),
+            is_nonblocking: self.is_nonblocking,
+        }
+    }
+}
+
 #[async_trait]
 impl TryTransitionable<Connected, Closed> for Client<Closed> {
     type SuccessStateful = Client<Connected>;
