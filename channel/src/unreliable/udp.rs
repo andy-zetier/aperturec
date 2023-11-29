@@ -77,7 +77,7 @@ impl Client<Closed> {
     }
 }
 
-async fn do_udp_bind<'a, A>(addr: &'a A) -> anyhow::Result<std::net::UdpSocket>
+async fn do_udp_bind<A>(addr: &A) -> anyhow::Result<std::net::UdpSocket>
 where
     A: std::net::ToSocketAddrs + tokio::net::ToSocketAddrs,
 {
