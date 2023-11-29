@@ -367,8 +367,7 @@ impl AsyncRead for Client<AsyncConnected> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let res = pin!(&mut self.state.stream).poll_read(cx, buf);
-        res
+        pin!(&mut self.state.stream).poll_read(cx, buf)
     }
 }
 
