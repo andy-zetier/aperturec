@@ -199,7 +199,7 @@ cargo:package:deb:client:
     - cargo install cargo-deb
     - cd "client"
   script:
-    - cargo deb
+    - cargo deb --deb-revision="$CI_PIPELINE_IID"
   needs:
     - job: cargo:build:release
   artifacts:
