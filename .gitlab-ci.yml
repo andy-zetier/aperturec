@@ -193,20 +193,39 @@ cargo:package:deb:client:
   image: "$IMAGE"
   before_script:
     - apt update
-    - DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y ca-certificates curl build-essential pkg-config libgtk-3-dev cmake pkg-config libssl-dev
+    - DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y ca-certificates curl build-essential pkg-config libgtk-3-dev cmake pkg-config libssl-dev lsb-release
     - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     - source "$HOME/.cargo/env"
     - cargo install cargo-deb
     - cd "client"
+    - mkdir -p ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/
   script:
-    - cargo deb --deb-revision="$CI_PIPELINE_IID"
+    - cargo deb -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID"
   needs:
     - job: cargo:build:release
   artifacts:
     paths:
-      - client/target/debian/aperturec-client_*_amd64.deb
+      - client/target/*/*/aperturec-client_*_amd64.deb
   parallel:
     matrix:
       - IMAGE: "ubuntu:18.04"
       - IMAGE: "ubuntu:20.04"
       - IMAGE: "ubuntu:22.04"
+
+cargo:package:deb:push:
+  stage: package
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  image: ubuntu:22.04
+  # Because this is not utilizing built native code we don't need to require amd64
+  tags:
+    - linux
+    - docker
+  before_script:
+    - apt update
+    - DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y ca-certificates rubygems
+    - gem install package_cloud
+  script:
+    - ./scripts/package_upload.sh client
+  needs:
+    - job: cargo:package:deb:client
