@@ -1,0 +1,16 @@
+# Configurations for x86 (Haswell-ish)
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+  "-C", "target-cpu=x86-64-v3",
+]
+
+[target.x86_64-apple-darwin]
+rustflags = [
+  "-C", "target-cpu=x86-64-v3",
+]
+
+# Configuration for ARM (Graviton2 baseline)
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+  "-C", "target-cpu=neoverse-n1", # Graviton2 uses Neoverse N1 architecture
+]
