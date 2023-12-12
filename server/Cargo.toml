@@ -32,3 +32,9 @@ ctrlc = "3.4.1"
 
 [dev-dependencies]
 serial_test = "2.0"
+
+[package.metadata.deb]
+copyright = "2023, Zetier Inc."
+depends = "$auto, xvfb"
+maintainer = "ApertureC Team <aperturec@zetier.com>"
+section = "x11"

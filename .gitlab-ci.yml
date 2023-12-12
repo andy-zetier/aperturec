@@ -208,9 +208,41 @@ cargo:package:deb:client:
       - client/target/*/*/aperturec-client_*_amd64.deb
   parallel:
     matrix:
-      - IMAGE: "ubuntu:18.04"
-      - IMAGE: "ubuntu:20.04"
-      - IMAGE: "ubuntu:22.04"
+      - IMAGE:
+        - "ubuntu:18.04"
+        - "ubuntu:20.04"
+        - "ubuntu:22.04"
+
+cargo:package:deb:server:
+  stage: package
+  image: "$IMAGE"
+  tags:
+    - linux
+    - docker
+    - "$ARCH"
+  before_script:
+    - apt update
+    - DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y ca-certificates curl build-essential cmake pkg-config libssl-dev lsb-release libxcb1-dev
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    - source "$HOME/.cargo/env"
+    - cargo install cargo-deb
+    - cd "server"
+    - mkdir -p ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/
+  script:
+    - cargo deb -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID"
+  needs:
+    - job: cargo:build:release
+  artifacts:
+    paths:
+      - server/target/*/*/aperturec-server_*_*.deb
+  parallel:
+    matrix:
+      - IMAGE:
+          - "ubuntu:20.04"
+          - "ubuntu:22.04"
+        ARCH:
+          - amd64
+          - arm64
 
 cargo:package:deb:push:
   stage: package
@@ -227,5 +259,7 @@ cargo:package:deb:push:
     - gem install package_cloud
   script:
     - ./scripts/package_upload.sh client
+    - ./scripts/package_upload.sh server
   needs:
     - job: cargo:package:deb:client
+    - job: cargo:package:deb:server
