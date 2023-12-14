@@ -38,3 +38,7 @@ copyright = "2023, Zetier Inc."
 depends = "$auto, xvfb"
 maintainer = "ApertureC Team <aperturec@zetier.com>"
 section = "x11"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
