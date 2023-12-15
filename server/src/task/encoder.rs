@@ -522,7 +522,7 @@ mod box2d {
     }
 }
 
-struct TrackingBuffer {
+pub struct TrackingBuffer {
     indices: Array2<(usize, usize)>,
     data: Array2<RawPixel>,
     damaged_areas: box2d::Set,
@@ -530,8 +530,34 @@ struct TrackingBuffer {
     stale_areas: box2d::Set,
 }
 
+/// A `TrackingBuffer` is used to manage a 2D array of pixels, efficiently tracking changes and damaged areas.
+///
+/// The buffer consists of:
+/// - A 2D array of pixel data (`data`).
+/// - An array of indices corresponding to the pixel data (`indices`).
+/// - A set of boxes representing damaged areas (`damaged_areas`).
+/// - A boolean indicating if the entire buffer is damaged (`is_fully_damaged`).
+/// - A set of boxes representing areas marked as stale (`stale_areas`).
+///
+/// This structure is particularly useful in graphical applications where partial updates to the pixel data are common.
 impl TrackingBuffer {
-    fn new(size: Size) -> Self {
+    /// Constructs a new `TrackingBuffer`.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - A `Size` struct specifying the width and height of the buffer.
+    ///
+    /// # Returns
+    ///
+    /// Returns a new instance of `TrackingBuffer`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aperturec_server::task::encoder::{Size, TrackingBuffer};
+    /// let buffer = TrackingBuffer::new(Size::new(800, 600));
+    /// ```
+    pub fn new(size: Size) -> Self {
         TrackingBuffer {
             indices: Array2::from_shape_fn((size.width, size.height), |idx| idx),
             data: Array2::from_elem((size.width, size.height), RawPixel::default()),
@@ -541,31 +567,67 @@ impl TrackingBuffer {
         }
     }
 
-    fn update(&mut self, origin: Point, new: ArrayView2<RawPixel>) {
+    /// Updates the buffer with new pixel data at a specified origin point.
+    ///
+    /// # Arguments
+    ///
+    /// * `origin` - A `Point` struct specifying the origin point for the update.
+    /// * `new` - An `ArrayView2` of `RawPixel` representing the new pixel data to be updated.
+    ///
+    /// # Behavior
+    ///
+    /// If the origin is outside the bounds of the current data, the function returns early.
+    /// Otherwise, it calculates the area to be updated, checks and records the changes, and
+    /// updates the damaged areas accordingly.
+    ///
+    /// This method is crucial for efficient redrawing and updating of the graphical interface,
+    /// as it allows for tracking only the changed portions of the buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aperturec_server::task::encoder::{Point, RawPixel, Size, TrackingBuffer};
+    /// use ndarray::Array2;
+    /// let new_pixels = Array2::<RawPixel>::default((100, 100));
+    /// let mut buffer = TrackingBuffer::new(Size::new(800, 600));
+    /// buffer.update(Point::new(10, 10), new_pixels.view());
+    /// ```
+    pub fn update(&mut self, origin: Point, new: ArrayView2<RawPixel>) {
+        // Early exit if the origin point is outside the bounds of the current data array.
         if origin.x >= self.data.len_of(X_AXIS) || origin.y >= self.data.len_of(Y_AXIS) {
             return;
         }
+
+        // Create a bounding box (`update_box`) representing the area affected by the update.
         let update_box = Box2D::new(
             origin,
             origin + Point::new(new.len_of(X_AXIS), new.len_of(Y_AXIS)).to_vector(),
         );
 
+        // Define the slice of the buffer that will be updated.
         let shape = s![
             update_box.min.x..update_box.max.x,
             update_box.min.y..update_box.max.y,
         ];
         let mut curr = self.data.slice_mut(shape);
 
+        // If the entire buffer is already marked as damaged, simply assign new pixel data.
         if self.is_fully_damaged {
             curr.assign(&new);
         } else {
+            // Otherwise, process the update selectively.
+            // Get the corresponding encoder relative indices.
             let encoder_relative_indices = self.indices.slice(shape);
 
+            // Initialize variables to track the extents of changed areas.
             let (mut left, mut right, mut top, mut bottom) = (None, None, None, None);
+
+            // Iterate over each pixel in the current slice and the new data.
             Zip::from(&mut curr)
                 .and(&new)
                 .and(&encoder_relative_indices)
                 .for_each(|curr, new, (x, y)| {
+                    // If the current pixel is different from the new pixel, it's a change.
                     if curr != new {
                         if left.is_none() || *x < left.unwrap() {
                             left = Some(*x);
@@ -580,35 +642,75 @@ impl TrackingBuffer {
                             bottom = Some(*y + 1);
                         }
 
+                        // Update the current pixel to the new value.
                         *curr = *new;
                     }
                 });
+
+            // If no changes were made, return early.
             if (None, None, None, None) == (left, right, top, bottom) {
-                // Damage report was a lie and there's nothing to update
                 return;
             }
 
+            // Unwrap the bounds of the changed area.
             let (left, right, top, bottom) =
                 (left.unwrap(), right.unwrap(), top.unwrap(), bottom.unwrap());
+
+            // Check if the entire buffer is damaged.
             if left == 0
                 && right == self.data.len_of(X_AXIS)
                 && top == 0
                 && bottom == self.data.len_of(Y_AXIS)
             {
+                // If so, clear damaged areas and mark the buffer as fully damaged.
                 self.damaged_areas.clear();
                 self.is_fully_damaged = true;
             } else {
+                // Otherwise, add the damaged area to the set of damaged areas.
                 let min_box = Box2D::new(Point::new(left, top), Point::new(right, bottom));
                 self.damaged_areas.add(min_box);
             }
         }
     }
 
-    fn mark_stale(&mut self, stale: Box2D) {
+    /// Marks a specific area of the buffer as stale.
+    ///
+    /// # Arguments
+    ///
+    /// * `stale` - A `Box2D` representing the area to be marked as stale.
+    ///
+    /// # Behavior
+    ///
+    /// This method adds the specified area to the set of stale areas in the buffer. Stale areas
+    /// are those that are not currently damaged but may not be updated on the client. We track
+    /// these separately from damage so that when we do the flip we do not copy unchanged pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aperturec_server::task::encoder::{Box2D, Point, Size, TrackingBuffer};
+    /// let mut buffer = TrackingBuffer::new(Size::new(800, 600));
+    /// buffer.mark_stale(Box2D::new(Point::new(50, 50), Point::new(100, 100)));
+    /// ```
+    pub fn mark_stale(&mut self, stale: Box2D) {
         self.stale_areas.add(stale);
     }
 
-    fn clear(&mut self) {
+    /// Clears all tracked damaged and stale areas in the buffer.
+    ///
+    /// # Behavior
+    ///
+    /// This method resets the state of the buffer, clearing all damaged and stale areas. It is
+    /// useful when the entire buffer has been processed or redrawn and a fresh start is needed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use aperturec_server::task::encoder::{Size, TrackingBuffer};
+    /// let mut buffer = TrackingBuffer::new(Size::new(800, 600));
+    /// buffer.clear();
+    /// ```
+    pub fn clear(&mut self) {
         self.damaged_areas.clear();
         self.is_fully_damaged = false;
         self.stale_areas.clear();
