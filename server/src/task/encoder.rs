@@ -15,10 +15,11 @@ use bytes::{Bytes, BytesMut};
 use euclid::{Point2D, Size2D, UnknownUnit};
 use flate2::{Compress, Compression, FlushCompress};
 use futures::{future::join, stream, StreamExt};
+use linear_map::set::LinearSet;
 use ndarray::{arr0, s, Array1, Array2, ArrayView2, AssignElem, Axis, ShapeBuilder, Zip};
 use parking_lot::{Mutex, MutexGuard};
 use std::cmp::{min, Ordering};
-use std::collections::{btree_map::Entry, BTreeMap, BTreeSet, LinkedList};
+use std::collections::{btree_map::Entry, BTreeMap, LinkedList};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -869,7 +870,7 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
 
                                 let mut in_flight_locked = in_flight.lock();
                                 let mut responsible_sequence_nos_locked = responsible_sequence_nos.lock();
-                                let mut old_sequence_nos = BTreeSet::new();
+                                let mut old_sequence_nos = LinearSet::new();
                                 for ru in &mut rus {
                                     let mm::RectangleUpdate { ref mut sequence_id, ref location, ref rectangle, ..} = ru;
 
