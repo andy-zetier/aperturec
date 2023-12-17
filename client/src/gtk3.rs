@@ -12,6 +12,7 @@ use gtk::cairo::{Context, ImageSurface};
 use gtk::gdk::{keys, Display, EventMask, ModifierType, ScrollDirection, WindowState};
 use gtk::prelude::*;
 use gtk::{glib, Adjustment, ApplicationWindow, DrawingArea, ScrolledWindow};
+use keycode::{KeyMap, KeyMapping};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -108,6 +109,19 @@ impl KeyboardShortcut {
             None
         }
     }
+}
+
+fn gtk_key_to_x11(key: &gtk::gdk::EventKey) -> u16 {
+    let keycode = key.keycode().expect("Failed to get keycode!");
+    let mapping = if cfg!(target_os = "macos") {
+        KeyMapping::Mac(keycode)
+    } else if cfg!(target_os = "windows") {
+        KeyMapping::Win(keycode)
+    } else {
+        KeyMapping::Xkb(keycode)
+    };
+    let map = KeyMap::try_from(mapping).expect("Could not convert native key code");
+    map.xkb
 }
 
 pub struct GtkUi;
@@ -282,6 +296,9 @@ fn build_ui(
     let pointer_motion_tx = itc.event_from_ui_tx.clone();
     let notify_control_tx = itc.notify_control_tx.clone();
 
+    //
+    // Setup keyboard tracking
+    //
     area.connect_key_press_event(glib::clone!(@strong window => move |_, key| {
         log::trace!("GTK KeyPressEvent: {:?} : {:?}", key.keyval(), key.state());
 
@@ -298,7 +315,7 @@ fn build_ui(
                 key_press_tx.send(
                     EventMessage::KeyEventMessage(
                         KeyEventMessageBuilder::default()
-                        .key(key.keycode().expect("Failed to get keycode!").into())
+                        .key(gtk_key_to_x11(key).into())
                         .is_pressed(true)
                         .build()
                         .expect("GTK failed to build KeyEventMessage!")
@@ -318,7 +335,7 @@ fn build_ui(
         key_release_tx.send(
             EventMessage::KeyEventMessage(
                 KeyEventMessageBuilder::default()
-                    .key(key.keycode().expect("GTK failed to get keycode!").into())
+                    .key(gtk_key_to_x11(key).into())
                     .is_pressed(false)
                     .build()
                     .expect("GTK failed to build KeyEventMessage!")
