@@ -96,7 +96,7 @@ impl KeyboardShortcut {
     fn from_event(key_event: &gtk::gdk::EventKey) -> Option<Self> {
         let state = key_event.state() & ModifierType::MODIFIER_MASK;
 
-        if !state.contains(ModifierType::CONTROL_MASK & ModifierType::MOD1_MASK) {
+        if !state.contains(ModifierType::CONTROL_MASK | ModifierType::MOD1_MASK) {
             None
         } else if key_event.keyval() == keys::constants::Return {
             Some(Self::ToggleFullscreen)
