@@ -391,10 +391,10 @@ fn build_ui(
 
     area.connect_scroll_event(glib::clone!(@strong window => move |_, event| {
         let button = match event.direction() {
-            ScrollDirection::Up => 4,
-            ScrollDirection::Down => 5,
-            ScrollDirection::Left => 6,
-            ScrollDirection::Right => 7,
+            ScrollDirection::Up => 3,
+            ScrollDirection::Down => 4,
+            ScrollDirection::Left => 5,
+            ScrollDirection::Right => 6,
             _ => 0
         };
 

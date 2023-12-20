@@ -3,8 +3,8 @@ EventMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
 
   MappedButton ::= ENUMERATED {
     left (0),
-    right (1),
-    middle (2),
+    middle (1),
+    right (2),
     wheelScrollUp (3),
     wheelScrollDown (4),
     wheelScrollLeft (5),

@@ -91,15 +91,15 @@ impl MouseButtonEventMessage {
 
     fn button_from_code(button: u32) -> Button {
         match button {
-            1 => Button::MappedButton(MappedButton::Left),
+            0 => Button::MappedButton(MappedButton::Left),
+            1 => Button::MappedButton(MappedButton::Middle),
             2 => Button::MappedButton(MappedButton::Right),
-            3 => Button::MappedButton(MappedButton::Middle),
-            4 => Button::MappedButton(MappedButton::WheelScrollUp),
-            5 => Button::MappedButton(MappedButton::WheelScrollDown),
-            6 => Button::MappedButton(MappedButton::WheelScrollLeft),
-            7 => Button::MappedButton(MappedButton::WheelScrollRight),
-            8 => Button::MappedButton(MappedButton::Back),
-            9 => Button::MappedButton(MappedButton::Forward),
+            3 => Button::MappedButton(MappedButton::WheelScrollUp),
+            4 => Button::MappedButton(MappedButton::WheelScrollDown),
+            5 => Button::MappedButton(MappedButton::WheelScrollLeft),
+            6 => Button::MappedButton(MappedButton::WheelScrollRight),
+            7 => Button::MappedButton(MappedButton::Back),
+            8 => Button::MappedButton(MappedButton::Forward),
             _ => Button::UnmappedButton(
                 button
                     .try_into()
