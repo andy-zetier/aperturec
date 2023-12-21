@@ -8,11 +8,13 @@ use aperturec_channel::{
 use aperturec_protocol::common_types::*;
 use aperturec_protocol::control_messages::{
     Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder, ClientGoodbyeReason, ClientInfo,
-    ClientInfoBuilder, ClientInit, ClientInitBuilder, ClientToServerMessage as CM_C2S, Decoder,
+    ClientInfoBuilder, ClientInit, ClientInitBuilder, ClientToServerMessage as CM_C2S,
     DecoderSequencePair, Endianness, HeartbeatResponseBuilder, MissedFrameReportBuilder, Os,
     ServerToClientMessage as CM_S2C,
 };
-use aperturec_protocol::media_messages::ServerToClientMessage as MM_S2C;
+use aperturec_protocol::media_messages::{
+    ClientToServerMessage as MM_C2S, MediaKeepalive, ServerToClientMessage as MM_S2C,
+};
 
 use aperturec_protocol::event_messages::{
     Button, ButtonStateBuilder, ClientToServerMessage as EM_C2S, KeyEvent, KeyEventBuilder,
@@ -27,7 +29,7 @@ use derive_builder::Builder;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::ErrorKind;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -210,11 +212,14 @@ pub enum ControlMessage {
 // aperturec_channels crate. To get around this, we can wrap these async calls in a managed tokio
 // runtime (see `async_rt`) and return the results to synchrnous code.
 //
-async fn new_async_udp_server(addr: IpAddr, port: u16) -> udp::Server<udp::Listening> {
-    udp::Server::new_blocking(SocketAddr::new(addr, port))
+async fn new_async_udp_client(
+    remote_addr: SocketAddr,
+    bind_addr: SocketAddr,
+) -> udp::Client<udp::Connected> {
+    udp::Client::new_blocking(remote_addr, Some(bind_addr))
         .try_transition()
         .await
-        .expect("Failed to Listen")
+        .expect("Failed to Connect")
 }
 
 async fn new_async_tcp_client_retry(
@@ -247,6 +252,7 @@ pub struct Configuration {
     pub bind_address: SocketAddr,
     pub id: u64,
     pub max_fps: Duration,
+    pub keepalive_timeout: Duration,
     pub win_width: u64,
     pub win_height: u64,
 }
@@ -336,8 +342,8 @@ impl Client {
     pub fn startup(config: &Configuration, itc: &ItcChannels) -> Result<Self> {
         let mut this = Client::new(config);
 
-        this.setup_decoders(itc)?;
         this.setup_control_channel(itc)?;
+        this.setup_decoders(itc)?;
         this.setup_event_channel(itc)?;
 
         Ok(this)
@@ -428,7 +434,7 @@ impl Client {
                     .try_into()
                     .expect("Failed to convert Duration"),
             ))
-            .decoders(self.decoders.keys().map(|p| Decoder::new(*p)).collect())
+            .max_decoder_count(self.config.decoder_max.into())
             .build()
             .expect("Failed to generate ClientInit!")
     }
@@ -438,32 +444,69 @@ impl Client {
 
         assert!(
             itc.img_to_decoder_rxs.len() == self.config.decoder_max.into(),
-            "img_to_decover_rxs.len() != decoder_max ({} != {})",
+            "img_to_decoder_rxs.len() != decoder_max ({} != {})",
             itc.img_to_decoder_rxs.len(),
             self.config.decoder_max
         );
 
-        for decoder_id in 0..self.config.decoder_max {
-            let port = if port_start == 0 {
+        for (rem_port, decoder) in &self.decoders {
+            let decoder_id = decoder.id;
+            let remote_port = *rem_port;
+            let local_port = if port_start == 0 {
                 0
             } else {
                 port_start + decoder_id
             };
-            let udp_server = self
+
+            let mut decoder_addr = self.config.server_addr;
+            decoder_addr.set_port(remote_port);
+
+            let udp_client = self
                 .async_rt
-                .block_on(
-                    self.async_rt
-                        .spawn(new_async_udp_server(self.config.bind_address.ip(), port)),
-                )
-                .expect("Failed to create UDP server");
+                .block_on(self.async_rt.spawn(new_async_udp_client(
+                    decoder_addr,
+                    SocketAddr::new(self.config.bind_address.ip(), local_port),
+                )))
+                .expect("Failed to create UDP client");
 
-            let port = udp_server.local_addr().port();
+            let local_port = udp_client.local_addr().port();
 
-            log::debug!("[decoder {}] {:?}", port, &udp_server);
+            log::debug!("[decoder {}] {:?}", local_port, &udp_client);
 
-            self.decoders.insert(port, ClientDecoder::new(decoder_id));
+            let (mut client_mc_rx, mut client_mc_tx) = ClientMediaChannel::new(udp_client).split();
+            let is_data_recv: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+            let should_stop_ka = self.should_stop.clone();
+            let is_data_recv_ka = is_data_recv.clone();
+            let keepalive_timeout = self.config.keepalive_timeout;
 
-            let mut client_mc = ClientMediaChannel::new(udp_server);
+            thread::spawn(move || {
+                let keepalive =
+                    MM_C2S::new_media_keepalive(MediaKeepalive::new(Decoder::new(remote_port)));
+
+                loop {
+                    log::trace!("[decoder {}] Sending {:?}", local_port, &keepalive);
+                    if let Err(err) = client_mc_tx.send(keepalive.clone()) {
+                        if is_data_recv_ka.load(Ordering::Relaxed) {
+                            log::warn!(
+                                "[decoder {}] Failed to send keepalive to {}: {}",
+                                local_port,
+                                decoder_addr,
+                                err
+                            );
+                        }
+                    }
+
+                    if should_stop_ka.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    if is_data_recv_ka.load(Ordering::Relaxed) {
+                        thread::sleep(keepalive_timeout);
+                    } else {
+                        thread::sleep(Duration::from_millis(250));
+                    }
+                }
+            });
 
             let img_tx = itc.img_from_decoder_tx.clone();
             let img_rx = itc.img_to_decoder_rxs[decoder_id as usize].take().unwrap();
@@ -481,7 +524,7 @@ impl Client {
                         assert!(
                             img.decoder_id == decoder_id.into(),
                             "[decoder {}] Image decoder_id != decoder_id ({} != {})",
-                            port,
+                            local_port,
                             img.decoder_id,
                             decoder_id
                         );
@@ -490,24 +533,24 @@ impl Client {
                     Err(err) => {
                         log::error!(
                             "[decoder {}] Fatal error receiving Image from UI: {}",
-                            port,
+                            local_port,
                             err
                         );
-                        log::debug!("[decoder {}] exiting", port);
+                        log::debug!("[decoder {}] exiting", local_port);
                         return;
                     }
                 };
 
-                log::debug!("[decoder {}] Media channel started", port);
+                log::debug!("[decoder {}] Media channel started", local_port);
                 loop {
                     //
                     // Listen for FramebufferUpdates from the server
                     //
-                    let fbu = match client_mc.receive() {
+                    let fbu = match client_mc_rx.receive() {
                         Ok(m) => match m {
                             MM_S2C::FramebufferUpdate(fbu) => fbu,
                             _ => {
-                                log::warn!("[decoder {}] Received unexpected message", port);
+                                log::warn!("[decoder {}] Received unexpected message", local_port);
                                 continue;
                             }
                         },
@@ -515,18 +558,18 @@ impl Client {
                             Ok(ioe) => match ioe.kind() {
                                 ErrorKind::WouldBlock => {
                                     // receive() should be blocking
-                                    log::warn!("[decoder {}] EAGAIN", port);
+                                    log::warn!("[decoder {}] EAGAIN", local_port);
                                     continue;
                                 }
                                 _ => {
-                                    log::warn!("[decoder {}] IO Error: {:?}", port, ioe);
+                                    log::warn!("[decoder {}] IO Error: {:?}", local_port, ioe);
                                     continue;
                                 }
                             },
                             Err(other) => {
                                 log::warn!(
                                     "[decoder {}] Failed to process media channel message: {}",
-                                    port,
+                                    local_port,
                                     other
                                 );
                                 continue;
@@ -538,10 +581,12 @@ impl Client {
                         break;
                     }
 
+                    is_data_recv.swap(true, Ordering::Relaxed);
+
                     if fbu.rectangle_updates.is_empty() {
                         log::warn!(
                             "[decoder {}] Ignoring FramebufferUpdate with {} rectangle updates",
-                            port,
+                            local_port,
                             fbu.rectangle_updates.len()
                         );
                         continue;
@@ -550,7 +595,7 @@ impl Client {
                     // FramebufferUpdate logging is *very* noisy
                     /*log::trace!(
                         "[decoder {}] FramebufferUpdate [{}..{}]",
-                        port,
+                        local_port,
                         fbu.rectangle_updates.first().unwrap().sequence_id.0,
                         fbu.rectangle_updates.last().unwrap().sequence_id.0
                     );*/
@@ -574,7 +619,7 @@ impl Client {
                         if current_seq_id.map_or(false, |csi: u64| csi >= ru.sequence_id.0) {
                             log::warn!(
                                 "[decoder {}] Dropping Rectangle {}, already received {}",
-                                port,
+                                local_port,
                                 ru.sequence_id.0,
                                 current_seq_id.unwrap()
                             );
@@ -611,8 +656,12 @@ impl Client {
                             ) {
                                 Ok(_) => (),
                                 Err(err) => {
-                                    log::warn!("[decoder {}] Codec::Raw failed: {}", port, err);
-                                    log::debug!("[decoder {}] {:#?}", port, &ru);
+                                    log::warn!(
+                                        "[decoder {}] Codec::Raw failed: {}",
+                                        local_port,
+                                        err
+                                    );
+                                    log::debug!("[decoder {}] {:#?}", local_port, &ru);
                                 }
                             },
                             Codec::Zlib => match image.draw_raw_zlib(
@@ -632,14 +681,18 @@ impl Client {
                             ) {
                                 Ok(_) => (),
                                 Err(err) => {
-                                    log::warn!("[decoder {}] Codec::Zlib failed: {}", port, err);
-                                    log::debug!("[decoder {}] {:#?}", port, &ru);
+                                    log::warn!(
+                                        "[decoder {}] Codec::Zlib failed: {}",
+                                        local_port,
+                                        err
+                                    );
+                                    log::debug!("[decoder {}] {:#?}", local_port, &ru);
                                 }
                             },
                             _ => {
                                 log::warn!(
                                     "[decoder {}] Dropping Rectangle {}, unsupported codec",
-                                    port,
+                                    local_port,
                                     current_seq_id.unwrap()
                                 );
                             }
@@ -655,7 +708,7 @@ impl Client {
                             Err(err) => {
                                 log::error!(
                                     "[decoder {}] Fatal error receiving Image from UI: {}",
-                                    port,
+                                    local_port,
                                     err
                                 );
                                 break;
@@ -664,7 +717,7 @@ impl Client {
                         Err(err) => {
                             log::error!(
                                 "[decoder {}] Fatal error sending Image to UI: {}",
-                                port,
+                                local_port,
                                 err
                             );
                             break;
@@ -672,30 +725,34 @@ impl Client {
                     };
 
                     if !missing_seq.is_empty() {
-                        log::debug!("[decoder {}] MFRs generated for {:?}", port, missing_seq);
+                        log::debug!(
+                            "[decoder {}] MFRs generated for {:?}",
+                            local_port,
+                            missing_seq
+                        );
                         aperturec_metrics::builtins::packet_lost(missing_seq.len());
                     }
                     //
                     // Notify Control thread of last SequenceId and missing SequenceIds
                     //
                     match control_tx.send(ControlMessage::UpdateReceivedMessage(
-                        port,
+                        remote_port,
                         current_seq_id.unwrap(),
                         missing_seq.into_iter().collect(),
                     )) {
                         Ok(_) => (),
                         Err(err) => {
                             if !should_stop.load(Ordering::Relaxed) {
-                                log::error!("[decoder {}] Fatal error sending UpdateReceivedMessage to control thread: {}", port, err);
+                                log::error!("[decoder {}] Fatal error sending UpdateReceivedMessage to control thread: {}", local_port, err);
                             }
                             break;
                         }
                     };
                 } // loop receive FramebufferUpdate
 
-                log::debug!("[decoder {}] Media channel exiting", port);
+                log::debug!("[decoder {}] Media channel exiting", local_port);
             }); // thread::spawn
-        } // for decoder_id
+        } // for self.decoder
 
         Ok(())
     }
@@ -737,14 +794,19 @@ impl Client {
         self.config.win_height = si.display_size.height;
         self.config.win_width = si.display_size.width;
 
-        for decoder in si.decoder_areas {
-            let d = self
-                .decoders
-                .get_mut(&decoder.decoder.port)
-                .expect("Unknown decoder");
+        for (decoder_id, decoder) in si.decoder_areas.into_iter().enumerate() {
+            let mut d = ClientDecoder::new(decoder_id.try_into().unwrap());
             d.set_origin(decoder.location);
             d.set_dims(decoder.dimension);
+            self.decoders.insert(decoder.decoder.port, d);
         }
+
+        assert!(
+            self.decoders.len() <= self.config.decoder_max.into(),
+            "Server returned {} decoders, but our max is {}",
+            self.decoders.len(),
+            self.config.decoder_max
+        );
 
         log::info!(
             "Connected to server @ {} ({}) as client {}!",
@@ -1028,12 +1090,11 @@ pub fn run_client(config: Configuration) -> Result<()> {
 
 #[cfg(test)]
 mod test {
-
+    use super::*;
     use crate::client::{Client, Configuration, ConfigurationBuilder};
     use crate::gtk3::ItcChannels;
     use aperturec_channel::reliable::tcp;
     use aperturec_channel::{Receiver, Sender, ServerControlChannel, ServerEventChannel};
-    use aperturec_protocol::common_types::*;
     use aperturec_protocol::control_messages::*;
     use aperturec_protocol::control_messages::{
         ClientToServerMessage as CM_C2S, ServerToClientMessage as CM_S2C,
@@ -1065,6 +1126,7 @@ mod test {
             .win_height(height)
             .id(1234)
             .max_fps(Duration::from_secs((1 / 30u16).into()))
+            .keepalive_timeout(Duration::from_secs(1))
             .build()
             .expect("Failed to build Configuration!")
     }
@@ -1103,18 +1165,28 @@ mod test {
     #[test]
     fn setup_decoders() {
         setup();
-        let config = generate_default_configuration();
+        let begin_port = 8653;
+        let mut config = generate_default_configuration();
+        config.bind_address.set_port(begin_port);
         let itc = ItcChannels::new(&config);
         let mut client = Client::new(&config);
+
+        for i in 0..config.decoder_max {
+            client.decoders.insert(1234 + i, ClientDecoder::new(i));
+        }
 
         client
             .setup_decoders(&itc)
             .expect("Failed to setup decoders");
 
-        assert_eq!(client.decoders.len(), config.decoder_max.into());
-
-        for port in client.decoders.keys() {
-            assert_eq!(is_udp_port_open(*port), false, "Port {} is open!", port);
+        for (i, _remote_port) in client.decoders.keys().into_iter().enumerate() {
+            let local_port = begin_port + i as u16;
+            assert_eq!(
+                is_udp_port_open(local_port),
+                false,
+                "Port {} is open!",
+                local_port
+            );
         }
     }
 

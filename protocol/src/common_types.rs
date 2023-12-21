@@ -57,4 +57,12 @@ mod test {
         #[cfg(feature = "asn1c-tests")]
         c::round_trip_der!(CursorBitmap, c::CursorBitmap, cursor_bitmap);
     }
+
+    #[test]
+    fn decoder() {
+        let decoder = Decoder { port: 65 };
+        serde_type_der!(Decoder, decoder);
+        #[cfg(feature = "asn1c-tests")]
+        c::round_trip_der!(Decoder, c::Decoder, decoder);
+    }
 }

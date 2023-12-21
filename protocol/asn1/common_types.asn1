@@ -67,4 +67,9 @@ CommonTypes DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     data OCTET STRING
   }
 
+  Decoder ::= SEQUENCE {
+    port INTEGER(1024..65535),
+    ...
+  }
+
 END

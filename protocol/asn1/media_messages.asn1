@@ -1,5 +1,5 @@
 MediaMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
-  IMPORTS Codec, Dimension, Location, SequenceId FROM CommonTypes;
+  IMPORTS Codec, Decoder, Dimension, Location, SequenceId FROM CommonTypes;
 
   Rectangle ::= SEQUENCE {
     codec Codec,
@@ -20,8 +20,18 @@ MediaMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     ...
   }
 
+  MediaKeepalive ::= SEQUENCE {
+    decoder Decoder,
+    ...
+  }
+
   ServerToClientMessage ::= CHOICE {
     framebufferUpdate FramebufferUpdate,
+    ...
+  }
+
+  ClientToServerMessage ::= CHOICE {
+    mediaKeepalive MediaKeepalive,
     ...
   }
 

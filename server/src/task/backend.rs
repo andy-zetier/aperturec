@@ -40,6 +40,7 @@ pub struct Created<B: Backend + 'static> {
     missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
     acked_seq_rx: mpsc::UnboundedReceiver<cm::DecoderSequencePair>,
     decoder_areas: Vec<cm::DecoderArea>,
+    mc_servers: Vec<udp::Server<udp::Connected>>,
     codecs: BTreeMap<u16, Codec>,
     client_addr: SocketAddr,
     ct: CancellationToken,
@@ -82,6 +83,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
     pub fn new<'d, I>(
         backend: B,
         decoder_areas: I,
+        mc_servers: Vec<udp::Server<udp::Connected>>,
         codecs: BTreeMap<u16, Codec>,
         client_addr: &SocketAddr,
         event_rx: mpsc::UnboundedReceiver<Event>,
@@ -102,6 +104,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
                 missed_frame_rx,
                 acked_seq_rx,
                 decoder_areas: decoder_areas.into_iter().cloned().collect(),
+                mc_servers,
                 codecs,
                 client_addr: *client_addr,
                 ct: ct.clone(),
@@ -128,13 +131,13 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
         let mut missed_frame_txs = BTreeMap::new();
         let mut encoder_cts = BTreeMap::new();
         let mut encoders = BTreeMap::new();
-        for decoder_area in &self.state.decoder_areas {
+
+        for (decoder_area, mc_server) in self.state.decoder_areas.iter().zip(&self.state.mc_servers)
+        {
             addr.set_port(decoder_area.decoder.port);
-            let udp_client = udp::Client::<udp::Closed>::new(addr);
-            let connected_client = try_transition_inner_recover!(udp_client, udp::Closed, |_| self);
-            let async_client =
-                try_transition_inner_recover!(connected_client, udp::Closed, |_| self);
-            let mc = AsyncServerMediaChannel::new(async_client);
+            let async_mc_server =
+                try_transition_inner_recover!(mc_server.clone(), udp::Closed, |_| self);
+            let mc = AsyncServerMediaChannel::new(async_mc_server);
             let codec = self
                 .state
                 .codecs

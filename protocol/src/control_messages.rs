@@ -66,7 +66,7 @@ mod test {
             },
             client_heartbeat_interval: DurationMs(1000),
             client_heartbeat_response_interval: DurationMs(1000),
-            decoders: vec![Decoder { port: 1024 }],
+            max_decoder_count: 56,
         };
         serde_type_der!(ClientInit, client_init);
         #[cfg(feature = "asn1c-tests")]
@@ -121,13 +121,13 @@ mod test {
 
     #[test]
     fn missed_frame_report() {
-        serde_type_der!(
-            MissedFrameReport,
-            MissedFrameReport {
-                decoder: Decoder::new(1234),
-                frames: vec![SequenceId(1), SequenceId(2), SequenceId(3),],
-            }
-        );
+        let missed_frame_report = MissedFrameReport {
+            decoder: Decoder::new(1234),
+            frames: vec![SequenceId(1), SequenceId(2), SequenceId(3)],
+        };
+        serde_type_der!(MissedFrameReport, missed_frame_report);
+        #[cfg(feature = "asn1c-tests")]
+        c::round_trip_der!(MissedFrameReport, c::MissedFrameReport, missed_frame_report);
     }
 
     #[test]

@@ -15,18 +15,40 @@ struct Args {
     #[arg(short, long, default_value_t = 0)]
     decoder_max: u16,
 
+    /// Initial port to bind for the decoders. A block of decoder_max ports must be available
+    /// starting with this one. A value of 0 will defer port selection to the OS
+    #[arg(short = 'p', long = "port", default_value_t = 46454)]
+    decoder_port_start: u16,
+
     /// Maximum frames per second.
     #[arg(long = "fps", default_value_t = 30)]
     fps_max: u16,
 
+    /// Set SCREEN_SIZE to your primary display's current size and startup in fullscreen mode.
+    /// Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
+    #[arg(short, long, action = clap::ArgAction::SetTrue)]
+    fullscreen: bool,
+
+    /// Duration in seconds between subsequent keepalive attempts. This value may need to be
+    /// tweaked depending on your NAT configuration.
+    #[arg(short = 'k', default_value_t = 23)]
+    keepalive_timeout: u64,
+
+    /// Log metric data to a CSV file at the provided path
+    #[arg(long, default_value = None)]
+    metrics_csv: Option<String>,
+
+    /// Log metric data at the DEBUG level (-vvv)
+    #[arg(long)]
+    metrics_log: bool,
+
+    /// Send metric data to Pushgateway instance at the provided URL
+    #[arg(long, default_value = None)]
+    metrics_pushgateway: Option<String>,
+
     /// Display size specified as WIDTHxHEIGHT.
     #[arg(index = 2, default_value = "800x600")]
     screen_size: String,
-
-    /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
-    /// verbosity. The maximum is 3.
-    #[arg(short, action = clap::ArgAction::Count)]
-    verbosity: u8,
 
     /// IP address of the server including control channel port. Eg. 10.10.10.11:46454 or
     /// [::1]:46454
@@ -37,27 +59,10 @@ struct Args {
     #[arg(short, long, default_value_t = 1234)]
     temp_client_id: u64,
 
-    /// Initial UDP port number for the decoders. A total of decoder_max ports must be open
-    /// starting with this one.
-    #[arg(short = 'p', long = "port", default_value_t = 46454)]
-    decoder_port_start: u16,
-
-    /// Log metric data at the DEBUG level (-vvv)
-    #[arg(long)]
-    metrics_log: bool,
-
-    /// Log metric data to a CSV file at the provided path
-    #[arg(long, default_value = None)]
-    metrics_csv: Option<String>,
-
-    /// Send metric data to Pushgateway instance at the provided URL
-    #[arg(long, default_value = None)]
-    metrics_pushgateway: Option<String>,
-
-    /// Set SCREEN_SIZE to your primary display's current size and startup in fullscreen mode.
-    /// Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
-    #[arg(short, long, action = clap::ArgAction::SetTrue)]
-    fullscreen: bool,
+    /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
+    /// verbosity. The maximum is 3.
+    #[arg(short, action = clap::ArgAction::Count)]
+    verbosity: u8,
 }
 
 fn main() -> Result<()> {
@@ -120,6 +125,7 @@ fn main() -> Result<()> {
         .win_width(dims[0])
         .id(args.temp_client_id)
         .max_fps(Duration::from_secs_f32(1.0/(args.fps_max as f32)))
+        .keepalive_timeout(Duration::from_secs(args.keepalive_timeout))
         .build()?;
 
     log::debug!("{:#?}", config);

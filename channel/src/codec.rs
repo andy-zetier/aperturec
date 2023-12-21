@@ -854,24 +854,179 @@ macro_rules! impl_codec_unreliable {
                 }
             }
 
-            pub type ServerMediaChannel = SenderSimplex<
+            pub struct Duplex<C, RM, SM>
+            where
+                C: RawReceiver + RawSender,
+                RM: Decode,
+                SM: Encode,
+            {
+                common_rs: C,
+                buf: [u8; 65536],
+                _receive_message: PhantomData<RM>,
+                _send_message: PhantomData<SM>,
+            }
+
+            impl<C, RM, SM> Duplex<C, RM, SM>
+            where
+                C: RawReceiver + RawSender,
+                RM: Decode,
+                SM: Encode,
+            {
+                pub fn new(common_rs: C) -> Self {
+                    Duplex {
+                        common_rs,
+                        buf: [0_u8; 65536],
+                        _receive_message: PhantomData,
+                        _send_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> C {
+                    self.common_rs
+                }
+            }
+
+            impl<C, RM, SM> Duplex<C, RM, SM>
+            where
+                C: RawReceiver + RawSender + Clone,
+                RM: Decode,
+                SM: Encode,
+            {
+                pub fn split(self) -> (ReceiverSimplex<C, RM>, SenderSimplex<C, SM>) {
+                    let wh = self.common_rs.clone();
+
+                    (
+                        ReceiverSimplex {
+                            receiver: self.common_rs,
+                            buf: self.buf,
+                            _receive_message: PhantomData,
+                        },
+                        SenderSimplex {
+                            sender: wh,
+                            _send_message: PhantomData,
+                        },
+                    )
+                }
+            }
+
+            impl<C, RM, SM> Receiver for Duplex<C, RM, SM>
+            where
+                C: RawReceiver + RawSender,
+                RM: Decode,
+                SM: Encode,
+            {
+                type Message = RM;
+                fn receive(&mut self) -> anyhow::Result<Self::Message> {
+                    let nbytes_recvd = self.common_rs.receive(&mut self.buf)?;
+                    aperturec_metrics::builtins::rx_bytes(nbytes_recvd);
+                    let slice = &self.buf[0..nbytes_recvd];
+                    Ok($codec::decode::<RM>(&slice)?)
+                }
+            }
+
+            impl<C, RM, SM> Sender for Duplex<C, RM, SM>
+            where
+                C: RawReceiver + RawSender,
+                RM: Decode,
+                SM: Encode,
+            {
+                type Message = SM;
+                fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+                    let buf = $codec::encode(&msg)?;
+                    let nbytes_sent = self.common_rs.send(&buf)?;
+                    aperturec_metrics::builtins::tx_bytes(nbytes_sent);
+                    Ok(())
+                }
+            }
+
+            pub struct AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRawReceiver + AsyncRawSender + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                common_rs: C,
+                buf: [u8; 65536],
+                _receive_message: PhantomData<RM>,
+                _send_message: PhantomData<SM>,
+            }
+
+            impl<C, RM, SM> AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRawReceiver + AsyncRawSender + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                pub fn new(common_rs: C) -> Self {
+                    AsyncDuplex {
+                        common_rs,
+                        buf: [0_u8; 65536],
+                        _receive_message: PhantomData,
+                        _send_message: PhantomData,
+                    }
+                }
+
+                pub fn into_inner(self) -> C {
+                    self.common_rs
+                }
+            }
+
+            #[async_trait]
+            impl<C, RM, SM> AsyncReceiver for AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRawReceiver + AsyncRawSender + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                type Message = RM;
+
+                async fn receive(&mut self) -> anyhow::Result<Self::Message> {
+                    let nbytes_recvd = self.common_rs.receive(&mut self.buf).await?;
+                    aperturec_metrics::builtins::rx_bytes(nbytes_recvd);
+                    let slice = &self.buf[0..nbytes_recvd];
+                    Ok($codec::decode::<RM>(&slice)?)
+                }
+            }
+
+            #[async_trait]
+            impl<C, RM, SM> AsyncSender for AsyncDuplex<C, RM, SM>
+            where
+                C: AsyncRawReceiver + AsyncRawSender + Send + Unpin + 'static,
+                RM: Decode + Send + 'static,
+                SM: Encode + Send + 'static,
+            {
+                type Message = SM;
+
+                async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+                    let buf = $codec::encode(&msg)?;
+                    let nbytes_sent = self.common_rs.send(&buf).await?;
+                    aperturec_metrics::builtins::tx_bytes(nbytes_sent);
+                    Ok(())
+                }
+            }
+
+            pub type ServerMediaChannel = Duplex<
+                $transport::Server<$transport::Connected>,
+                media_messages::ClientToServerMessage,
+                media_messages::ServerToClientMessage,
+            >;
+
+            pub type ClientMediaChannel = Duplex<
                 $transport::Client<$transport::Connected>,
                 media_messages::ServerToClientMessage,
+                media_messages::ClientToServerMessage,
             >;
 
-            pub type ClientMediaChannel = ReceiverSimplex<
-                $transport::Server<$transport::Listening>,
+            pub type AsyncServerMediaChannel = AsyncDuplex<
+                $transport::Server<$transport::AsyncConnected>,
+                media_messages::ClientToServerMessage,
                 media_messages::ServerToClientMessage,
             >;
 
-            pub type AsyncServerMediaChannel = AsyncSenderSimplex<
+            pub type AsyncClientMediaChannel = AsyncDuplex<
                 $transport::Client<$transport::AsyncConnected>,
                 media_messages::ServerToClientMessage,
-            >;
-
-            pub type AsyncClientMediaChannel = AsyncReceiverSimplex<
-                $transport::Server<$transport::AsyncListening>,
-                media_messages::ServerToClientMessage,
+                media_messages::ClientToServerMessage,
             >;
         }
     };
@@ -966,10 +1121,7 @@ macro_rules! tcp_test {
                             )
                             .client_heartbeat_interval(DurationMs(1000))
                             .client_heartbeat_response_interval(DurationMs(1000))
-                            .decoders(vec![control_messages::DecoderBuilder::default()
-                                .port(9999)
-                                .build()
-                                .expect("Decoder build")])
+                            .max_decoder_count(1)
                             .build()
                             .expect("ClientInit build"),
                     )
@@ -1152,30 +1304,37 @@ macro_rules! udp_test {
                         .try_transition()
                         .await
                         .expect("Failed to listen");
-                    let udp_client = udp::Client::new(SocketAddr::from(($ip, $port)))
-                        .try_transition()
-                        .await
-                        .expect("Failed to connect");
+                    let udp_client = udp::Client::new(
+                        SocketAddr::from(($ip, $port)),
+                        Some(SocketAddr::from(($ip, 0))),
+                    )
+                    .try_transition()
+                    .await
+                    .expect("Failed to connect");
                     (udp_client, udp_server)
                 }};
             }
 
-            macro_rules! async_udp_client_and_server {
+            macro_rules! async_udp_client_and_sync_server {
                 ($ip:expr, $port:expr) => {{
                     let (sync_client, sync_server) = udp_client_and_server!($ip, $port);
                     let async_client = sync_client
                         .try_transition()
                         .await
                         .expect("Failed to make client async");
-                    let async_server = sync_server
-                        .try_transition()
-                        .await
-                        .expect("Failed to make server async");
-                    (async_client, async_server)
+                    (async_client, sync_server)
                 }};
             }
 
-            macro_rules! test_media_message {
+            macro_rules! test_c2s_media_message {
+                () => {{
+                    ClientToServerMessage::new_media_keepalive(MediaKeepalive::new(Decoder::new(
+                        1337,
+                    )))
+                }};
+            }
+
+            macro_rules! test_s2c_media_message {
                 () => {{
                     ServerToClientMessage::new_framebuffer_update(FramebufferUpdate::new(vec![
                         RectangleUpdateBuilder::default()
@@ -1196,16 +1355,45 @@ macro_rules! udp_test {
             async fn mc_init() {
                 let (sync_client, sync_server) =
                     udp_client_and_server!([127, 0, 0, 1], $port_start);
-                let mut server_mc = ServerMediaChannel::new(sync_client);
-                let mut client_mc = ClientMediaChannel::new(sync_server);
-                let msg = test_media_message!();
+                let mut rs_mc: ReceiverSimplex<udp::Server<udp::Listening>, ClientToServerMessage> =
+                    ReceiverSimplex::new(sync_server);
+                let mut client_mc = ClientMediaChannel::new(sync_client);
+                let keepalive = test_c2s_media_message!();
+                let msg = test_s2c_media_message!();
+                client_mc
+                    .send(keepalive.clone())
+                    .expect("failed to send media keepalive 1");
+                let recvd = rs_mc
+                    .receive()
+                    .expect("failed to receive media keepalive 1");
+                assert_eq!(keepalive, recvd);
+                let sync_server = rs_mc
+                    .into_inner()
+                    .try_transition()
+                    .await
+                    .expect("mc server connected");
+                let mut server_mc = ServerMediaChannel::new(sync_server);
                 server_mc
                     .send(msg.clone())
-                    .expect("failed to send media message");
+                    .expect("failed to send media message 1");
                 let recvd = client_mc
                     .receive()
-                    .expect("failed to receive media message");
+                    .expect("failed to receive media message 1");
                 assert_eq!(msg, recvd);
+                server_mc
+                    .send(msg.clone())
+                    .expect("failed to send media message 2");
+                let recvd = client_mc
+                    .receive()
+                    .expect("failed to receive media message 2");
+                assert_eq!(msg, recvd);
+                client_mc
+                    .send(keepalive.clone())
+                    .expect("failed to send media keepalive 2");
+                let recvd = server_mc
+                    .receive()
+                    .expect("failed to receive media keepalive 2");
+                assert_eq!(keepalive, recvd);
 
                 let _sync_client = server_mc.into_inner();
                 let _sync_server = client_mc.into_inner();
@@ -1213,23 +1401,60 @@ macro_rules! udp_test {
 
             #[tokio::test]
             async fn mc_init_async() {
-                let (async_client, async_server) =
-                    async_udp_client_and_server!([127, 0, 0, 1], $port_start + 1);
-                let mut server_mc = AsyncServerMediaChannel::new(async_client);
-                let mut client_mc = AsyncClientMediaChannel::new(async_server);
-                let msg = test_media_message!();
+                let (async_client, sync_server) =
+                    async_udp_client_and_sync_server!([127, 0, 0, 1], $port_start + 1);
+                let mut rs_mc: ReceiverSimplex<udp::Server<udp::Listening>, ClientToServerMessage> =
+                    ReceiverSimplex::new(sync_server);
+                let mut client_mc = AsyncClientMediaChannel::new(async_client);
+                let keepalive = test_c2s_media_message!();
+                let msg = test_s2c_media_message!();
+                client_mc
+                    .send(keepalive.clone())
+                    .await
+                    .expect("failed to send async media keepalive 1");
+                let recvd = rs_mc
+                    .receive()
+                    .expect("failed to receive async media keepalive 1");
+                assert_eq!(keepalive, recvd);
+                let async_server = rs_mc
+                    .into_inner()
+                    .try_transition()
+                    .await
+                    .expect("Connected")
+                    .try_transition()
+                    .await
+                    .expect("Async Server");
+                let mut server_mc = AsyncServerMediaChannel::new(async_server);
                 server_mc
                     .send(msg.clone())
                     .await
-                    .expect("failed to send media message");
+                    .expect("failed to send async media message 1");
                 let recvd = client_mc
                     .receive()
                     .await
-                    .expect("failed to receive media message");
+                    .expect("failed to receive async media message 1");
                 assert_eq!(msg, recvd);
+                server_mc
+                    .send(msg.clone())
+                    .await
+                    .expect("failed to send async media message 2");
+                let recvd = client_mc
+                    .receive()
+                    .await
+                    .expect("failed to receive async media message 2");
+                assert_eq!(msg, recvd);
+                client_mc
+                    .send(keepalive.clone())
+                    .await
+                    .expect("failed to send async media keepalive 2");
+                let recvd = server_mc
+                    .receive()
+                    .await
+                    .expect("failed to receive async media keepalive 2");
+                assert_eq!(keepalive, recvd);
 
-                let _sync_client = server_mc.into_inner();
-                let _sync_server = client_mc.into_inner();
+                let _async_client = server_mc.into_inner();
+                let _async_server = client_mc.into_inner();
             }
         }
     };

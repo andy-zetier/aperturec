@@ -1,7 +1,7 @@
 use crate::backend::FramebufferUpdate;
 
 use anyhow::{anyhow, Result};
-use aperturec_channel::AsyncSender;
+use aperturec_channel::{AsyncReceiver, AsyncSender};
 use aperturec_protocol::common_types::*;
 use aperturec_protocol::control_messages as cm;
 use aperturec_protocol::media_messages as mm;
@@ -197,8 +197,12 @@ pub struct Encoder<S: State> {
 }
 
 #[derive(State, Debug)]
-pub struct Created<Sender: AsyncSender<Message = mm::ServerToClientMessage>> {
-    sender: Sender,
+pub struct Created<AsyncDuplex>
+where
+    AsyncDuplex: AsyncSender<Message = mm::ServerToClientMessage>
+        + AsyncReceiver<Message = mm::ClientToServerMessage>,
+{
+    send_recv: AsyncDuplex,
     codec: Codec,
     decoder_area: cm::DecoderArea,
     fb_rx: mpsc::UnboundedReceiver<Arc<FramebufferUpdate>>,
@@ -207,8 +211,9 @@ pub struct Created<Sender: AsyncSender<Message = mm::ServerToClientMessage>> {
     ct: CancellationToken,
 }
 
-impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>> SelfTransitionable
-    for Encoder<Created<Sender>>
+impl<AsyncDuplex> SelfTransitionable for Encoder<Created<AsyncDuplex>> where
+    AsyncDuplex: AsyncSender<Message = mm::ServerToClientMessage>
+        + AsyncReceiver<Message = mm::ClientToServerMessage>
 {
 }
 
@@ -228,10 +233,14 @@ pub struct Channels {
     pub missed_frame_tx: mpsc::UnboundedSender<SequenceId>,
 }
 
-impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>> Encoder<Created<Sender>> {
+impl<AsyncDuplex> Encoder<Created<AsyncDuplex>>
+where
+    AsyncDuplex: AsyncSender<Message = mm::ServerToClientMessage>
+        + AsyncReceiver<Message = mm::ClientToServerMessage>,
+{
     pub fn new(
         decoder_area: cm::DecoderArea,
-        sender: Sender,
+        send_recv: AsyncDuplex,
         codec: Codec,
     ) -> (Self, Channels, CancellationToken) {
         let (fb_tx, fb_rx) = mpsc::unbounded_channel();
@@ -241,7 +250,7 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>> Encoder<Created<S
 
         let enc = Encoder {
             state: Created {
-                sender,
+                send_recv,
                 codec,
                 decoder_area,
                 fb_rx,
@@ -826,11 +835,13 @@ impl CachedFramebuffer {
 }
 
 #[async_trait]
-impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
-    TryTransitionable<Running, Created<Sender>> for Encoder<Created<Sender>>
+impl<AsyncDuplex> TryTransitionable<Running, Created<AsyncDuplex>> for Encoder<Created<AsyncDuplex>>
+where
+    AsyncDuplex: AsyncSender<Message = mm::ServerToClientMessage>
+        + AsyncReceiver<Message = mm::ClientToServerMessage>,
 {
     type SuccessStateful = Encoder<Running>;
-    type FailureStateful = Encoder<Created<Sender>>;
+    type FailureStateful = Encoder<Created<AsyncDuplex>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
@@ -929,7 +940,7 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
         };
 
         let mut dispatch_subtask: JoinHandle<anyhow::Result<()>> = {
-            let mut sender = self.state.sender;
+            let mut send_recv = self.state.send_recv;
             let in_flight = in_flight.clone();
             let responsible_sequence_nos = responsible_sequence_nos.clone();
             let decoder_area = decoder_area.clone();
@@ -941,12 +952,26 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
             let ct = self.state.ct.clone();
             tokio::spawn(async move {
                 let mut dispatch_stream = ReceiverStream::new(dispatch_rx).fuse();
+
                 'select: loop {
                     tokio::select! {
                         biased;
                         _ = ct.cancelled() => {
                             log::info!("Dispatch task cancelled");
                             break Ok(());
+                        }
+                        mc_msg_res = send_recv.receive() => {
+                            match mc_msg_res {
+                                Ok(mm::ClientToServerMessage::MediaKeepalive(mk)) => {
+                                    log::trace!("Received and ignored {:?}", mk);
+                                }
+                                Ok(msg) => {
+                                    log::warn!("Received unexpected message on media channel: {:?}", msg);
+                                }
+                                Err(err) => {
+                                    log::error!("Failed to receive message on media channel: {:?}", err);
+                                }
+                            }
                         }
                         Some(mut updates) = dispatch_stream.next() => {
                             while let Some(update) = updates.pop() {
@@ -1009,7 +1034,7 @@ impl<Sender: AsyncSender<Message = mm::ServerToClientMessage>>
                                 MutexGuard::unlock_fair(in_flight_locked);
                                 let rus_count = rus.len();
                                 let message = mm::ServerToClientMessage::new_framebuffer_update(mm::FramebufferUpdate::new(rus));
-                                if let Err(e) = sender.send(message).await {
+                                if let Err(e) = send_recv.send(message).await {
                                     if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
                                         if let Some(raw_os_error) = io_err.raw_os_error() {
                                             if raw_os_error == 90 { /* Message too big */

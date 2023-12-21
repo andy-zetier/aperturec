@@ -286,7 +286,7 @@ impl Clone for Client<Connected> {
                     .try_clone()
                     .expect("clone connected client"),
             },
-            addr: self.addr.clone(),
+            addr: self.addr,
             is_nonblocking: self.is_nonblocking,
         }
     }

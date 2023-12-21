@@ -5,7 +5,9 @@ use crate::task::{
 };
 
 use anyhow::{anyhow, Result};
+use aperturec_channel::codec::der::unreliable::ReceiverSimplex;
 use aperturec_channel::reliable::tcp;
+use aperturec_channel::unreliable::udp;
 use aperturec_channel::*;
 use aperturec_protocol::common_types::*;
 use aperturec_protocol::control_messages as cm;
@@ -24,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Configuration {
     control_channel_addr: SocketAddr,
     event_channel_addr: SocketAddr,
+    media_channel_addr: SocketAddr,
     name: String,
     temp_client_id: ClientId,
     initial_program: String,
@@ -71,6 +74,7 @@ pub struct AuthenticatedClient<B: Backend + 'static> {
     client_hb_interval: Duration,
     client_hb_response_interval: Duration,
     decoder_areas: Vec<cm::DecoderArea>,
+    mc_servers: Vec<udp::Server<udp::Listening>>,
     codecs: BTreeMap<u16, Codec>,
 }
 
@@ -82,6 +86,7 @@ pub struct ChannelsAccepted<B: Backend + 'static> {
     client_hb_interval: Duration,
     client_hb_response_interval: Duration,
     decoder_areas: Vec<cm::DecoderArea>,
+    mc_servers: Vec<udp::Server<udp::Connected>>,
     codecs: BTreeMap<u16, Codec>,
 }
 
@@ -168,12 +173,12 @@ fn do_partition(num_partitions: usize, rect: encoder::Rect) -> Vec<encoder::Rect
 
 fn partition(
     client_resolution: &Dimension,
-    decoders: &[cm::Decoder],
-) -> (encoder::Size, Vec<cm::DecoderArea>) {
-    let n_encoders = if decoders.len() > 1 {
-        decoders.len() / 2 * 2
+    max_decoder_count: usize,
+) -> (encoder::Size, Vec<encoder::Rect>) {
+    let n_encoders = if max_decoder_count > 1 {
+        max_decoder_count / 2 * 2
     } else {
-        decoders.len()
+        max_decoder_count
     };
     let client_resolution = encoder::Size::new(
         client_resolution.width as usize,
@@ -200,20 +205,7 @@ fn partition(
         .expect("partition server width")
         + partitions[0].size.height;
     let server_resolution = encoder::Size::new(server_width, server_height);
-    (
-        server_resolution,
-        partitions
-            .iter()
-            .zip(decoders)
-            .map(|(rect, decoder)| {
-                cm::DecoderArea::new(
-                    decoder.clone(),
-                    Location::new(rect.origin.x as u64, rect.origin.y as u64),
-                    Dimension::new(rect.size.width as u64, rect.size.height as u64),
-                )
-            })
-            .collect(),
-    )
+    (server_resolution, partitions)
 }
 
 #[async_trait]
@@ -353,12 +345,45 @@ impl<B: Backend + 'static> TryTransitionable<AuthenticatedClient<B>, ChannelsLis
         if client_init.temp_id != self.config.temp_client_id {
             return_recover!(self, "mismatched temporary ID");
         }
-        if client_init.decoders.is_empty() {
-            return_recover!(self, "client did not provide any decoders");
+        if client_init.max_decoder_count < 1 {
+            return_recover!(self, "client sent invalid decoder max");
         }
 
         let client_resolution = &client_init.client_info.display_size;
-        let (resolution, decoder_areas) = partition(client_resolution, &client_init.decoders);
+        let (resolution, partitions) = partition(
+            client_resolution,
+            client_init.max_decoder_count.try_into().unwrap(),
+        );
+
+        let mut decoder_areas: Vec<cm::DecoderArea> = vec![];
+        let mut mc_servers: Vec<udp::Server<udp::Listening>> = vec![];
+        let port_start = self.config.media_channel_addr.port();
+        let mut local_mc_addr = self.config.media_channel_addr;
+
+        for (i, rect) in partitions.into_iter().enumerate() {
+            if port_start != 0 {
+                local_mc_addr.set_port(port_start + i as u16);
+            }
+            let mc_server = udp::Server::<udp::Closed>::new(local_mc_addr);
+            let mc_server_listening = try_transition_inner_recover!(mc_server, udp::Closed, |_| {
+                Server {
+                    state: ChannelsListening {
+                        backend: self.state.backend,
+                        cc_server: self.state.cc.into_inner().transition(),
+                        ec_server: self.state.ec_server,
+                    },
+                    config: self.config,
+                }
+            });
+
+            decoder_areas.push(cm::DecoderArea::new(
+                Decoder::new(mc_server_listening.local_addr().port()),
+                Location::new(rect.origin.x as u64, rect.origin.y as u64),
+                Dimension::new(rect.size.width as u64, rect.size.height as u64),
+            ));
+            mc_servers.push(mc_server_listening);
+        }
+
         let codecs = decoder_areas
             .iter()
             .map(|decoder_area| {
@@ -415,6 +440,7 @@ impl<B: Backend + 'static> TryTransitionable<AuthenticatedClient<B>, ChannelsLis
                     client_init.client_heartbeat_response_interval.0,
                 ),
                 decoder_areas,
+                mc_servers,
                 codecs,
             },
             config: self.config,
@@ -473,6 +499,53 @@ impl<B: Backend + 'static> TryTransitionable<ChannelsAccepted<B>, ChannelsListen
         );
         let ec = AsyncServerEventChannel::new(ec_async);
 
+        let mut mc_servers: Vec<udp::Server<udp::Connected>> = vec![];
+        for mc_server in self.state.mc_servers {
+            let mut mc_rs: ReceiverSimplex<
+                udp::Server<udp::Listening>,
+                media_messages::ClientToServerMessage,
+            > = ReceiverSimplex::new(mc_server);
+
+            match mc_rs.receive() {
+                Ok(media_messages::ClientToServerMessage::MediaKeepalive(mk)) => {
+                    log::trace!("Received initial {:?}", mk)
+                }
+                Ok(msg) => return_recover!(
+                    Server {
+                        state: ChannelsListening {
+                            backend: self.state.backend,
+                            cc_server: transition!(self.state.cc.into_inner(), tcp::Listening),
+                            ec_server: transition!(ec.into_inner(), tcp::Listening)
+                        },
+                        config: self.config,
+                    },
+                    format!("Received unexpected media channel message: {:?}", msg)
+                ),
+                Err(err) => return_recover!(
+                    Server {
+                        state: ChannelsListening {
+                            backend: self.state.backend,
+                            cc_server: transition!(self.state.cc.into_inner(), tcp::Listening),
+                            ec_server: transition!(ec.into_inner(), tcp::Listening)
+                        },
+                        config: self.config,
+                    },
+                    format!("Failed to receive MediaKeepalive: {:?}", err)
+                ),
+            };
+
+            let mc_connected =
+                try_transition_inner_recover!(mc_rs.into_inner(), udp::Closed, |_| Server {
+                    state: ChannelsListening {
+                        backend: self.state.backend,
+                        cc_server: transition!(self.state.cc.into_inner(), tcp::Listening),
+                        ec_server: transition!(ec.into_inner(), tcp::Listening)
+                    },
+                    config: self.config,
+                });
+            mc_servers.push(mc_connected);
+        }
+
         Ok(Server {
             state: ChannelsAccepted {
                 backend: self.state.backend,
@@ -481,6 +554,7 @@ impl<B: Backend + 'static> TryTransitionable<ChannelsAccepted<B>, ChannelsListen
                 client_hb_interval: self.state.client_hb_interval,
                 client_hb_response_interval: self.state.client_hb_response_interval,
                 decoder_areas: self.state.decoder_areas,
+                mc_servers,
                 codecs: self.state.codecs,
             },
             config: self.config,
@@ -509,6 +583,7 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, ChannelsListening<B>>
             backend::Task::<backend::Created<B>>::new(
                 self.state.backend,
                 &self.state.decoder_areas,
+                self.state.mc_servers,
                 self.state.codecs,
                 &remote_addr,
                 ec_handler_channels.event_rx,
@@ -812,6 +887,7 @@ mod test {
 
     use aperturec_channel::reliable::tcp;
     use aperturec_protocol::control_messages::*;
+    use aperturec_protocol::media_messages::MediaKeepalive;
     use serial_test::serial;
 
     fn client_init_msg(id: u64) -> ClientToServerMessage {
@@ -857,11 +933,7 @@ mod test {
                 )
                 .client_heartbeat_interval(DurationMs(1000))
                 .client_heartbeat_response_interval(DurationMs(1000))
-                .decoders(vec![
-                    Decoder::new(9990),
-                    Decoder::new(9991),
-                    Decoder::new(9992),
-                ])
+                .max_decoder_count(3)
                 .build()
                 .expect("ClientInit build"),
         )
@@ -871,10 +943,12 @@ mod test {
         client_id: u64,
         cc_port: u16,
         ec_port: u16,
+        mc_port: u16,
     ) -> (Server<ControlChannelAccepted<X>>, AsyncClientControlChannel) {
         let server_config = ConfigurationBuilder::default()
             .control_channel_addr(SocketAddr::new("127.0.0.1".parse().unwrap(), cc_port))
             .event_channel_addr(SocketAddr::new("127.0.0.1".parse().unwrap(), ec_port))
+            .media_channel_addr(SocketAddr::new("127.0.0.1".parse().unwrap(), mc_port))
             .name("test server".into())
             .temp_client_id(ClientId(client_id))
             .initial_program("glxgears".to_owned())
@@ -901,8 +975,10 @@ mod test {
         client_id: u64,
         cc_port: u16,
         ec_port: u16,
+        mc_port: u16,
     ) -> (Server<AuthenticatedClient<X>>, AsyncClientControlChannel) {
-        let (server, mut client_cc) = server_cc_accepted(client_id, cc_port, ec_port).await;
+        let (server, mut client_cc) =
+            server_cc_accepted(client_id, cc_port, ec_port, mc_port).await;
         client_cc
             .send(client_init_msg(client_id))
             .await
@@ -921,6 +997,19 @@ mod test {
             .expect("failed to async-ify")
     }
 
+    async fn udp_client(port: u16) -> udp::Client<udp::AsyncConnected> {
+        udp::Client::new(
+            ([127, 0, 0, 1], port),
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+        )
+        .try_transition()
+        .await
+        .expect("failed to connect")
+        .try_transition()
+        .await
+        .expect("failed to async-ify")
+    }
+
     async fn client_cc(port: u16) -> AsyncClientControlChannel {
         AsyncClientControlChannel::new(tcp_client(port).await)
     }
@@ -929,10 +1018,14 @@ mod test {
         AsyncClientEventChannel::new(tcp_client(port).await)
     }
 
+    async fn client_mc(port: u16) -> AsyncClientMediaChannel {
+        AsyncClientMediaChannel::new(udp_client(port).await)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn auth_fail() {
-        let (server, mut cc) = server_cc_accepted(1234, 8000, 8001).await;
+        let (server, mut cc) = server_cc_accepted(1234, 8000, 8001, 8008).await;
         cc.send(client_init_msg(5678))
             .await
             .expect("send ClientInit");
@@ -942,13 +1035,13 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn auth_pass() {
-        let _ = server_client_authenticated(1234, 8002, 8003).await;
+        let _ = server_client_authenticated(1234, 8002, 8003, 8008).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn client_init() {
-        let (server, mut client_cc) = server_client_authenticated(1234, 8004, 8005).await;
+        let (server, mut client_cc) = server_client_authenticated(1234, 8004, 8005, 8008).await;
         let msg = client_cc.receive().await.expect("receiving server init");
         let server_init = if let cm::ServerToClientMessage::ServerInit(server_init) = msg {
             assert_eq!(server_init.decoder_areas.len(), 2);
@@ -969,6 +1062,18 @@ mod test {
         assert_eq!(server_init.display_size.width, 1024);
         assert_eq!(server_init.display_size.height, 768);
         let _client_ec = client_ec(8005).await;
+
+        for i in 0..server_init.decoder_areas.len() {
+            let i = i as u16;
+            let mut client_decoder = client_mc(8008 + i).await;
+            let _ = client_decoder
+                .send(media_messages::ClientToServerMessage::MediaKeepalive(
+                    MediaKeepalive::new(Decoder::new(1337 + i)),
+                ))
+                .await
+                .expect("Send MediaKeepalive");
+        }
+
         let _running: Server<Running<_>> = server
             .try_transition()
             .await

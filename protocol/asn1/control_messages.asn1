@@ -1,6 +1,6 @@
 ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   IMPORTS
-    ClientId, ClientCaps, CursorBitmap, Dimension, DurationMs,
+    ClientId, ClientCaps, CursorBitmap, Decoder, Dimension, DurationMs,
       HeartbeatId, Location, SemVer, SequenceId FROM CommonTypes;
 
   OS ::= ENUMERATED {
@@ -25,11 +25,6 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
   Architecture ::= ENUMERATED {
     x86,
     arm,
-    ...
-  }
-
-  Decoder ::= SEQUENCE {
-    port INTEGER(1024..65535),
     ...
   }
 
@@ -68,7 +63,7 @@ ControlMessages DEFINITIONS AUTOMATIC TAGS ::= BEGIN
     clientCaps ClientCaps,
     clientHeartbeatInterval DurationMs,
     clientHeartbeatResponseInterval DurationMs,
-    decoders SEQUENCE OF Decoder,
+    maxDecoderCount INTEGER(1..MAX),
     ...
   }
 

@@ -32,6 +32,11 @@ struct Args {
     #[arg(short, long, default_value = "46453")]
     event_port: u16,
 
+    /// Initial port to bind for the encoders. A block of sequential ports must be available for
+    /// each encoder starting with this one. A value of 0 will defer port selection to the OS
+    #[arg(short = 'p', default_value = "46454")]
+    encoder_port_start: u16,
+
     /// Initial ID that a client can use to connect to the server
     #[arg(short, long, default_value = "1234")]
     temp_client_id: u64,
@@ -113,6 +118,7 @@ async fn main() -> Result<()> {
     let config = ConfigurationBuilder::default()
         .control_channel_addr(format!("{}:{}", args.bind_address, args.control_port).parse()?)
         .event_channel_addr(format!("{}:{}", args.bind_address, args.event_port).parse()?)
+        .media_channel_addr(format!("{}:{}", args.bind_address, args.encoder_port_start).parse()?)
         .name(args.name)
         .temp_client_id(ClientId(args.temp_client_id))
         .initial_program(args.initial_program)

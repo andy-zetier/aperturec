@@ -78,7 +78,7 @@ mod test {
     }
 
     #[test]
-    fn client_to_server_message() {
+    fn server_to_client_message() {
         let msg = ServerToClientMessage::FramebufferUpdate(FramebufferUpdate {
             rectangle_updates: vec![],
         });
@@ -87,6 +87,30 @@ mod test {
         c::round_trip_der!(
             ServerToClientMessage,
             c::MediaMessages_ServerToClientMessage,
+            msg
+        );
+    }
+
+    #[test]
+    fn media_keepalive() {
+        let mk = MediaKeepalive {
+            decoder: Decoder { port: 1337 },
+        };
+        serde_type_der!(MediaKeepalive, mk);
+        #[cfg(feature = "asn1c-tests")]
+        c::round_trip_der!(MediaKeepalive, c::MediaKeepalive, mk);
+    }
+
+    #[test]
+    fn client_to_server_message() {
+        let msg = ClientToServerMessage::MediaKeepalive(MediaKeepalive {
+            decoder: Decoder { port: 1337 },
+        });
+        serde_type_der!(ClientToServerMessage, msg);
+        #[cfg(feature = "asn1c-tests")]
+        c::round_trip_der!(
+            ClientToServerMessage,
+            c::MediaMessages_ClientToServerMessage,
             msg
         );
     }
