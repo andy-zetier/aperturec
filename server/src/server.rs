@@ -487,6 +487,7 @@ impl<B: Backend + 'static> TryTransitionable<ChannelsAccepted<B>, ChannelsListen
                 }
             }};
         }
+
         let ec_accepted = try_transition_inner_recover!(
             self.state.ec_server,
             tcp::Listening,
@@ -497,42 +498,79 @@ impl<B: Backend + 'static> TryTransitionable<ChannelsAccepted<B>, ChannelsListen
             tcp::Listening,
             recover_ec_server_constructor!()
         );
+
         let ec = AsyncServerEventChannel::new(ec_async);
 
+        macro_rules! recover_mc_server_constructor {
+            () => {{
+                Server {
+                    state: ChannelsListening {
+                        backend: self.state.backend,
+                        cc_server: transition!(self.state.cc.into_inner(), tcp::Listening),
+                        ec_server: transition!(ec.into_inner(), tcp::Listening),
+                    },
+                    config: self.config,
+                }
+            }};
+        }
+
         let mut mc_servers: Vec<udp::Server<udp::Connected>> = vec![];
+
+        let pause = Duration::from_millis(250);
+        let max_delay = Duration::from_secs(5);
+        let mut delay = Duration::from_secs(0);
+
         for mc_server in self.state.mc_servers {
+            let port = mc_server.local_addr().port();
             let mut mc_rs: ReceiverSimplex<
                 udp::Server<udp::Listening>,
                 media_messages::ClientToServerMessage,
             > = ReceiverSimplex::new(mc_server);
 
-            match mc_rs.receive() {
-                Ok(media_messages::ClientToServerMessage::MediaKeepalive(mk)) => {
-                    log::trace!("Received initial {:?}", mk)
-                }
-                Ok(msg) => return_recover!(
-                    Server {
-                        state: ChannelsListening {
-                            backend: self.state.backend,
-                            cc_server: transition!(self.state.cc.into_inner(), tcp::Listening),
-                            ec_server: transition!(ec.into_inner(), tcp::Listening)
-                        },
-                        config: self.config,
-                    },
-                    format!("Received unexpected media channel message: {:?}", msg)
-                ),
-                Err(err) => return_recover!(
-                    Server {
-                        state: ChannelsListening {
-                            backend: self.state.backend,
-                            cc_server: transition!(self.state.cc.into_inner(), tcp::Listening),
-                            ec_server: transition!(ec.into_inner(), tcp::Listening)
-                        },
-                        config: self.config,
-                    },
-                    format!("Failed to receive MediaKeepalive: {:?}", err)
-                ),
-            };
+            loop {
+                match mc_rs.receive() {
+                    Ok(media_messages::ClientToServerMessage::MediaKeepalive(mk)) => {
+                        log::trace!("Received initial {:?}", mk);
+                        break;
+                    }
+                    Ok(msg) => return_recover!(
+                        recover_mc_server_constructor!(),
+                        format!(
+                            "Received unexpected media channel message from Decoder {}: {:?}",
+                            port, msg
+                        )
+                    ),
+                    Err(ref err) => {
+                        if err
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::WouldBlock)
+                            && delay < max_delay
+                        {
+                            tokio::time::sleep(pause).await;
+                            delay += pause;
+                            log::warn!(
+                                "Waited {}.{}s for initial MediaKeepalive from Decoder {}: {:?}",
+                                delay.as_secs(),
+                                delay.subsec_millis(),
+                                port,
+                                err
+                            );
+                            continue;
+                        }
+
+                        return_recover!(
+                            recover_mc_server_constructor!(),
+                            format!(
+                                "Failed to receive MediaKeepalive after {}.{}s from Decoder {}: {:?}",
+                                delay.as_secs(),
+                                delay.subsec_millis(),
+                                port,
+                                err
+                            )
+                        );
+                    }
+                };
+            }
 
             let mc_connected =
                 try_transition_inner_recover!(mc_rs.into_inner(), udp::Closed, |_| Server {

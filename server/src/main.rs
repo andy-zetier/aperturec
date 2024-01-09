@@ -146,7 +146,7 @@ async fn main() -> Result<()> {
         let channels_accepted = try_transition_continue!(
             client_authed,
             listening,
-            |e| log::error!("Error accepting EC: {}", e)
+            |e| log::error!("Error accepting EC or MC: {}", e)
         );
 
         let running = try_transition_continue!(channels_accepted, listening, |e| log::error!(

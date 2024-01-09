@@ -17,7 +17,7 @@ struct Args {
 
     /// Initial port to bind for the decoders. A block of decoder_max ports must be available
     /// starting with this one. A value of 0 will defer port selection to the OS
-    #[arg(short = 'p', long = "port", default_value_t = 46454)]
+    #[arg(short = 'p', long = "port", default_value_t = 0)]
     decoder_port_start: u16,
 
     /// Maximum frames per second.
