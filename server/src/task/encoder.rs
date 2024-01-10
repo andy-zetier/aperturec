@@ -16,7 +16,7 @@ use euclid::{Point2D, Size2D, UnknownUnit};
 use flate2::{Compress, Compression, FlushCompress};
 use futures::{future::join, stream, StreamExt};
 use linear_map::set::LinearSet;
-use ndarray::{arr0, s, Array1, Array2, ArrayView2, AssignElem, Axis, ShapeBuilder, Zip};
+use ndarray::{arr0, s, Array2, ArrayView2, AssignElem, Axis, ShapeBuilder, Zip};
 use parking_lot::{Mutex, MutexGuard};
 use std::cmp::{min, Ordering};
 use std::collections::{btree_map::Entry, BTreeMap, LinkedList};
@@ -137,12 +137,14 @@ fn encode_zlib(
     let mut raw_row = vec![0_u8; width * ENC_BYTES_PER_PIXEL];
     while row_idx < height && nbytes_produced < (enc_data.len() - finish_reserve) {
         let row = raw_data_slice.row(row_idx);
-        {
-            let mut raw_row_array =
-                Array1::from_shape_vec(width, raw_row.chunks_mut(ENC_BYTES_PER_PIXEL).collect())
-                    .expect("Create chunks array");
-            row.assign_to(&mut raw_row_array);
+
+        for (i, &pixel) in row.iter().enumerate() {
+            let start = i * ENC_BYTES_PER_PIXEL;
+            raw_row[start] = pixel.blue;
+            raw_row[start + 1] = pixel.green;
+            raw_row[start + 2] = pixel.red;
         }
+
         let output = &mut enc_data[nbytes_produced..max_bytes_per_msg - finish_reserve];
         compressor
             .compress(&raw_row, output, FlushCompress::Partial)
@@ -151,6 +153,7 @@ fn encode_zlib(
         nbytes_produced = compressor.total_out() as usize;
         row_idx += 1;
     }
+
     let complete_rows_consumed = nbytes_consumed / (width * ENC_BYTES_PER_PIXEL);
     compressor
         .compress(&[], &mut enc_data[nbytes_produced..], FlushCompress::Finish)
