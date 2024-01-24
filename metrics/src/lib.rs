@@ -3,6 +3,8 @@ pub mod exporters;
 mod measurement;
 mod metrics;
 
+pub mod macros;
+
 pub use measurement::Measurement;
 pub use metrics::{register, stop, update, MetricsInitializer};
 
@@ -13,8 +15,10 @@ pub use metrics::{register, stop, update, MetricsInitializer};
 /// included in [`builtins`].
 ///
 pub trait Metric {
-    fn poll(&self) -> Vec<Measurement>;
-    fn reset(&mut self);
+    fn poll(&self) -> Vec<Measurement> {
+        vec![]
+    }
+    fn reset(&mut self) {}
     fn update(&mut self, update: Box<dyn std::any::Any>);
     fn get_update_type_id(&self) -> std::any::TypeId;
 }

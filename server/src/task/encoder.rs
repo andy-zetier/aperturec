@@ -1,4 +1,5 @@
 use crate::backend::FramebufferUpdate;
+use crate::metrics::CompressionRatio;
 
 use anyhow::{anyhow, Result};
 use aperturec_channel::{AsyncReceiver, AsyncSender};
@@ -158,10 +159,9 @@ fn encode_zlib(
     compressor
         .compress(&[], &mut enc_data[nbytes_produced..], FlushCompress::Finish)
         .expect("zlib compress finish");
-    log::trace!(
-        "zlib compression ratio: {:.2}%",
-        100_f64 * (nbytes_produced as f64 / nbytes_consumed as f64)
-    );
+
+    let ratio = 100_f64 * (nbytes_produced as f64 / nbytes_consumed as f64);
+    CompressionRatio::observe(ratio);
 
     curr_loc.y += complete_rows_consumed;
     if curr_loc.y >= raw_data.len_of(Y_AXIS) {

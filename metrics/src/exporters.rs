@@ -2,7 +2,7 @@
 //! Metric exporters
 //!
 //! This module defines all available metric Exporters. Exporters are used to send Metric
-//! mesurements to various destinations during each polling period. Exporters can be selecteively
+//! mesurements to various destinations during each polling period. Exporters can be selectively
 //! enabled via the [`with_exporter()`](crate::MetricsInitializer::with_exporter) method.
 //!
 use crate::Measurement;
@@ -10,7 +10,7 @@ use crate::Measurement;
 use anyhow::Result;
 use aperturec_trace::{log, Level};
 use chrono::{SecondsFormat, Utc};
-use prometheus::{Gauge, Opts, Registry};
+use prometheus::{Gauge, Opts};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -46,7 +46,7 @@ impl Exporter {
 }
 
 ///
-/// Writes metric data to the initialized log at the spcified [`Level`]
+/// Writes metric data to the initialized log at the specified [`Level`]
 ///
 pub struct LogExporter {
     log_level: Level,
@@ -166,7 +166,6 @@ pub struct PushgatewayExporter {
     url: String,
     job_name: String,
     gauges: HashMap<String, Gauge>,
-    registry: Option<Registry>,
     groupings: HashMap<String, String>,
     registration_status: HashMap<String, bool>,
     needs_cleared: bool,
@@ -205,7 +204,6 @@ impl PushgatewayExporter {
             url,
             job_name,
             gauges: HashMap::new(),
-            registry: None,
             groupings,
             registration_status: HashMap::new(),
             needs_cleared: false,
@@ -213,39 +211,41 @@ impl PushgatewayExporter {
     }
 
     fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
-        if self.registry.is_none() {
-            self.setup_registry(results);
+        if self.gauges.is_empty() {
+            self.setup_gauges(results);
         }
 
         //
-        // If any of the metrics have changed in their validity (ie. r.value.is_none() ->
-        // r.value.is_some()), we need to adjust the gauges we have registered with the registry
+        // If any of the metrics with gauges have changed in their validity (ie. r.value.is_none()
+        // -> r.value.is_some()), we need to adjust the gauges we have registered with the registry
         // and clear out the most recently pushed metrics in the Pushgateway before uploading the
         // adjusted set. There doesn't seem to be a way to see if a gauge is currently registered,
         // so we keep track of registration_status ourselves.
         //
         let mut clear_before_push = false;
         results.iter().for_each(|r| {
-            let g = self.gauges.get_mut(&r.title).expect("Gauge Access");
-            if r.value.is_none() {
-                if *self.registration_status.get(&r.title).unwrap() {
-                    self.registry
-                        .as_mut()
-                        .unwrap()
-                        .unregister(Box::new(g.clone()))
-                        .unwrap();
-                    self.registration_status.insert(r.title.to_string(), false);
-                    clear_before_push = true;
+            let g = self.gauges.get_mut(&r.title);
+
+            if let Some(g) = g {
+                if let Some(r_value) = r.value {
+                    g.set(r_value);
                 }
-            } else {
-                g.set(r.value.unwrap());
-                if !*self.registration_status.get(&r.title).unwrap() {
-                    self.registry
-                        .as_mut()
-                        .unwrap()
-                        .register(Box::new(g.clone()))
-                        .unwrap();
-                    self.registration_status.insert(r.title.to_string(), true);
+
+                let is_registered = *self.registration_status.get(&r.title).unwrap();
+
+                if r.value.is_some() != is_registered {
+                    if !is_registered {
+                        prometheus::default_registry()
+                            .register(Box::new(g.clone()))
+                            .unwrap();
+                    } else {
+                        prometheus::default_registry()
+                            .unregister(Box::new(g.clone()))
+                            .unwrap();
+                    }
+
+                    self.registration_status
+                        .insert(r.title.to_string(), !is_registered);
                     clear_before_push = true;
                 }
             }
@@ -259,7 +259,7 @@ impl PushgatewayExporter {
             &self.job_name,
             self.groupings.clone(),
             &self.url,
-            self.registry.as_mut().unwrap().gather(),
+            prometheus::default_registry().gather(),
             None,
         )?;
 
@@ -270,18 +270,23 @@ impl PushgatewayExporter {
     //
     // Called once during the first do_export() to setup the Prometheus gauges and registry
     //
-    fn setup_registry(&mut self, ers: &[Measurement]) {
-        self.registry = Some(Registry::new());
+    fn setup_gauges(&mut self, ers: &[Measurement]) {
         ers.iter().for_each(|e| {
             let gauge_opts = Opts::new(e.title_as_namespaced(), e.help.to_string());
             let gauge = Gauge::with_opts(gauge_opts).expect("Gauge Create");
-            self.registry
-                .as_mut()
-                .unwrap()
+
+            //
+            // This may fail if the Measurement has already been registered with the
+            // default registry. This is expected for macro-generated histogram metrics and allows
+            // native prometheus metrics to be used along with those managed by this crate.
+            //
+            if prometheus::default_registry()
                 .register(Box::new(gauge.clone()))
-                .unwrap();
-            self.gauges.insert(e.title.to_string(), gauge);
-            self.registration_status.insert(e.title.to_string(), true);
+                .is_ok()
+            {
+                self.gauges.insert(e.title.to_string(), gauge);
+                self.registration_status.insert(e.title.to_string(), true);
+            }
         });
     }
 
