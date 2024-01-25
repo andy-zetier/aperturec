@@ -151,6 +151,7 @@ dependencies = [
  "anyhow",
  "aperturec-trace",
  "chrono",
+ "paste",
  "prometheus",
  "reqwest",
  "sysinfo",

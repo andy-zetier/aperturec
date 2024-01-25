@@ -9,7 +9,7 @@ aperturec-channel = { path = "../channel" }
 aperturec-protocol = { path = "../protocol" }
 aperturec-state-machine = { path = "../state_machine" }
 aperturec-metrics = { path = "../metrics" }
-aperturec-trace = { path = "../trace" }
+aperturec-trace = { path = "../trace", features = [] }
 build_id = "0.2.1"
 clap = { version = "4.3.22", features = ["derive"] }
 cpu-endian = "0.1.1"

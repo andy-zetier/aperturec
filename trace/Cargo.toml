@@ -16,4 +16,5 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "std", "env-filter", "time"] }
 
 [features]
+default = ["queue"]
 queue = []

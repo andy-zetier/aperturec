@@ -25,8 +25,8 @@ pub const OUTDIR_ENV_VAR: &str = "AC_TRACE_OUTDIR";
 /// Default directive used if none is supplied
 const DEFAULT_FILTER_DIRECTIVES: &[&str] = &[
     log::DEFAULT_FILTER_DIRECTIVE,
-    #[cfg(queue)]
-    queue::DEFAULT_FILTER_DIRETIVE,
+    #[cfg(feature = "queue")]
+    queue::DEFAULT_FILTER_DIRECTIVE,
 ];
 
 static DEFAULT_FILTER_DIRECTIVE: OnceLock<String> = OnceLock::new();
