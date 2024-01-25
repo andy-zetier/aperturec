@@ -897,7 +897,7 @@ impl Client {
                         },
                         Ok(Ok(CM_S2C::ServerGoodbye(_))) => {
                             if let Err(err) =
-                                control_to_ui_tx.send(UiMessage::QuitMessage(String::from("Gooebyde!")))
+                                control_to_ui_tx.send(UiMessage::QuitMessage(String::from("Goodbye!")))
                                 {
                                     log::warn!("Failed to send QuitMessage: {}", err);
                                 }
