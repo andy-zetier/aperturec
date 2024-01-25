@@ -1,265 +1,270 @@
 stages:
-  - build-images
-  - check
-  - build
+  - create-images
+  - check-build-test
   - package
-  - test
   - doc
 
-variables:
-  RUST_BASE_IMAGE: "$CI_REGISTRY_IMAGE/rust/base:$CI_COMMIT_REF_SLUG"
-  RUST_ASN1C_IMAGE: "$CI_REGISTRY_IMAGE/rust/asn1c:$CI_COMMIT_REF_SLUG"
-  RUST_XBACKEND_IMAGE: "$CI_REGISTRY_IMAGE/rust/base:$CI_COMMIT_REF_SLUG"
+.architectures:all:
+  - amd64
+  - arm64
 
-default:
+.crates:all:
+  - channel
+  - client
+  - metrics
+  - protocol
+  - server
+  - state_machine
+  - trace
+.crates:package:
+  - client
+  - server
+.crates:no-extra-depends:
+  - channel
+  - metrics
+  - state_machine
+  - trace
+
+.images:debian:
+  - ubuntu:20.04
+  - ubuntu:22.04
+.images:fedora:
+  - fedora:rawhide
+.images:all:
+  - ubuntu:20.04
+  - ubuntu:22.04
+  - fedora:rawhide
+
+.runner-arch:independent:
   tags:
     - linux
     - docker
-    - amd64
+.runner-arch:dependent:
+  tags:
+    - linux
+    - docker
+    - $ARCHITECTURE
 
-.image:build-push:
-  stage: build-images
+.targets:all:
+  - rust-image
+  - asn1c-image
+  - client-image
+  - server-image
+
+.create-images:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      variables:
+        IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
+    - if: $CI_COMMIT_BRANCH
+      changes:
+        paths:
+          - ci/**/*
+          - .gitlab-ci.yml
+        compare_to: main
+      variables:
+        IMAGE_VERSION: "branch-$CI_COMMIT_BRANCH"
+
+create-images:build:
+  stage: create-images
+  extends:
+    - .runner-arch:dependent
+    - .create-images
   image:
-    name: gcr.io/kaniko-project/executor:v1.13.0-debug
+    name: gcr.io/kaniko-project/executor:v1.19.2-debug
     entrypoint: [""]
+  variables:
+    IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
   script:
     - >-
       /kaniko/executor
-      --snapshot-mode=redo
-      --context "$CI_PROJECT_DIR/images/$IMAGE"
-      --build-arg BASE_IMAGE
-      --destination "$CI_REGISTRY_IMAGE/$IMAGE:$CI_COMMIT_REF_SLUG"
+      --snapshot-mode redo
+      --single-snapshot
+      --ignore-var-run
+      --ignore-path /dev
+      --ignore-path /proc
+      --use-new-run
+      --context "$CI_PROJECT_DIR/ci/images/"
+      --build-arg IMAGE_BASE
+      --build-arg OS_VARIANT
+      --build-arg ARCHITECTURE
+      --target $IMAGE_TARGET
+      --skip-unused-stages
+      --destination "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$ARCHITECTURE-$IMAGE_BASE"
       --registry-certificate "$CI_REGISTRY=$CI_SERVER_TLS_CA_FILE"
+  parallel:
+    matrix:
+      - OS_VARIANT: debian
+        IMAGE_BASE: !reference [.images:debian]
+        ARCHITECTURE: !reference [.architectures:all]
+        IMAGE_TARGET: !reference [.targets:all]
+      - OS_VARIANT: fedora
+        IMAGE_BASE: !reference [.images:fedora]
+        ARCHITECTURE: !reference [.architectures:all]
+        IMAGE_TARGET: !reference [.targets:all]
 
-.rules:event:push: &rules-event-push
-  $CI_PIPELINE_SOURCE == "push"
-
-.needs:image:rust:base: &needs-image-rust-base
+create-images:deploy-multiarch:
+  stage: create-images
+  image:
+    name: mplatform/manifest-tool:alpine
+    entrypoint: [""]
+  extends:
+    - .runner-arch:independent
+    - .create-images
+  script:
+    - cat "$CI_SERVER_TLS_CA_FILE" >> /etc/ssl/certs/ca-certificates.crt
+    - >-
+      /manifest-tool
+      --username $CI_REGISTRY_USER
+      --password $CI_REGISTRY_PASSWORD
+      push
+      from-args
+      --platforms linux/amd64,linux/arm64
+      --template "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-ARCH-$IMAGE_BASE"
+      --target "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_BASE"
+  parallel:
+    matrix:
+      - OS_VARIANT: debian
+        IMAGE_BASE: !reference [.images:debian]
+        IMAGE_TARGET: !reference [.targets:all]
+      - OS_VARIANT: fedora
+        IMAGE_BASE: !reference [.images:fedora]
+        IMAGE_TARGET: !reference [.targets:all]
   needs:
-    - job: image:build-push:rust:base
-      optional: true
-
-.needs:image:rust:asn1c: &needs-image-rust-asn1c
-  needs:
-    - job: image:build-push:rust:asn1c
-      optional: true
-
-image:build-push:rust:base:
-  extends: .image:build-push
-  variables:
-    IMAGE: rust/base
-  rules:
-    - if: *rules-event-push
-      changes:
-        - images/rust/base/*
-
-image:build-push:rust:asn1c:
-  extends: .image:build-push
-  variables:
-    IMAGE: rust/asn1c
-    BASE_IMAGE: "$RUST_BASE_IMAGE"
-  rules:
-    - if: *rules-event-push
-      changes:
-        - images/rust/asn1c/*
-    - !reference [ image:build-push:rust:base, rules ]
-  <<: *needs-image-rust-base
-
-image:build-push:rust:xbackend:
-  extends: .image:build-push
-  variables:
-    IMAGE: rust/xbackend
-    BASE_IMAGE: "$RUST_BASE_IMAGE"
-  rules:
-    - if: *rules-event-push
-      changes:
-        - images/rust/xbackend/*
-    - !reference [ image:build-push:rust:base, rules ]
-  <<: *needs-image-rust-base
-
-image:build-push:rust:client:
-  extends: .image:build-push
-  variables:
-    IMAGE: rust/client
-    BASE_IMAGE: "$RUST_BASE_IMAGE"
-  rules:
-    - if: *rules-event-push
-      changes:
-        - images/rust/client/*
-    - !reference [ image:build-push:rust:base, rules ]
-  <<: *needs-image-rust-base
+    - job: create-images:build
 
 .cargo:
-  image: "$CI_REGISTRY_IMAGE/$IMAGE:$CI_COMMIT_REF_SLUG"
   before_script:
-    - rustup update
-    - cd "$SUBDIR"
+    - cd "$CRATE"
+  interruptible: true
   variables:
-    IMAGE: "rust/base"
-  <<: *needs-image-rust-base
-  needs:
-    - job: image:build-push:rust:asn1c
-      optional: true
-    - job: image:build-push:rust:client
-      optional: true
-    - job: image:build-push:rust:xbackend
-      optional: true
-  parallel:
-    matrix:
-      - SUBDIR: "protocol"
-        IMAGE: "rust/asn1c"
-        FEATURES_TEST: asn1c-tests
-      - SUBDIR: "state_machine"
-      - SUBDIR: "state_machine/derive"
-      - SUBDIR: "channel"
-        IMAGE: "rust/asn1c"
-      - SUBDIR: "client"
-        IMAGE: "rust/client"
-      - SUBDIR: "server"
-        IMAGE: "rust/xbackend"
-      - SUBDIR: "metrics"
+    OS_VARIANT: debian
+    IMAGE_BASE: ubuntu:20.04
+    IMAGE_TARGET: rust-image
+    IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
+    IMAGE: "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_BASE"
+  image: $IMAGE
+  rules:
+    - if: $CI_COMMIT_BRANCH
+      changes:
+        paths:
+          - ci/**/*
+          - .gitlab-ci.yml
+        compare_to: main
+      variables:
+        IMAGE_VERSION: "branch-$CI_COMMIT_BRANCH"
+    - if: $CI_COMMIT_BRANCH
+      variables:
+        IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
 
-.cargo:debug:
-  extends: .cargo
-
-.cargo:release:
-  extends: .cargo
-  variables:
-    FLAGS: "--release"
-
-cargo:format-check:
-  extends: .cargo
-  stage: check
-  before_script:
-    - !reference [.cargo, before_script]
-    - rustup component add rustfmt
+cargo:check-build-test:
+  stage: check-build-test
+  extends:
+    - .runner-arch:dependent
+    - .cargo
   script:
     - cargo fmt -- --check
+    - cargo build && git diff-index --quiet HEAD -- && cargo clean
+    - cargo test && git diff-index --quiet HEAD -- && cargo clean
+    - cargo build --release && git diff-index --quiet HEAD --
+    - |-
+      if [[ -f target/release/aperturec-$CRATE ]]; then
+        mv target/release/aperturec-$CRATE target/release/aperturec-$CRATE-$IMAGE_BASE-$ARCHITECTURE
+      fi
+  parallel:
+    matrix:
+      - CRATE: !reference [.crates:no-extra-depends]
+        IMAGE_BASE: !reference [.images:all]
+        IMAGE_TARGET: rust-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - CRATE: server
+        IMAGE_BASE: !reference [.images:all]
+        IMAGE_TARGET: server-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - CRATE: client
+        IMAGE_BASE: !reference [.images:all]
+        IMAGE_TARGET: client-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - CRATE: protocol
+        IMAGE_BASE: !reference [.images:all]
+        IMAGE_TARGET: asn1c-image
+        ARCHITECTURE: !reference [.architectures:all]
+  needs:
+    - job: create-images:deploy-multiarch
+      optional: true
+  artifacts:
+    paths: [$CRATE/target/release/aperturec-$CRATE-$IMAGE_BASE-$ARCHITECTURE]
 
-.cargo:check: &cargo-check
-  stage: check
-  script:
-    - cargo check $FLAGS --features "$FEATURES_CHECK"
-
-cargo:check:debug:
-  extends: .cargo:debug
-  <<: *cargo-check
-
-cargo:check:release:
-  extends: .cargo:release
-  <<: *cargo-check
-
-.cargo:build: &cargo-build
-  stage: build
-  script:
-    - cargo build $FLAGS --features "$FEATURES_BUILD"
-
-cargo:build:debug:
-  extends: .cargo:debug
-  <<: *cargo-build
-
-cargo:build:release:
-  extends: .cargo:release
-  <<: *cargo-build
-
-.cargo:test: &cargo-test
-  stage: test
-  script:
-    - cargo test $FLAGS --features "$FEATURES_TEST"
-
-cargo:test:debug:
-  extends: .cargo:debug
-  <<: *cargo-test
-
-cargo:test:release:
-  extends: .cargo:release
-  <<: *cargo-test
-
-.cargo:doc: &cargo-doc
+cargo:doc:
   stage: doc
+  extends:
+    - .cargo
+    - .runner-arch:independent
   script:
-    - cargo doc $FLAGS --features "$FEATURES_DOC"
-
-cargo:doc:debug:
-  extends: .cargo:debug
-  <<: *cargo-doc
-
-cargo:doc:release:
-  extends: .cargo:release
-  <<: *cargo-doc
-
-cargo:package:deb:client:
-  stage: package
-  image: "$IMAGE"
-  before_script:
-    - apt update
-    - DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y ca-certificates curl build-essential libgtk-3-dev cmake pkg-config libssl-dev lsb-release
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    - source "$HOME/.cargo/env"
-    - cargo install cargo-deb
-    - cd "client"
-    - mkdir -p ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/
-  script:
-    - cargo deb -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID"
-  needs:
-    - job: cargo:build:release
+    - cargo doc
   artifacts:
     paths:
-      - client/target/*/*/aperturec-client_*_amd64.deb
+      - $CRATE/target/doc/aperturec_$CRATE/
   parallel:
     matrix:
-      - IMAGE:
-        - "ubuntu:18.04"
-        - "ubuntu:20.04"
-        - "ubuntu:22.04"
-
-cargo:package:deb:server:
-  stage: package
-  image: "$IMAGE"
-  tags:
-    - linux
-    - docker
-    - "$ARCH"
-  before_script:
-    - apt update
-    - DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y ca-certificates curl build-essential cmake pkg-config libssl-dev lsb-release libxcb1-dev
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    - source "$HOME/.cargo/env"
-    - cargo install cargo-deb
-    - cd "server"
-    - mkdir -p ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/
-  script:
-    - cargo deb -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID"
+      - CRATE: !reference [.crates:no-extra-depends]
+        IMAGE_TARGET: rust-image
+      - CRATE: server
+        IMAGE_TARGET: server-image
+      - CRATE: client
+        IMAGE_TARGET: client-image
+      - CRATE: protocol
+        IMAGE_TARGET: asn1c-image
   needs:
-    - job: cargo:build:release
+    - job: cargo:check-build-test
+
+package:create-deb:
+  stage: package
+  extends:
+    - .cargo
+    - .runner-arch:dependent
+  script:
+    - mv target/release/aperturec-$CRATE-$IMAGE_BASE-$ARCHITECTURE target/release/aperturec-$CRATE
+    - cargo deb -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID" --no-build -- --release
   artifacts:
-    paths:
-      - server/target/*/*/aperturec-server_*_*.deb
+    paths: [$CRATE/target/*/*/aperturec-$CRATE_*_*.deb]
+  needs:
+    - job: cargo:check-build-test
+      parallel:
+        matrix:
+          - CRATE: server
+            IMAGE_BASE: !reference [.images:debian]
+            IMAGE_TARGET: server-image
+            ARCHIECTURE: !reference [.architectures:all]
+          - CRATE: client
+            IMAGE_BASE: !reference [.images:debian]
+            IMAGE_TARGET: client-image
+            ARCHIECTURE: !reference [.architectures:all]
   parallel:
     matrix:
-      - IMAGE:
-          - "ubuntu:20.04"
-          - "ubuntu:22.04"
-        ARCH:
-          - amd64
-          - arm64
+      - CRATE: server
+        IMAGE_BASE: !reference [.images:debian]
+        IMAGE_TARGET: server-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - CRATE: client
+        IMAGE_BASE: !reference [.images:debian]
+        IMAGE_TARGET: client-image
+        ARCHITECTURE: !reference [.architectures:all]
 
-cargo:package:deb:push:
+package:push-deb:
   stage: package
+  extends:
+    - .runner-arch:independent
+  image:
+    name: ruby:slim-bookworm
+    entrypoint: [""]
+  script:
+    - gem install package_cloud
+    - ./ci/scripts/package_upload.sh $CRATE
+  parallel:
+    matrix:
+      - CRATE: !reference [.crates:package]
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  image: ubuntu:22.04
-  # Because this is not utilizing built native code we don't need to require amd64
-  tags:
-    - linux
-    - docker
-  before_script:
-    - apt update
-    - DEBIAN_FRONTEND=noninteractive apt install --no-install-recommends -y ca-certificates rubygems
-    - gem install package_cloud
-  script:
-    - ./scripts/package_upload.sh client
-    - ./scripts/package_upload.sh server
   needs:
-    - job: cargo:package:deb:client
-    - job: cargo:package:deb:server
+    - job: package:create-deb

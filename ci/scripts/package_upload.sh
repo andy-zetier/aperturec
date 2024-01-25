@@ -6,7 +6,7 @@ set -x # Print each command as it is run
 COMPONENT="$1"
 
 # From https://stackoverflow.com/questions/192292/how-best-to-include-other-scripts
-REPO="${BASH_SOURCE%/*}/../"
+REPO="${BASH_SOURCE%/*}/../.."
 if [[ ! -d "${REPO}" ]]; then REPO="$PWD/../"; fi
 
 # Define the base directory

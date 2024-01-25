@@ -131,7 +131,6 @@ dependencies = [
  "aperturec-trace",
  "build_id",
  "clap 4.4.18",
- "cpu-endian",
  "crossbeam-channel",
  "ctrlc",
  "derive_builder",
@@ -651,15 +650,6 @@ name = "core-foundation-sys"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06ea2b9bc92be3c2baa9334a323ebca2d6f074ff852cd1d7b11064035cd3868f"
-
-[[package]]
-name = "cpu-endian"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "512746971686a86c7b8aee38244eaa7e04696e612790d593f1d73059536beee8"
-dependencies = [
- "cc",
-]
 
 [[package]]
 name = "crc32fast"

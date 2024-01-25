@@ -395,16 +395,16 @@ impl Client {
             } else {
                 Bitness::B32
             })
-            .endianness(match cpu_endian::working() {
-                cpu_endian::Endian::Little => Endianness::Little,
-                cpu_endian::Endian::Big => Endianness::Big,
-                _ => panic!("Unsupported endianness"),
+            .endianness(if cfg!(target_endian = "big") {
+                Endianness::Big
+            } else {
+                Endianness::Little
             })
             .architecture(match consts::ARCH {
                 "x86" => Architecture::X86,
                 "x86_64" => Architecture::X86,
-                "arm" => Architecture::Arm,
-                _ => panic!("Unsupported architcture"),
+                "aarch64" => Architecture::Arm,
+                arch => panic!("Unsupported architcture {}", arch),
             })
             .cpu_id(sys.cpus()[0].brand().to_string())
             .number_of_cores(sys.cpus().len().try_into().unwrap())

@@ -12,7 +12,6 @@ aperturec-metrics = { path = "../metrics" }
 aperturec-trace = { path = "../trace", features = [] }
 build_id = "0.2.1"
 clap = { version = "4.3.22", features = ["derive"] }
-cpu-endian = "0.1.1"
 ctrlc = "3.4.1"
 crossbeam-channel = "0.5.8"
 derive_builder = "0.12.0"
