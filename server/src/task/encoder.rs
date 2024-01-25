@@ -1,5 +1,6 @@
 use crate::backend::FramebufferUpdate;
 use crate::metrics::CompressionRatio;
+use crate::metrics::TrackingBufferDamageRatio;
 
 use anyhow::{anyhow, Result};
 use aperturec_channel::{AsyncReceiver, AsyncSender};
@@ -661,12 +662,16 @@ impl TrackingBuffer {
 
             // If no changes were made, return early.
             if (None, None, None, None) == (left, right, top, bottom) {
+                TrackingBufferDamageRatio::observe(0.);
                 return;
             }
 
             // Unwrap the bounds of the changed area.
             let (left, right, top, bottom) =
                 (left.unwrap(), right.unwrap(), top.unwrap(), bottom.unwrap());
+
+            let optimized_area = ((bottom - top) * (right - left)) as f64;
+            TrackingBufferDamageRatio::observe(optimized_area / update_box.area() as f64 * 100.);
 
             // Check if the entire buffer is damaged.
             if left == 0

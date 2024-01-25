@@ -165,6 +165,12 @@ create_histogram_metric_with_buckets!(
     prometheus::linear_buckets(11.0, 11.0, 9).unwrap()
 );
 
+create_histogram_metric_with_buckets!(
+    TrackingBufferDamageRatio,
+    "%",
+    prometheus::linear_buckets(10., 10., 10).unwrap()
+);
+
 pub fn setup_server_metrics(
     metrics_log: bool,
     metrics_csv: Option<String>,
@@ -212,5 +218,6 @@ pub fn setup_server_metrics(
         aperturec_metrics::register(|| Box::<Rtt>::default());
 
         register_metric!(CompressionRatio);
+        register_metric!(TrackingBufferDamageRatio);
     }
 }
