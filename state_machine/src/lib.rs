@@ -3,7 +3,6 @@ use async_trait::async_trait;
 
 #[macro_use]
 mod macros;
-pub use macros::*;
 
 /// Derive for [`State`] trait
 /// ```

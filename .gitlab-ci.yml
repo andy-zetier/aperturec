@@ -22,6 +22,7 @@ stages:
 .crates:no-extra-depends:
   - channel
   - metrics
+  - protocol
   - state_machine
   - trace
 
@@ -47,7 +48,6 @@ stages:
 
 .targets:all:
   - rust-image
-  - asn1c-image
   - client-image
   - server-image
 
@@ -185,10 +185,6 @@ cargo:check-build-test:
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATE: protocol
-        IMAGE_BASE: !reference [.images:all]
-        IMAGE_TARGET: asn1c-image
-        ARCHITECTURE: !reference [.architectures:all]
   needs:
     - job: create-images:deploy-multiarch
       optional: true
@@ -213,8 +209,6 @@ cargo:doc:
         IMAGE_TARGET: server-image
       - CRATE: client
         IMAGE_TARGET: client-image
-      - CRATE: protocol
-        IMAGE_TARGET: asn1c-image
   needs:
     - job: cargo:check-build-test
 

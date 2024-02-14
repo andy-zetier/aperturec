@@ -4,9 +4,8 @@ use crate::metrics::TrackingBufferDamageRatio;
 
 use anyhow::{anyhow, Result};
 use aperturec_channel::{AsyncReceiver, AsyncSender};
-use aperturec_protocol::common_types::*;
-use aperturec_protocol::control_messages as cm;
-use aperturec_protocol::media_messages as mm;
+use aperturec_protocol::common::*;
+use aperturec_protocol::media as mm;
 use aperturec_state_machine::{
     Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
 };
@@ -28,6 +27,9 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tokio_util::sync::CancellationToken;
+
+use mm::client_to_server as mm_c2s;
+use mm::server_to_client as mm_s2c;
 
 const DISPATCH_QUEUE: queue::QueueGroup = trace_queue_group!("encoder:dispatch");
 
@@ -186,7 +188,7 @@ fn encode(
         let (bytes, encoded_dim) = match codec {
             Codec::Raw => encode_raw(max_bytes_per_msg, &mut curr_loc, raw_data),
             Codec::Zlib => encode_zlib(max_bytes_per_msg, &mut curr_loc, raw_data),
-            unsupported_codec => panic!("Unsupported codec {:?}", unsupported_codec),
+            Codec::Unspecified => panic!("Unspecified codec"),
         };
         (bytes, encoded_loc, encoded_dim)
     })
@@ -203,21 +205,21 @@ pub struct Encoder<S: State> {
 #[derive(State, Debug)]
 pub struct Created<AsyncDuplex>
 where
-    AsyncDuplex: AsyncSender<Message = mm::ServerToClientMessage>
-        + AsyncReceiver<Message = mm::ClientToServerMessage>,
+    AsyncDuplex: AsyncSender<Message = mm_s2c::Message> + AsyncReceiver<Message = mm_c2s::Message>,
 {
     send_recv: AsyncDuplex,
     codec: Codec,
-    decoder_area: cm::DecoderArea,
+    decoder: Decoder,
+    location: Location,
+    dimension: Dimension,
     fb_rx: mpsc::UnboundedReceiver<Arc<FramebufferUpdate>>,
-    missed_frame_rx: mpsc::UnboundedReceiver<SequenceId>,
-    acked_frame_rx: mpsc::Receiver<SequenceId>,
+    missed_frame_rx: mpsc::UnboundedReceiver<u64>,
+    acked_frame_rx: mpsc::Receiver<u64>,
     ct: CancellationToken,
 }
 
 impl<AsyncDuplex> SelfTransitionable for Encoder<Created<AsyncDuplex>> where
-    AsyncDuplex: AsyncSender<Message = mm::ServerToClientMessage>
-        + AsyncReceiver<Message = mm::ClientToServerMessage>
+    AsyncDuplex: AsyncSender<Message = mm_s2c::Message> + AsyncReceiver<Message = mm_c2s::Message>
 {
 }
 
@@ -232,18 +234,19 @@ pub struct Terminated {}
 
 #[derive(Debug)]
 pub struct Channels {
-    pub acked_frame_tx: mpsc::Sender<SequenceId>,
+    pub acked_frame_tx: mpsc::Sender<u64>,
     pub fb_tx: mpsc::UnboundedSender<Arc<FramebufferUpdate>>,
-    pub missed_frame_tx: mpsc::UnboundedSender<SequenceId>,
+    pub missed_frame_tx: mpsc::UnboundedSender<u64>,
 }
 
 impl<AsyncDuplex> Encoder<Created<AsyncDuplex>>
 where
-    AsyncDuplex: AsyncSender<Message = mm::ServerToClientMessage>
-        + AsyncReceiver<Message = mm::ClientToServerMessage>,
+    AsyncDuplex: AsyncSender<Message = mm_s2c::Message> + AsyncReceiver<Message = mm_c2s::Message>,
 {
     pub fn new(
-        decoder_area: cm::DecoderArea,
+        decoder: &Decoder,
+        location: &Location,
+        dimension: &Dimension,
         send_recv: AsyncDuplex,
         codec: Codec,
     ) -> (Self, Channels, CancellationToken) {
@@ -256,7 +259,9 @@ where
             state: Created {
                 send_recv,
                 codec,
-                decoder_area,
+                decoder: decoder.clone(),
+                location: location.clone(),
+                dimension: dimension.clone(),
                 fb_rx,
                 missed_frame_rx,
                 acked_frame_rx,
@@ -743,15 +748,9 @@ struct CachedFramebuffer {
 }
 
 impl CachedFramebuffer {
-    fn new(decoder_area: &cm::DecoderArea) -> Self {
-        let origin = Point::new(
-            decoder_area.location.x_position as usize,
-            decoder_area.location.y_position as usize,
-        );
-        let size = Size::new(
-            decoder_area.dimension.width as usize,
-            decoder_area.dimension.height as usize,
-        );
+    fn new(_decoder: &Decoder, location: &Location, dimension: &Dimension) -> Self {
+        let origin = Point::new(location.x_position as usize, location.y_position as usize);
+        let size = Size::new(dimension.width as usize, dimension.height as usize);
         let front = TrackingBuffer::new(size);
         let mut back = TrackingBuffer::new(size);
         back.is_fully_damaged = true;
@@ -845,8 +844,7 @@ impl CachedFramebuffer {
 #[async_trait]
 impl<AsyncDuplex> TryTransitionable<Running, Created<AsyncDuplex>> for Encoder<Created<AsyncDuplex>>
 where
-    AsyncDuplex: AsyncSender<Message = mm::ServerToClientMessage>
-        + AsyncReceiver<Message = mm::ClientToServerMessage>,
+    AsyncDuplex: AsyncSender<Message = mm_s2c::Message> + AsyncReceiver<Message = mm_c2s::Message>,
 {
     type SuccessStateful = Encoder<Running>;
     type FailureStateful = Encoder<Created<AsyncDuplex>>;
@@ -857,15 +855,23 @@ where
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let in_flight = Arc::new(Mutex::new(BTreeMap::<u64, (Point, Size)>::new()));
         let responsible_sequence_nos = Arc::new(Mutex::new(Array2::<u64>::zeros((
-            self.state.decoder_area.dimension.width as usize,
-            self.state.decoder_area.dimension.height as usize,
+            self.state.dimension.width as usize,
+            self.state.dimension.height as usize,
         ))));
-        let decoder_area = self.state.decoder_area.clone();
-        let cached_fb = Arc::new(Mutex::new(CachedFramebuffer::new(&decoder_area)));
-        let (dispatch_tx, dispatch_rx): (mpsc::Sender<Vec<mm::RectangleUpdate>>, _) =
-            mpsc::channel(3);
+
+        let decoder = self.state.decoder.clone();
+        let location = self.state.location.clone();
+        let dimension = self.state.dimension.clone();
+
+        let cached_fb = Arc::new(Mutex::new(CachedFramebuffer::new(
+            &decoder, &location, &dimension,
+        )));
+        let (dispatch_tx, dispatch_rx): (
+            mpsc::Sender<Vec<(Location, Codec, Vec<u8>, Dimension)>>,
+            _,
+        ) = mpsc::channel(3);
         let (synthetic_missed_frame_tx, synthetic_missed_frame_rx) =
-            mpsc::unbounded_channel::<SequenceId>();
+            mpsc::unbounded_channel::<u64>();
 
         let mut ack_subtask: JoinHandle<anyhow::Result<()>> = {
             let mut acked_frame_stream = ReceiverStream::new(self.state.acked_frame_rx).fuse();
@@ -888,27 +894,27 @@ where
                             break Ok(())
                         }
                         Some(acked_frame_seq) = acked_frame_stream.next() => {
-                            match acked_frame_seq.0.cmp(&max_acked_so_far) {
+                            match acked_frame_seq.cmp(&max_acked_so_far) {
                                 Ordering::Greater => {
                                     let mut in_flight_locked = in_flight.lock();
-                                    in_flight_locked.remove(&acked_frame_seq.0);
+                                    in_flight_locked.remove(&acked_frame_seq);
                                     MutexGuard::unlock_fair(in_flight_locked);
-                                    max_acked_so_far = acked_frame_seq.0;
+                                    max_acked_so_far = acked_frame_seq;
                                 },
                                 Ordering::Less => {
-                                    log::warn!("Received ack for {} before {}", max_acked_so_far, acked_frame_seq.0);
+                                    log::warn!("Received ack for {} before {}", max_acked_so_far, acked_frame_seq);
                                 }
                                 Ordering::Equal => ()
                             }
                         }
                         Some(missed_frame) = mfr_stream.next() => {
                             let in_flight_locked = in_flight.lock();
-                            if let Some((loc, dim)) = in_flight_locked.get(&missed_frame.0) {
+                            if let Some((loc, dim)) = in_flight_locked.get(&missed_frame) {
                                 let responsible_sequence_nos_locked = responsible_sequence_nos.lock();
                                 if responsible_sequence_nos_locked
                                     .slice(s![loc.x..loc.x + dim.width, loc.y..loc.y+dim.height])
                                     .iter()
-                                    .any(|responsible| responsible == &missed_frame.0)
+                                    .any(|responsible| responsible == &missed_frame)
                                 {
                                     let mut cached_fb_locked = cached_fb.lock();
                                     cached_fb_locked.mark_stale(&Rect::new(*loc, *dim).to_box2d());
@@ -951,7 +957,6 @@ where
             let mut send_recv = self.state.send_recv;
             let in_flight = in_flight.clone();
             let responsible_sequence_nos = responsible_sequence_nos.clone();
-            let decoder_area = decoder_area.clone();
             let mut tail_fbu_timeout: JoinHandle<u64> =
                 tokio::task::spawn(futures::future::pending());
 
@@ -970,11 +975,8 @@ where
                         }
                         mc_msg_res = send_recv.receive() => {
                             match mc_msg_res {
-                                Ok(mm::ClientToServerMessage::MediaKeepalive(mk)) => {
+                                Ok(mm_c2s::Message::MediaKeepalive(mk)) => {
                                     log::trace!("Received and ignored {:?}", mk);
-                                }
-                                Ok(msg) => {
-                                    log::warn!("Received unexpected message on media channel: {:?}", msg);
                                 }
                                 Err(err) => {
                                     log::error!("Failed to receive message on media channel: {:?}", err);
@@ -984,14 +986,14 @@ where
                         Some(mut updates) = dispatch_stream.next() => {
                             while let Some(update) = updates.pop() {
                                 let mut next = update;
-                                let mut rus: Vec<mm::RectangleUpdate> = vec![];
+                                let mut rus_raw: Vec<(Location, Codec, Vec<u8>, Dimension)> = vec![];
                                 'collector: loop {
-                                    let next_len = rus.iter()
+                                    let next_len = rus_raw.iter()
                                         .chain(std::iter::once(&next))
-                                        .map(|ru| ru.rectangle.data.len())
+                                        .map(|(_, _, data, _)| data.len())
                                         .sum::<usize>();
                                     if next_len <= MAX_BYTES_PER_MESSAGE {
-                                       rus.push(next);
+                                       rus_raw.push(next);
                                     } else {
                                        updates.push(next);
                                        break 'collector;
@@ -1006,17 +1008,23 @@ where
                                 let mut in_flight_locked = in_flight.lock();
                                 let mut responsible_sequence_nos_locked = responsible_sequence_nos.lock();
                                 let mut old_sequence_nos = LinearSet::new();
-                                for ru in &mut rus {
-                                    let mm::RectangleUpdate { ref mut sequence_id, ref location, ref rectangle, ..} = ru;
+                                let mut rus = vec![mm::RectangleUpdate::default(); rus_raw.len()];
 
-                                    *sequence_id = SequenceId(sequence_no);
-                                    let dimension = rectangle.dimension.as_ref().unwrap_or(&decoder_area.dimension);
+                                for (ref mut ru, (location, codec, data, dimension)) in rus.iter_mut().zip(rus_raw) {
                                     let origin = Point::new(location.x_position as usize, location.y_position as usize);
                                     let size = Size::new(dimension.width as usize, dimension.height as usize);
                                     let shape = s![
                                             origin.x..origin.x + size.width,
                                             origin.y..origin.y + size.height,
                                         ];
+
+                                    ru.sequence_id = sequence_no;
+                                    ru.location = Some(location);
+                                    ru.rectangle = Some(mm::Rectangle {
+                                        codec: codec.into(),
+                                        data,
+                                        dimension: Some(dimension),
+                                    });
 
                                     old_sequence_nos.extend(responsible_sequence_nos_locked.slice(shape));
                                     responsible_sequence_nos_locked.slice_mut(shape).assign(&arr0(sequence_no));
@@ -1041,24 +1049,25 @@ where
                                 MutexGuard::unlock_fair(responsible_sequence_nos_locked);
                                 MutexGuard::unlock_fair(in_flight_locked);
                                 let rus_count = rus.len();
-                                let message = mm::ServerToClientMessage::new_framebuffer_update(mm::FramebufferUpdate::new(rus));
+                                let message: mm_s2c::Message = mm::FramebufferUpdate::new(rus).into();
+
                                 if let Err(e) = send_recv.send(message).await {
                                     if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
                                         if let Some(raw_os_error) = io_err.raw_os_error() {
                                             if raw_os_error == 90 { /* Message too big */
                                                 log::warn!("Message too big");
-                                                deq_group!(DISPATCH_QUEUE, id: decoder_area.decoder.port, rus_count);
+                                                deq_group!(DISPATCH_QUEUE, id: decoder.port, rus_count);
                                                 continue;
                                             }
                                         }
                                     } else {
-                                        deq_group!(DISPATCH_QUEUE, id: decoder_area.decoder.port, rus_count);
+                                        deq_group!(DISPATCH_QUEUE, id: decoder.port, rus_count);
                                         break 'select Err(e);
                                     }
                                 } else {
                                     // Each RectangleUpdate is one "packet sent"
                                     aperturec_metrics::builtins::packet_sent(rus_count);
-                                    deq_group!(DISPATCH_QUEUE, id: decoder_area.decoder.port, rus_count);
+                                    deq_group!(DISPATCH_QUEUE, id: decoder.port, rus_count);
                                     const TAIL_FBU_RTT: Duration = Duration::from_millis(100);
                                     tail_fbu_timeout = tokio::spawn(async move {
                                         tokio::time::sleep(TAIL_FBU_RTT).await;
@@ -1068,7 +1077,7 @@ where
                             }
                         }
                         Ok(timed_out_seq_no) = &mut tail_fbu_timeout, if !tail_fbu_timeout.is_finished() => {
-                            synthetic_missed_frame_tx.send(SequenceId(timed_out_seq_no))
+                            synthetic_missed_frame_tx.send(timed_out_seq_no)
                                 .expect("Failed to generated synthetic MFR");
                         }
                         else => break Err(anyhow!("All futures exhaused in dispatch task"))
@@ -1103,19 +1112,17 @@ where
                                         })
                                     })
                                 .map(|(bytes, encoder_relative_loc, dim, codec)| {
-                                    mm::RectangleUpdate::new(
-                                        SequenceId::new(0),
+                                    (
                                         Location::new(encoder_relative_loc.x as u64, encoder_relative_loc.y as u64),
-                                        mm::Rectangle::new(
-                                                codec,
-                                                bytes,
-                                                Some(Dimension::new(dim.width as u64, dim.height as u64)),
-                                        ))
+                                        codec,
+                                        bytes.to_vec(),
+                                        Dimension::new(dim.width as u64, dim.height as u64)
+                                    )
                                 })
                                 .collect::<Vec<_>>();
                             MutexGuard::unlock_fair(cached_fb_locked);
 
-                            enq_group!(DISPATCH_QUEUE, id: decoder_area.decoder.port, updates.len());
+                            enq_group!(DISPATCH_QUEUE, id: decoder.port, updates.len());
                             permit.send(updates);
                         }
                     }
@@ -1246,7 +1253,7 @@ mod test {
     #[test]
     fn simple_encode_raw() {
         let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
-        let vec: Vec<_> = encode(Codec::new_raw(), raw_data, MAX_BYTES_PER_MESSAGE).collect();
+        let vec: Vec<_> = encode(Codec::Raw, raw_data, MAX_BYTES_PER_MESSAGE).collect();
         assert_eq!(vec.len(), 10);
         let enc_data: Vec<_> = vec.into_iter().flat_map(|(curr, ..)| curr).collect();
         for (i, chunk) in enc_data.chunks(3).enumerate() {
@@ -1259,7 +1266,7 @@ mod test {
     #[test]
     fn simple_encode_zlib() {
         let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
-        let vec: Vec<_> = encode(Codec::new_zlib(), raw_data, MAX_BYTES_PER_MESSAGE).collect();
+        let vec: Vec<_> = encode(Codec::Zlib, raw_data, MAX_BYTES_PER_MESSAGE).collect();
         assert_eq!(vec.len(), 2);
 
         let dec_data: Vec<_> = vec

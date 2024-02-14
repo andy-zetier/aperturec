@@ -1,5 +1,4 @@
 use anyhow::Result;
-use aperturec_protocol::common_types::ClientId;
 use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
@@ -120,7 +119,7 @@ async fn main() -> Result<()> {
         .event_channel_addr(format!("{}:{}", args.bind_address, args.event_port).parse()?)
         .media_channel_addr(format!("{}:{}", args.bind_address, args.encoder_port_start).parse()?)
         .name(args.name)
-        .temp_client_id(ClientId(args.temp_client_id))
+        .temp_client_id(args.temp_client_id)
         .initial_program(args.initial_program)
         .max_width(dims[0])
         .max_height(dims[1])

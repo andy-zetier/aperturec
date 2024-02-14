@@ -1,41 +1,23 @@
-use async_trait::async_trait;
-use futures::sink::{self, Sink};
-use futures::stream::{self, Stream};
-
 pub mod codec;
 pub mod reliable;
 pub mod unreliable;
 
-pub type ServerControlChannel = codec::der::reliable::ServerControlChannel;
-pub type ClientControlChannel = codec::der::reliable::ClientControlChannel;
-pub type ServerEventChannel = codec::der::reliable::ServerEventChannel;
-pub type ClientEventChannel = codec::der::reliable::ClientEventChannel;
-pub type ServerMediaChannel = codec::der::unreliable::ServerMediaChannel;
-pub type ClientMediaChannel = codec::der::unreliable::ClientMediaChannel;
-pub type AsyncServerControlChannel = codec::der::reliable::AsyncServerControlChannel;
-pub type AsyncClientControlChannel = codec::der::reliable::AsyncClientControlChannel;
-pub type AsyncServerEventChannel = codec::der::reliable::AsyncServerEventChannel;
-pub type AsyncClientEventChannel = codec::der::reliable::AsyncClientEventChannel;
-pub type AsyncServerMediaChannel = codec::der::unreliable::AsyncServerMediaChannel;
-pub type AsyncClientMediaChannel = codec::der::unreliable::AsyncClientMediaChannel;
+pub type ServerControlChannel = codec::reliable::ServerControlChannel;
+pub type ClientControlChannel = codec::reliable::ClientControlChannel;
+pub type ServerEventChannel = codec::reliable::ServerEventChannel;
+pub type ClientEventChannel = codec::reliable::ClientEventChannel;
+pub type ServerMediaChannel = codec::unreliable::ServerMediaChannel;
+pub type ClientMediaChannel = codec::unreliable::ClientMediaChannel;
+pub type AsyncServerControlChannel = codec::reliable::AsyncServerControlChannel;
+pub type AsyncClientControlChannel = codec::reliable::AsyncClientControlChannel;
+pub type AsyncServerEventChannel = codec::reliable::AsyncServerEventChannel;
+pub type AsyncClientEventChannel = codec::reliable::AsyncClientEventChannel;
+pub type AsyncServerMediaChannel = codec::unreliable::AsyncServerMediaChannel;
+pub type AsyncClientMediaChannel = codec::unreliable::AsyncClientMediaChannel;
 
 pub trait Receiver {
     type Message;
     fn receive(&mut self) -> anyhow::Result<Self::Message>;
-}
-
-#[async_trait]
-pub trait AsyncReceiver: Send + Sized + 'static {
-    type Message;
-
-    async fn receive(&mut self) -> anyhow::Result<Self::Message>;
-
-    fn stream(self) -> Box<dyn Stream<Item = Self::Message>> {
-        Box::new(stream::unfold(self, |mut receiver| async move {
-            let msg = receiver.receive().await.ok()?;
-            Some((msg, receiver))
-        }))
-    }
 }
 
 pub trait Sender {
@@ -43,15 +25,40 @@ pub trait Sender {
     fn send(&mut self, msg: Self::Message) -> anyhow::Result<()>;
 }
 
-#[async_trait]
-pub trait AsyncSender: Send + Sized + 'static {
-    type Message;
-    async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()>;
+mod async_variants {
+    use futures::sink::{self, Sink};
+    use futures::stream::{self, Stream};
 
-    fn sink(self) -> Box<dyn Sink<Self::Message, Error = anyhow::Error>> {
-        Box::new(sink::unfold(self, |mut sender, msg| async {
-            sender.send(msg).await?;
-            Ok(sender)
-        }))
+    #[trait_variant::make(Receiver: Send)]
+    pub trait LocalReceiver: Send + Sized + 'static {
+        type Message: Send;
+
+        #[allow(async_fn_in_trait)]
+        async fn receive(&mut self) -> anyhow::Result<Self::Message>;
+
+        fn stream(self) -> impl Stream<Item = Self::Message> {
+            stream::unfold(self, |mut receiver| async move {
+                let msg = receiver.receive().await.ok()?;
+                Some((msg, receiver))
+            })
+        }
+    }
+
+    #[trait_variant::make(Sender: Send)]
+    pub trait LocalSender: Send + Sized + 'static {
+        type Message: Send;
+
+        #[allow(async_fn_in_trait)]
+        async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()>;
+
+        fn sink(self) -> impl Sink<Self::Message, Error = anyhow::Error> {
+            sink::unfold(self, |mut sender, msg| async {
+                sender.send(msg).await?;
+                Ok(sender)
+            })
+        }
     }
 }
+
+pub use async_variants::Receiver as AsyncReceiver;
+pub use async_variants::Sender as AsyncSender;

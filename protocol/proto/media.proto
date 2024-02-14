@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package media;
+import "common.proto";
+
+message Rectangle {
+  common.Codec codec = 1;
+  common.Dimension dimension = 2;
+  bytes Data = 3;
+}
+
+message RectangleUpdate {
+  uint64 sequence_id = 1;
+  common.Location location = 2;
+  Rectangle rectangle = 3;
+}
+
+message FramebufferUpdate { repeated RectangleUpdate rectangle_updates = 1; }
+
+message MediaKeepalive { common.Decoder decoder = 1; }
+
+message ServerToClient {
+  oneof message { FramebufferUpdate framebuffer_update = 1; }
+}
+
+message ClientToServer {
+  oneof message { MediaKeepalive media_keepalive = 1; }
+}

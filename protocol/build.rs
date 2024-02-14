@@ -1,417 +1,160 @@
-use asn1rs::converter::Converter;
+use std::collections::HashMap;
 use std::env;
+use std::format;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use syn::parse_quote;
 use syn::visit_mut::VisitMut;
-use syn::*;
 
-#[cfg(feature = "asn1c-tests")]
-use std::process::Command;
-#[cfg(feature = "asn1c-tests")]
-use syn::visit::Visit;
+const RAW_DIR: &str = "rust_raw";
 
-fn create_dir_if_not_exists(path: &Path) -> anyhow::Result<()> {
-    if !path.exists() {
-        fs::create_dir_all(path)?;
-    } else if !path.is_dir() {
-        anyhow::bail!("{} exists and is not a directory", path.display());
-    }
-
-    Ok(())
-}
-
-fn asn1_srcs() -> anyhow::Result<Vec<PathBuf>> {
-    let paths: Vec<PathBuf> = fs::read_dir("asn1")
-        .unwrap()
-        .filter_map(|de_res| de_res.ok())
-        .filter(|de| de.path().extension().is_some_and(|ext| ext == "asn1"))
-        .map(|de| de.path())
-        .collect();
-
-    Ok(paths)
-}
-
-fn common_attributes(should_impl_copy: bool) -> Vec<Attribute> {
-    let copy: punctuated::Punctuated<PathSegment, Token![,]> = if should_impl_copy {
-        parse_quote! { Copy }
-    } else {
-        parse_quote! {}
-    };
-    vec![
-        parse_quote! { #[derive(rasn::AsnType, rasn::Encode, rasn::Decode, new, Debug, Clone, PartialEq, Eq, #copy)] },
-        parse_quote! { #[rasn(automatic_tags, option_type(Option))] },
-    ]
-}
-
-fn asn_attr_meta_list<'a, A>(curr_attrs: A) -> impl Iterator<Item = Meta> + 'a
-where
-    A: IntoIterator<Item = &'a Attribute>,
-    <A as IntoIterator>::IntoIter: 'a,
-{
-    curr_attrs
-        .into_iter()
-        .filter(|attr| attr.style == AttrStyle::Outer)
-        .filter_map(|attr| match &attr.meta {
-            Meta::List(list) => Some(list),
-            _ => None,
-        })
-        .filter(|list| list.path.is_ident("asn"))
-        .map(|list| {
-            list.parse_args_with(punctuated::Punctuated::<Meta, Token![,]>::parse_terminated)
-                .unwrap()
-        })
-        .flat_map(|puncted| puncted.into_iter())
-}
-
-fn is_extensible<'a, A>(curr_attrs: A) -> bool
-where
-    A: IntoIterator<Item = &'a Attribute>,
-    <A as IntoIterator>::IntoIter: 'a,
-{
-    let meta_list = asn_attr_meta_list(curr_attrs);
-    for meta in meta_list {
-        match meta {
-            Meta::List(ml) => {
-                if ml.path.is_ident("extensible_after") {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    false
-}
-
-fn is_asn_enumerated<'a, A>(attrs: A) -> bool
-where
-    A: IntoIterator<Item = &'a Attribute>,
-    <A as IntoIterator>::IntoIter: 'a,
-{
-    let meta_list = asn_attr_meta_list(attrs);
-    for meta in meta_list {
-        match meta {
-            Meta::Path(path) => {
-                if path.is_ident("enumerated") {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-struct RasnDerive;
-impl VisitMut for RasnDerive {
-    fn visit_item_struct_mut(&mut self, i: &mut ItemStruct) {
-        let is_extensible = is_extensible(&i.attrs);
-
-        i.attrs = common_attributes(false);
-        for field in &mut i.fields {
-            field.attrs = vec![];
-        }
-        if let Fields::Unnamed(fields_unnamed) = &i.fields {
-            if fields_unnamed.unnamed.len() == 1 {
-                i.attrs.push(parse_quote! { #[rasn(delegate)] });
-            }
-        }
-        if is_extensible {
-            i.attrs.push(parse_quote! { #[non_exhaustive] });
-            i.attrs.push(parse_quote! { #[derive(Builder)] });
-        }
-    }
-
-    fn visit_item_enum_mut(&mut self, i: &mut ItemEnum) {
-        let mut should_impl_copy = false;
-        let is_extensible = is_extensible(&i.attrs);
-        let mut rasn_attrs = vec![];
-        if is_asn_enumerated(&i.attrs) {
-            rasn_attrs.push(parse_quote! { #[rasn(enumerated)] });
-            should_impl_copy = true;
-        } else {
-            rasn_attrs.push(parse_quote! { #[rasn(choice)] });
-        }
-        i.attrs = common_attributes(should_impl_copy);
-        i.attrs.append(&mut rasn_attrs);
-        for variant in &mut i.variants {
-            variant.attrs = vec![];
-        }
-        if is_extensible {
-            i.attrs.push(parse_quote! { #[non_exhaustive] });
-        }
+struct DeriveNew;
+impl VisitMut for DeriveNew {
+    fn visit_item_struct_mut(&mut self, node: &mut syn::ItemStruct) {
+        node.attrs.push(parse_quote! { #[derive(derive_new::new)] });
     }
 }
 
-fn has_asn1_variants_impl_items(items: &Vec<ImplItem>) -> bool {
-    let (mut impl_variant, mut impl_variants, mut impl_value_index) = (false, false, false);
-    for item in items {
-        match item {
-            ImplItem::Fn(impl_item_fn) => {
-                if impl_item_fn.sig.ident == "variant" {
-                    impl_variant = true;
-                }
-                if impl_item_fn.sig.ident == "variants" {
-                    impl_variants = true;
-                }
-                if impl_item_fn.sig.ident == "value_index" {
-                    impl_value_index = true;
-                }
-            }
-            _ => continue,
-        }
+struct DeriveBuilder;
+impl VisitMut for DeriveBuilder {
+    fn visit_item_struct_mut(&mut self, node: &mut syn::ItemStruct) {
+        node.attrs
+            .push(parse_quote! { #[derive(derive_builder::Builder)] });
+        node.attrs
+            .push(parse_quote! { #[builder(setter(into, strip_option))] });
     }
-
-    impl_variant && impl_variants && impl_value_index
 }
 
-struct ImplRemove;
-impl VisitMut for ImplRemove {
-    fn visit_file_mut(&mut self, i: &mut File) {
-        i.items.retain(|item| match item {
-            Item::Impl(ItemImpl { items, .. }) => has_asn1_variants_impl_items(&items),
-            _ => true,
+#[derive(Default)]
+struct DeriveFrom {
+    wrapped_options: HashMap<syn::ItemStruct, (syn::Ident, syn::Type)>,
+}
+
+impl DeriveFrom {
+    fn complete(self, file: &mut syn::File) {
+        file.items.push(parse_quote! {
+            /// Error when converting a struct which wraps a single Option to it's inner type, and
+            /// the Option is None.
+            #[derive(Debug)]
+            pub struct WrappedOptionalConvertError;
         });
-    }
-}
 
-struct UseChanges;
-impl VisitMut for UseChanges {
-    fn visit_file_mut(&mut self, i: &mut File) {
-        let target: Item = parse_quote! { use asn1rs::prelude::*; };
-        i.items.retain(|item| item != &target);
-        i.items.append(&mut vec![
-            parse_quote! {
-                #[allow(unused_imports)]
-                use rasn::AsnType;
-            },
-            parse_quote! {
-                #[allow(unused_imports)]
-                use derive_builder::Builder;
-            },
-            parse_quote! {
-                #[allow(unused_imports)]
-                use derive_new::new;
-            },
-        ]);
-    }
-}
-
-struct OctetStringFixup;
-impl VisitMut for OctetStringFixup {
-    fn visit_field_mut(&mut self, i: &mut Field) {
-        let meta_list = asn_attr_meta_list(&i.attrs);
-        let is_octet_str = meta_list
-            .filter(|meta| match meta {
-                Meta::Path(path) => path.is_ident("octet_string"),
-                _ => false,
-            })
-            .next()
-            .is_some();
-        if is_octet_str {
-            i.ty = parse_quote! { rasn::types::OctetString };
-        }
-    }
-}
-
-fn generate_rust_bindings(asn1_paths: &Vec<PathBuf>, out_dir: &Path) -> anyhow::Result<()> {
-    let mut converter = Converter::default();
-
-    let asn1rs_dir = out_dir.join("asn1rs");
-    create_dir_if_not_exists(&asn1rs_dir)?;
-
-    for path in asn1_paths {
-        let path_display = path.display();
-        if let Err(e) = converter.load_file(&path) {
-            panic!("Loading of {} failed: {:?}", path_display, e)
-        }
-        converter.to_rust(&asn1rs_dir, |_| {}).unwrap();
-
-        let rust_fname = PathBuf::from(path.file_stem().unwrap()).with_extension("rs");
-        let asn1rs_generated = asn1rs_dir.join(&rust_fname);
-        let mut parsed = syn::parse_file(&fs::read_to_string(&asn1rs_generated).unwrap()).unwrap();
-
-        OctetStringFixup.visit_file_mut(&mut parsed);
-        ImplRemove.visit_file_mut(&mut parsed);
-        RasnDerive.visit_file_mut(&mut parsed);
-        UseChanges.visit_file_mut(&mut parsed);
-
-        let generated_path = out_dir.join(rust_fname);
-        let generated = prettyplease::unparse(&parsed);
-
-        fs::write(generated_path, generated).unwrap();
-    }
-
-    Ok(())
-}
-
-#[cfg(feature = "asn1c-tests")]
-fn find_generated_sources_and_headers(out_dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut sources = Vec::new();
-    let mut headers = Vec::new();
-
-    if out_dir.is_dir() {
-        for entry in fs::read_dir(out_dir).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(extension) = path.extension() {
-                    match extension.to_str().unwrap() {
-                        "c" => sources.push(PathBuf::from(path)),
-                        "h" => headers.push(PathBuf::from(path)),
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-
-    // Enforce consistent header order
-    headers.sort_by_key(|path| {
-        path.clone()
-            .into_os_string()
-            .into_string()
-            .unwrap()
-            .to_lowercase()
-    });
-
-    (sources, headers)
-}
-
-#[cfg(feature = "asn1c-tests")]
-fn generate_asn1c_files<I>(
-    asn1_srcs: I,
-    out_dir: &Path,
-) -> anyhow::Result<(Vec<PathBuf>, Vec<PathBuf>)>
-where
-    I: IntoIterator<Item = PathBuf>,
-{
-    let args = asn1_srcs
-        .into_iter()
-        .map(|path: PathBuf| path.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let status = Command::new("asn1c")
-        .args(["-D", out_dir.to_str().unwrap()])
-        .arg("-fcompound-names")
-        .arg("-no-gen-example")
-        .args(args)
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("Process failed with code {}", status.code().unwrap());
-    }
-    Ok(find_generated_sources_and_headers(out_dir))
-}
-
-struct TypesWithDescriptorCollector {
-    inner: Vec<Ident>,
-}
-impl<'ast> visit::Visit<'ast> for TypesWithDescriptorCollector {
-    fn visit_foreign_item_static(&mut self, i: &'ast ForeignItemStatic) {
-        match &*i.ty {
-            Type::Path(path) => {
-                if let Some(ident) = path.path.get_ident() {
-                    if ident == "asn_TYPE_descriptor_t" {
-                        self.inner.push(Ident::new(
-                            &i.ident.to_string()["as_DEF_".len() + 1..],
-                            i.ident.span(),
-                        ));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-struct StructFilter {
-    unfiltered: Vec<Ident>,
-    filtered: Vec<Ident>,
-}
-
-impl<'ast> visit::Visit<'ast> for StructFilter {
-    fn visit_item_struct(&mut self, i: &'ast ItemStruct) {
-        if self.unfiltered.contains(&i.ident) {
-            self.filtered.push(i.ident.clone());
-        }
-    }
-}
-
-#[cfg(feature = "asn1c-tests")]
-fn generate_asn1_traits<S>(bindings: S) -> anyhow::Result<String>
-where
-    S: AsRef<str>,
-{
-    let mut syntax = syn::parse_file(bindings.as_ref())?;
-    let mut collector = TypesWithDescriptorCollector { inner: vec![] };
-    collector.visit_file(&syntax);
-    let mut filter = StructFilter {
-        unfiltered: collector.inner,
-        filtered: vec![],
-    };
-    filter.visit_file(&syntax);
-    for ident in filter.filtered {
-        let new_ident = Ident::new(&format!("asn_DEF_{}", ident), ident.span());
-        syntax.items.push(parse_quote! {
-            impl crate::test::c::ASN1GenType for #ident {
-                unsafe fn get_descriptor() -> &'static asn_TYPE_descriptor_t {
-                    &#new_ident
+        file.items.push(parse_quote! {
+            impl std::fmt::Display for WrappedOptionalConvertError {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+                    <Self as std::fmt::Debug>::fmt(self, f)
                 }
             }
         });
-    }
 
-    Ok(prettyplease::unparse(&syntax))
+        file.items.push(parse_quote! {
+            impl std::error::Error for WrappedOptionalConvertError {}
+        });
+
+        for (item_struct, (field_ident, generic_ty)) in self.wrapped_options {
+            let outer_ident = item_struct.ident;
+
+            file.items.push(parse_quote! {
+                impl TryFrom<#outer_ident> for #generic_ty {
+                    type Error = WrappedOptionalConvertError;
+
+                    fn try_from(v: #outer_ident) -> Result<#generic_ty, Self::Error> {
+                        v.#field_ident.ok_or(WrappedOptionalConvertError)
+                    }
+                }
+            });
+        }
+    }
 }
 
-#[cfg(feature = "asn1c-tests")]
-fn generate_c_bindings<I>(asn1_srcs: I, out_dir: &Path) -> anyhow::Result<()>
-where
-    I: IntoIterator<Item = PathBuf>,
-{
-    let c_source_dir = out_dir.join("source");
-    create_dir_if_not_exists(&c_source_dir)?;
-    let c_build_dir = out_dir.join("build");
-    create_dir_if_not_exists(&c_build_dir)?;
-    let bindings_dir = out_dir.join("bindings");
-    create_dir_if_not_exists(&bindings_dir)?;
-
-    let (sources, headers) = generate_asn1c_files(asn1_srcs, &c_source_dir)?;
-
-    let mut cc_builder = cc::Build::new();
-    cc_builder.include(&c_source_dir);
-    cc_builder.files(sources);
-    cc_builder.flag("-Wno-missing-field-initializers");
-    cc_builder.flag("-Wno-missing-braces");
-    cc_builder.flag("-Wno-unused-parameter");
-    cc_builder.flag("-Wno-unused-const-variable");
-    cc_builder.out_dir(&c_build_dir);
-    cc_builder.compile("ac_asn1c_codec");
-
-    let mut builder = bindgen::Builder::default()
-        .clang_arg(format!("-I{}", c_source_dir.display()))
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
-        .derive_debug(true)
-        .layout_tests(false);
-    for header in headers {
-        builder = builder.header(header.to_str().unwrap());
+impl VisitMut for DeriveFrom {
+    fn visit_item_enum_mut(&mut self, node: &mut syn::ItemEnum) {
+        node.attrs
+            .push(parse_quote! { #[derive(derive_more::From)] });
+        for variant in node.variants.iter_mut() {
+            if variant.fields.len() != 1 {
+                continue;
+            }
+            variant.attrs.push(parse_quote! { #[from] });
+        }
     }
-    let bindings = builder.generate().unwrap();
-    let bindings_with_trait_impls = generate_asn1_traits(bindings.to_string())?;
-    fs::write(bindings_dir.join("bindings.rs"), bindings_with_trait_impls)?;
 
-    Ok(())
+    fn visit_item_struct_mut(&mut self, node: &mut syn::ItemStruct) {
+        node.attrs
+            .push(parse_quote! { #[derive(derive_more::From)] });
+        node.attrs.push(parse_quote! { #[from(forward)] });
+
+        if node.fields.len() == 1 {
+            let field = node.fields.iter().next().unwrap();
+            if field.ident.is_none() {
+                return;
+            }
+            let path = match &field.ty {
+                syn::Type::Path(type_path) => &type_path.path,
+                _ => return,
+            };
+
+            let last_segment = match path.segments.last() {
+                Some(last) => last,
+                _ => return,
+            };
+            if last_segment.ident != "Option" {
+                return;
+            }
+
+            let generic_args = match &last_segment.arguments {
+                syn::PathArguments::AngleBracketed(angle_bracketed) => &angle_bracketed.args,
+                _ => panic!("Option with non Angle-Bracket parameterization"),
+            };
+
+            if generic_args.len() != 1 {
+                panic!("Option with more than one generic argument");
+            }
+            let generic_ty = match generic_args.first().unwrap() {
+                syn::GenericArgument::Type(ty) => ty,
+                _ => panic!("Option parameterized with something other than a type"),
+            };
+
+            self.wrapped_options.insert(
+                node.clone(),
+                (field.ident.clone().unwrap(), generic_ty.clone()),
+            );
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let asn1_srcs = asn1_srcs()?;
-    for path in &asn1_srcs {
+    let proto_srcs: Vec<PathBuf> = glob::glob("proto/*.proto")?.collect::<Result<Vec<_>, _>>()?;
+    for path in &proto_srcs {
         println!("cargo:rerun-if-changed={}", path.display());
     }
-    generate_rust_bindings(&asn1_srcs, &out_dir)?;
 
-    #[cfg(feature = "asn1c-tests")]
-    generate_c_bindings(asn1_srcs, &out_dir.join("c"))?;
+    let mut config = prost_build::Config::new();
+    let outdir = PathBuf::from(env::var("OUT_DIR")?);
+    let raw_outdir = outdir.join(RAW_DIR);
+
+    fs::create_dir_all(&raw_outdir)?;
+    config.out_dir(&raw_outdir);
+    // config.boxed(".");
+    config.compile_protos(&proto_srcs, &["proto/"])?;
+
+    let raw_srcs: Vec<PathBuf> =
+        glob::glob(&format!("{}/*.rs", raw_outdir.display()))?.collect::<Result<Vec<_>, _>>()?;
+
+    for raw_src in &raw_srcs {
+        let mut parsed = syn::parse_file(&fs::read_to_string(raw_src)?)?;
+
+        DeriveNew.visit_file_mut(&mut parsed);
+        DeriveBuilder.visit_file_mut(&mut parsed);
+        let mut derive_from = DeriveFrom::default();
+        derive_from.visit_file_mut(&mut parsed);
+        derive_from.complete(&mut parsed);
+
+        let generated = prettyplease::unparse(&parsed);
+        let generated_path = outdir.join(raw_src.file_name().expect("file_name"));
+
+        fs::write(generated_path, generated)?;
+    }
 
     Ok(())
 }

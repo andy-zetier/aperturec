@@ -92,7 +92,12 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                             Err(err) => break Err(anyhow!("Could not receive event from EC: {}", err)),
                         };
 
-                        match self.state.event_tx.send(ec_msg) {
+                        let event = match ec_msg.try_into() {
+                            Ok(event) => event,
+                            Err(err) => break Err(anyhow!("Could not convert EC message to event: {}", err)),
+                        };
+
+                        match self.state.event_tx.send(event) {
                             Ok(()) => {
                                 enq!(EVENT_QUEUE);
                             },

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
-use aperturec_protocol::common_types::*;
-use aperturec_protocol::control_messages as cm;
+
+use aperturec_protocol::control as cm;
+use aperturec_protocol::control::server_to_client as cm_s2c;
 use aperturec_state_machine::{
     Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
 };
@@ -30,7 +31,7 @@ pub struct Created {
     hb_req_interval: Duration,
     hb_resp_interval: Duration,
     hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
-    cc_send_tx: mpsc::Sender<cm::ServerToClientMessage>,
+    cc_send_tx: mpsc::Sender<cm_s2c::Message>,
     acked_seq_tx: mpsc::UnboundedSender<cm::DecoderSequencePair>,
     ct: CancellationToken,
 }
@@ -50,7 +51,7 @@ impl Task<Created> {
         hb_resp_interval: Duration,
         acked_seq_tx: mpsc::UnboundedSender<cm::DecoderSequencePair>,
         hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
-        cc_send_tx: mpsc::Sender<cm::ServerToClientMessage>,
+        cc_send_tx: mpsc::Sender<cm_s2c::Message>,
     ) -> (Self, CancellationToken) {
         let ct = CancellationToken::new();
         let task = Task {
@@ -88,7 +89,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
             let hb_req_interval = time::interval(self.state.hb_req_interval);
             tokio::pin!(hb_req_interval);
 
-            let mut hb_id = HeartbeatId::new(0);
+            let mut hb_id = 0;
 
             let mut hb_resp_stream = UnboundedReceiverStream::new(self.state.hb_resp_rx).fuse();
             let mut hb_resp_timers = FuturesUnordered::new();
@@ -104,8 +105,8 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                         if !unacked_hb_reqs.contains(&hb_resp.heartbeat_id) {
                             log::warn!("Received unsolicied HB response {:?}", hb_resp);
                         } else {
-                            metrics::rtt_incoming(hb_resp.heartbeat_id.0);
-                            unacked_hb_reqs.retain(|hb_id: &HeartbeatId| hb_id.0 > hb_resp.heartbeat_id.0);
+                            metrics::rtt_incoming(hb_resp.heartbeat_id);
+                            unacked_hb_reqs.retain(|hb_id: &u64| hb_id > &hb_resp.heartbeat_id);
                             for pair in hb_resp.last_sequence_ids {
                                 self.state.acked_seq_tx.send(pair)?;
                             }
@@ -117,24 +118,20 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                             Err(join_error) => break Err(anyhow!("Failed to join HB resp task: {}", join_error)),
                         };
                         if unacked_hb_reqs.contains(&expired_hb_resp_id) {
-                            let server_goodbye_msg = cm::ServerToClientMessage::new_server_goodbye(
-                                cm::ServerGoodbye::new(cm::ServerGoodbyeReason::new_network_error())
-                            );
-                            self.state.cc_send_tx.send(server_goodbye_msg).await?;
+                            self.state.cc_send_tx.send(cm::ServerGoodbye::new(cm::ServerGoodbyeReason::NetworkError.into()).into()).await?;
                             log::trace!("Sent server goodbye message");
                             break Err(anyhow!("Did not receive heartbeat response for {:?} in required interval {:?}", expired_hb_resp_id, self.state.hb_resp_interval));
                         }
                     }
                     _ = hb_req_interval.tick() => {
-                        hb_id.0 += 1;
-                        let req = cm::HeartbeatRequest::new(hb_id.clone());
-                        let msg = cm::ServerToClientMessage::new_heartbeat_request(req);
-                        metrics::rtt_outgoing(hb_id.0);
-                        self.state.cc_send_tx.send(msg).await?;
+                        hb_id += 1;
+                        let req = cm::HeartbeatRequest::new(hb_id);
+                        metrics::rtt_outgoing(hb_id);
+                        self.state.cc_send_tx.send(req.into()).await?;
 
 
-                        unacked_hb_reqs.insert(hb_id.clone());
-                        let task_hb_id = hb_id.clone();
+                        unacked_hb_reqs.insert(hb_id);
+                        let task_hb_id = hb_id;
                         hb_resp_timers.push(tokio::spawn(async move {
                             time::sleep(self.state.hb_resp_interval).await;
                             task_hb_id

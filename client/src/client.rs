@@ -1,29 +1,26 @@
 use crate::gtk3::{GtkUi, ItcChannels};
-
+use anyhow::Result;
 use aperturec_channel::reliable::tcp;
 use aperturec_channel::unreliable::udp;
 use aperturec_channel::{
     ClientControlChannel, ClientEventChannel, ClientMediaChannel, Receiver, Sender,
 };
-use aperturec_protocol::common_types::*;
-use aperturec_protocol::control_messages::{
-    Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder, ClientGoodbyeReason, ClientInfo,
-    ClientInfoBuilder, ClientInit, ClientInitBuilder, ClientToServerMessage as CM_C2S,
+use aperturec_protocol::common::*;
+use aperturec_protocol::control::{
+    server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder,
+    ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, DecoderArea,
     DecoderSequencePair, Endianness, HeartbeatResponseBuilder, MissedFrameReportBuilder, Os,
-    ServerToClientMessage as CM_S2C,
 };
-use aperturec_protocol::media_messages::{
-    ClientToServerMessage as MM_C2S, MediaKeepalive, ServerToClientMessage as MM_S2C,
+use aperturec_protocol::event::{
+    button, client_to_server as em_c2s, Button, ButtonStateBuilder, KeyEvent, MappedButton,
+    PointerEvent, PointerEventBuilder,
 };
-
-use aperturec_protocol::event_messages::{
-    Button, ButtonStateBuilder, ClientToServerMessage as EM_C2S, KeyEvent, KeyEventBuilder,
-    MappedButton, PointerEvent, PointerEventBuilder,
+use aperturec_protocol::media::{
+    client_to_server as mm_c2s, server_to_client as mm_s2c, MediaKeepalive, Rectangle,
+    RectangleUpdate,
 };
 use aperturec_state_machine::TryTransitionable;
 use aperturec_trace::log;
-
-use anyhow::Result;
 use crossbeam_channel::{select, unbounded};
 use derive_builder::Builder;
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,22 +45,14 @@ pub struct Point(pub u32, pub u32);
 
 impl Point {
     pub fn to_location(&self) -> Location {
-        LocationBuilder::default()
-            .x_position(self.0.into())
-            .y_position(self.1.into())
-            .build()
-            .expect("Failed to convert Point -> Location")
+        Location {
+            x_position: self.0 as u64,
+            y_position: self.1 as u64,
+        }
     }
 
     pub fn from_location(loc: &Location) -> Self {
-        Self(
-            loc.x_position
-                .try_into()
-                .expect("Failed to convert x coordinate"),
-            loc.y_position
-                .try_into()
-                .expect("Failed to convert y coordinate"),
-        )
+        Self(loc.x_position as u32, loc.y_position as u32)
     }
 }
 
@@ -92,22 +81,11 @@ impl MouseButtonEventMessage {
     }
 
     fn button_from_code(button: u32) -> Button {
-        match button {
-            0 => Button::MappedButton(MappedButton::Left),
-            1 => Button::MappedButton(MappedButton::Middle),
-            2 => Button::MappedButton(MappedButton::Right),
-            3 => Button::MappedButton(MappedButton::WheelScrollUp),
-            4 => Button::MappedButton(MappedButton::WheelScrollDown),
-            5 => Button::MappedButton(MappedButton::WheelScrollLeft),
-            6 => Button::MappedButton(MappedButton::WheelScrollRight),
-            7 => Button::MappedButton(MappedButton::Back),
-            8 => Button::MappedButton(MappedButton::Forward),
-            _ => Button::UnmappedButton(
-                button
-                    .try_into()
-                    .unwrap_or_else(|_| panic!("Failed to create UnmappedButton ({})", button)),
-            ),
-        }
+        let kind = Some(match MappedButton::try_from(button as i32 + 1) {
+            Ok(mapped) => button::Kind::MappedButton(mapped.into()),
+            Err(_) => button::Kind::UnmappedButton(button),
+        });
+        Button { kind }
     }
 }
 
@@ -135,11 +113,10 @@ pub struct KeyEventMessage {
 
 impl KeyEventMessage {
     pub fn to_key_event(&self) -> KeyEvent {
-        KeyEventBuilder::default()
-            .key(self.key.into())
-            .down(self.is_pressed)
-            .build()
-            .expect("Failed to build KeyEvent")
+        KeyEvent {
+            key: self.key,
+            down: self.is_pressed,
+        }
     }
 }
 
@@ -152,7 +129,7 @@ impl GoodbyeMessage {
     const NETWORK_ERROR: &'static str = "Network Error";
     const TERMINATING: &'static str = "Terminating";
 
-    pub fn to_client_goodbye(&self, client_id: ClientId) -> ClientGoodbye {
+    pub fn to_client_goodbye(&self, client_id: u64) -> ClientGoodbye {
         match self.reason.as_str() {
             GoodbyeMessage::NETWORK_ERROR => ClientGoodbyeBuilder::default()
                 .client_id(client_id)
@@ -288,7 +265,7 @@ pub struct Client {
     decoders: BTreeMap<u16, ClientDecoder>,
     event_port: Option<u16>,
     async_rt: tokio::runtime::Runtime,
-    id: ClientId,
+    id: u64,
     server_name: Option<String>,
     tcp_retry_interval: Duration,
     heartbeat_interval: Duration,
@@ -300,7 +277,7 @@ pub struct Client {
 impl Client {
     fn new(config: &Configuration) -> Self {
         let decoders = BTreeMap::new();
-        let id = ClientId::new(config.id);
+        let id = config.id;
         let async_rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -356,10 +333,9 @@ impl Client {
     }
 
     fn generate_client_caps(&self) -> ClientCaps {
-        ClientCapsBuilder::default()
-            .supported_codecs(vec![Codec::Raw, Codec::Zlib])
-            .build()
-            .expect("Failed to generate ClientCaps!")
+        ClientCaps {
+            supported_codecs: vec![Codec::Raw.into(), Codec::Zlib.into()],
+        }
     }
 
     fn generate_client_info(&self) -> ClientInfo {
@@ -407,7 +383,7 @@ impl Client {
                 arch => panic!("Unsupported architcture {}", arch),
             })
             .cpu_id(sys.cpus()[0].brand().to_string())
-            .number_of_cores(sys.cpus().len().try_into().unwrap())
+            .number_of_cores(sys.cpus().len() as u64)
             .amount_of_ram(sys.total_memory().to_string())
             .display_size(Dimension::new(
                 self.config.win_width,
@@ -419,22 +395,20 @@ impl Client {
 
     fn generate_client_init(&self) -> ClientInit {
         ClientInitBuilder::default()
-            .temp_id(ClientId(self.id.0))
+            .temp_id(self.id)
             .client_info(self.generate_client_info())
             .client_caps(self.generate_client_caps())
-            .client_heartbeat_interval(DurationMs(
+            .client_heartbeat_interval::<prost_types::Duration>(
                 self.heartbeat_interval
-                    .as_millis()
                     .try_into()
                     .expect("Failed to convert Duration"),
-            ))
-            .client_heartbeat_response_interval(DurationMs(
+            )
+            .client_heartbeat_response_interval::<prost_types::Duration>(
                 self.heartbeat_response_interval
-                    .as_millis()
                     .try_into()
                     .expect("Failed to convert Duration"),
-            ))
-            .max_decoder_count(self.config.decoder_max.into())
+            )
+            .max_decoder_count::<u32>(self.config.decoder_max.into())
             .build()
             .expect("Failed to generate ClientInit!")
     }
@@ -480,8 +454,8 @@ impl Client {
             let keepalive_timeout = self.config.keepalive_timeout;
 
             thread::spawn(move || {
-                let keepalive =
-                    MM_C2S::new_media_keepalive(MediaKeepalive::new(Decoder::new(remote_port)));
+                let keepalive: mm_c2s::Message =
+                    MediaKeepalive::new(Decoder::new(remote_port as u32).into()).into();
 
                 loop {
                     log::trace!("[decoder {}] Sending {:?}", local_port, &keepalive);
@@ -547,13 +521,7 @@ impl Client {
                     // Listen for FramebufferUpdates from the server
                     //
                     let fbu = match client_mc_rx.receive() {
-                        Ok(m) => match m {
-                            MM_S2C::FramebufferUpdate(fbu) => fbu,
-                            _ => {
-                                log::warn!("[decoder {}] Received unexpected message", local_port);
-                                continue;
-                            }
-                        },
+                        Ok(mm_s2c::Message::FramebufferUpdate(fbu)) => fbu,
                         Err(err) => match err.downcast::<std::io::Error>() {
                             Ok(ioe) => match ioe.kind() {
                                 ErrorKind::WouldBlock => {
@@ -616,88 +584,90 @@ impl Client {
                         // seem to happen very often in my ad-hoc testing, so I'll leave them
                         // dropped for now with a warning.
                         //
-                        if current_seq_id.map_or(false, |csi: u64| csi >= ru.sequence_id.0) {
+                        if current_seq_id.map_or(false, |csi: u64| csi >= ru.sequence_id) {
                             log::warn!(
                                 "[decoder {}] Dropping Rectangle {}, already received {}",
                                 local_port,
-                                ru.sequence_id.0,
+                                ru.sequence_id,
                                 current_seq_id.unwrap()
                             );
 
                             continue;
-                        } else if current_seq_id.is_none() && ru.sequence_id.0 != 0 {
-                            missing_seq.extend(0..ru.sequence_id.0)
+                        } else if current_seq_id.is_none() && ru.sequence_id != 0 {
+                            missing_seq.extend(0..ru.sequence_id)
                         } else if let Some(current_seq_id) = current_seq_id {
-                            if current_seq_id < ru.sequence_id.0 {
-                                missing_seq.extend(current_seq_id + 1..ru.sequence_id.0);
+                            if current_seq_id < ru.sequence_id {
+                                missing_seq.extend(current_seq_id + 1..ru.sequence_id);
                             }
                         }
 
-                        current_seq_id = Some(ru.sequence_id.0);
+                        current_seq_id = Some(ru.sequence_id);
 
                         //
                         // Write rectangle data to the Image with the appropriate Codec
                         //
-                        match ru.rectangle.codec {
-                            Codec::Raw => match image.draw_raw(
-                                &ru.rectangle.data,
-                                ru.location.x_position,
-                                ru.location.y_position,
-                                ru.rectangle
-                                    .dimension
-                                    .as_ref()
-                                    .expect("Width is required")
-                                    .width,
-                                ru.rectangle
-                                    .dimension
-                                    .as_ref()
-                                    .expect("Height is required")
-                                    .height,
-                            ) {
-                                Ok(_) => (),
-                                Err(err) => {
+                        if let RectangleUpdate {
+                            location: Some(location),
+                            rectangle:
+                                Some(Rectangle {
+                                    codec,
+                                    data,
+                                    dimension: Some(dimension),
+                                }),
+                            ..
+                        } = &ru
+                        {
+                            match Codec::try_from(*codec) {
+                                Ok(Codec::Raw) => match image.draw_raw(
+                                    data,
+                                    location.x_position.into(),
+                                    location.y_position.into(),
+                                    dimension.width,
+                                    dimension.height,
+                                ) {
+                                    Ok(_) => (),
+                                    Err(err) => {
+                                        log::warn!(
+                                            "[decoder {}] Codec::Raw failed: {}",
+                                            local_port,
+                                            err
+                                        );
+                                        log::debug!("[decoder {}] {:#?}", local_port, &ru);
+                                    }
+                                },
+                                Ok(Codec::Zlib) => match image.draw_raw_zlib(
+                                    data,
+                                    location.x_position.into(),
+                                    location.y_position.into(),
+                                    dimension.width,
+                                    dimension.height,
+                                ) {
+                                    Ok(_) => (),
+                                    Err(err) => {
+                                        log::warn!(
+                                            "[decoder {}] Codec::Zlib failed: {}",
+                                            local_port,
+                                            err
+                                        );
+                                        log::debug!("[decoder {}] {:#?}", local_port, &ru);
+                                    }
+                                },
+                                _ => {
                                     log::warn!(
-                                        "[decoder {}] Codec::Raw failed: {}",
+                                        "[decoder {}] Dropping Rectangle {}, unsupported codec",
                                         local_port,
-                                        err
+                                        current_seq_id.unwrap()
                                     );
-                                    log::debug!("[decoder {}] {:#?}", local_port, &ru);
                                 }
-                            },
-                            Codec::Zlib => match image.draw_raw_zlib(
-                                &ru.rectangle.data,
-                                ru.location.x_position,
-                                ru.location.y_position,
-                                ru.rectangle
-                                    .dimension
-                                    .as_ref()
-                                    .expect("Width is required")
-                                    .width,
-                                ru.rectangle
-                                    .dimension
-                                    .as_ref()
-                                    .expect("Height is required")
-                                    .height,
-                            ) {
-                                Ok(_) => (),
-                                Err(err) => {
-                                    log::warn!(
-                                        "[decoder {}] Codec::Zlib failed: {}",
-                                        local_port,
-                                        err
-                                    );
-                                    log::debug!("[decoder {}] {:#?}", local_port, &ru);
-                                }
-                            },
-                            _ => {
-                                log::warn!(
-                                    "[decoder {}] Dropping Rectangle {}, unsupported codec",
-                                    local_port,
-                                    current_seq_id.unwrap()
-                                );
                             }
+                        } else {
+                            log::warn!(
+                                "[decoder {}] Dropping rectangle {}, malformed",
+                                local_port,
+                                current_seq_id.unwrap()
+                            );
                         }
-                    } // for rectangle_updates
+                    }
 
                     //
                     // Swap Image with the UI thread
@@ -774,11 +744,11 @@ impl Client {
 
         let client_cc = ClientControlChannel::new(tcp_client);
         let (mut client_cc_read, mut client_cc_write) = client_cc.split();
-        client_cc_write.send(CM_C2S::ClientInit(ci))?;
+        client_cc_write.send(ci.into())?;
 
         log::debug!("Client Init sent, waiting for ServerInit...");
         let si = match client_cc_read.receive() {
-            Ok(CM_S2C::ServerInit(si)) => si,
+            Ok(cm_s2c::Message::ServerInit(si)) => si,
             Ok(_) => panic!("Unexpected message received, expected ServerInit"),
             Err(other) => panic!("Failed to read ServerInit: {:?}", other),
         };
@@ -790,15 +760,29 @@ impl Client {
         //
         self.id = si.client_id;
         self.server_name = Some(si.server_name);
-        self.event_port = Some(si.event_port);
-        self.config.win_height = si.display_size.height;
-        self.config.win_width = si.display_size.width;
+        self.event_port = Some(si.event_port.try_into().expect("Invalid event port"));
+        let display_size = si.display_size.expect("No display size provided");
+        self.config.win_height = display_size.height;
+        self.config.win_width = display_size.width;
 
-        for (decoder_id, decoder) in si.decoder_areas.into_iter().enumerate() {
-            let mut d = ClientDecoder::new(decoder_id.try_into().unwrap());
-            d.set_origin(decoder.location);
-            d.set_dims(decoder.dimension);
-            self.decoders.insert(decoder.decoder.port, d);
+        for (decoder_id, decoder_area) in si.decoder_areas.into_iter().enumerate() {
+            if let DecoderArea {
+                decoder: Some(decoder),
+                location: Some(location),
+                dimension: Some(dimension),
+            } = decoder_area
+            {
+                if let Ok(port) = decoder.port.try_into() {
+                    let mut d = ClientDecoder::new(decoder_id.try_into().unwrap());
+                    d.set_origin(location);
+                    d.set_dims(dimension);
+                    self.decoders.insert(port, d);
+                } else {
+                    panic!("Invalid port received from server {}", decoder.port);
+                }
+            } else {
+                panic!("Invalid decoder area: {:?}", decoder_area);
+            }
         }
 
         assert!(
@@ -812,7 +796,7 @@ impl Client {
             "Connected to server @ {} ({}) as client {}!",
             &self.config.server_addr,
             &self.server_name.as_ref().unwrap(),
-            &self.id.0
+            &self.id
         );
 
         //
@@ -857,7 +841,7 @@ impl Client {
         //
         // Setup core Control Channel thread
         //
-        let client_id = self.id.clone();
+        let client_id = self.id;
         let should_stop = self.should_stop.clone();
         let control_rx = itc.notify_control_rx.take().unwrap();
 
@@ -869,33 +853,33 @@ impl Client {
             loop {
                 select! {
                     recv(control_rx_rx) -> msg => match msg {
-                        Ok(Ok(CM_S2C::HeartbeatRequest(hr))) => {
-                            log::trace!("Recv HeartbeatRequest  {}", hr.request_id.0);
+                        Ok(Ok(cm_s2c::Message::HeartbeatRequest(hr))) => {
+                            log::trace!("Recv HeartbeatRequest  {}", hr.request_id);
                             let hbr = HeartbeatResponseBuilder::default()
-                                .heartbeat_id(HeartbeatId::new(hr.request_id.0))
+                                .heartbeat_id(hr.request_id)
                                 .last_sequence_ids(
                                     decoder_seq
                                     .iter()
                                     .map(|(d, s)| {
                                         DecoderSequencePair::new(
-                                            Decoder::new(*d),
-                                            SequenceId::new(*s),
+                                            Decoder::new(*d).into(),
+                                            *s,
                                             )
                                     })
-                                    .collect(),
+                                    .collect::<Vec<_>>(),
                                     )
                                 .build()
                                 .expect("Failed to generate HeartbeatResponse!");
-                            match control_tx_tx.send(CM_C2S::new_heartbeat_response(hbr)) {
+                            match control_tx_tx.send(hbr.into()) {
                                 Err(err) => log::warn!(
                                     "Failed to send HeartbeatResponse {:?}: {}",
-                                    hr.request_id.0,
+                                    hr.request_id,
                                     err
                                     ),
-                                _ => log::trace!("Sent HeartbeatResponse {}", hr.request_id.0),
+                                _ => log::trace!("Sent HeartbeatResponse {}", hr.request_id),
                             };
                         },
-                        Ok(Ok(CM_S2C::ServerGoodbye(_))) => {
+                        Ok(Ok(cm_s2c::Message::ServerGoodbye(_))) => {
                             if let Err(err) =
                                 control_to_ui_tx.send(UiMessage::QuitMessage(String::from("Goodbye!")))
                                 {
@@ -912,9 +896,7 @@ impl Client {
                                 _ => {
                                     let _ = control_to_ui_tx
                                         .send(UiMessage::QuitMessage(format!("{:?}", ioe)));
-                                    let _ = control_tx_tx.send(CM_C2S::new_client_goodbye(
-                                            ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating),
-                                            ));
+                                    let _ = control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into());
                                     log::trace!("Sent ClientGoodbye: Terminating");
                                     log::error!("Fatal I/O error reading control message: {:?}", ioe);
                                     break;
@@ -923,10 +905,10 @@ impl Client {
                             Err(other) => {
                                 let _ = control_to_ui_tx
                                     .send(UiMessage::QuitMessage(format!("{:?}", other)));
-                                let _ = control_tx_tx.send(CM_C2S::new_client_goodbye(ClientGoodbye::new(
+                                let _ = control_tx_tx.send(ClientGoodbye::new(
                                             client_id,
-                                            ClientGoodbyeReason::Terminating,
-                                            )));
+                                            ClientGoodbyeReason::Terminating.into(),
+                                            ).into());
                                 log::trace!("Sent ClientGoodbye: Terminating");
                                 log::error!("Fatal error reading control message: {:?}", other);
                                 break;
@@ -939,40 +921,37 @@ impl Client {
                     },
                     recv(control_rx) -> msg => match msg {
                         Ok(ControlMessage::UpdateReceivedMessage(dec, seq, missing)) => {
-                            decoder_seq.insert(dec, seq);
+                            decoder_seq.insert(dec.into(), seq);
 
+                            let num_frames = missing.len();
                             if !missing.is_empty() {
                                 let mfr = MissedFrameReportBuilder::default()
-                                    .decoder(Decoder::new(dec))
-                                    .frames(missing.iter().map(|s| SequenceId::new(*s)).collect())
+                                    .decoder(dec)
+                                    .frame_sequence_ids(missing)
                                     .build()
                                     .expect("Failed to build MissedFrameReport!");
 
-                                match control_tx_tx.send(CM_C2S::new_missed_frame_report(mfr)) {
+                                match control_tx_tx.send(mfr.into()) {
                                     Err(err) => log::warn!("Failed to send MissedFrameReport: {}", err),
                                     _ => {
                                         log::trace!(
                                             "Sent MissedFrameReport for Decoder {}, missed {}",
                                             dec,
-                                            missing.len()
-                                            );
+                                            num_frames);
                                     }
                                 };
                             }
 
                         },
                         Ok(ControlMessage::UiClosed(gm)) => {
-                            let _ = control_tx_tx
-                                .send(CM_C2S::new_client_goodbye(gm.to_client_goodbye(client_id)));
+                            let _ = control_tx_tx.send(gm.to_client_goodbye(client_id).into());
                             log::trace!("Sent ClientGoodbye: User Requested");
                             log::info!("Disconnecting from server, sent ClientGoodbye");
                             break;
                         },
                         Ok(ControlMessage::EventChannelDied(gm)) => {
-                            let _ = control_to_ui_tx
-                                .send(UiMessage::QuitMessage("Event Channel Died".to_string()));
-                            let _ = control_tx_tx
-                                .send(CM_C2S::new_client_goodbye(gm.to_client_goodbye(client_id)));
+                            let _ = control_to_ui_tx.send(UiMessage::QuitMessage("Event Channel Died".to_string()));
+                            let _ = control_tx_tx.send(gm.to_client_goodbye(client_id).into());
                             log::trace!("Sent ClientGoodbye: Network Error");
                             break;
                         },
@@ -1015,12 +994,12 @@ impl Client {
             for event_msg in event_rx.iter() {
                 let msg = match event_msg {
                     EventMessage::MouseButtonEventMessage(mbem) => {
-                        EM_C2S::PointerEvent(mbem.to_pointer_event())
+                        em_c2s::Message::from(mbem.to_pointer_event())
                     }
                     EventMessage::PointerEventMessage(pem) => {
-                        EM_C2S::PointerEvent(pem.to_pointer_event())
+                        em_c2s::Message::from(pem.to_pointer_event())
                     }
-                    EventMessage::KeyEventMessage(kem) => EM_C2S::KeyEvent(kem.to_key_event()),
+                    EventMessage::KeyEventMessage(kem) => em_c2s::Message::from(kem.to_key_event()),
                 };
 
                 if should_stop.load(Ordering::Relaxed) {
@@ -1095,10 +1074,8 @@ mod test {
     use crate::gtk3::ItcChannels;
     use aperturec_channel::reliable::tcp;
     use aperturec_channel::{Receiver, Sender, ServerControlChannel, ServerEventChannel};
-    use aperturec_protocol::control_messages::*;
-    use aperturec_protocol::control_messages::{
-        ClientToServerMessage as CM_C2S, ServerToClientMessage as CM_S2C,
-    };
+    use aperturec_protocol::control::client_to_server as cm_c2s;
+    use aperturec_protocol::control::*;
     use aperturec_state_machine::TryTransitionable;
     use std::net::SocketAddr;
     use std::net::UdpSocket;
@@ -1217,24 +1194,25 @@ mod test {
             let mut server_cc = ServerControlChannel::new(tcp_server);
             let _ci = loop {
                 match server_cc.receive() {
-                    Ok(CM_C2S::ClientInit(ci)) => break ci,
+                    Ok(cm_c2s::Message::ClientInit(ci)) => break ci,
                     Ok(_) => panic!("Unexpected client message!"),
                     Err(err) => panic!("{}", err),
                 }
             };
 
             server_cc
-                .send(CM_S2C::ServerInit(
+                .send(
                     ServerInitBuilder::default()
-                        .client_id(ClientId(7890))
+                        .client_id(7890_u64)
                         .server_name(String::from("test_server"))
-                        .cursor_bitmaps(None)
-                        .event_port(1234)
+                        .event_port(1234_u32)
                         .display_size(Dimension::new(800, 600))
                         .decoder_areas(vec![])
+                        .cursor_bitmaps(vec![])
                         .build()
-                        .unwrap(),
-                ))
+                        .unwrap()
+                        .into(),
+                )
                 .unwrap();
         });
 

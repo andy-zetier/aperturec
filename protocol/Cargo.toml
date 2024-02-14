@@ -1,22 +1,18 @@
 [package]
 name = "aperturec-protocol"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 
-[features]
-asn1c-tests = []
-
 [dependencies]
-anyhow = "1.0"
-derive_builder = "0.12"
-derive-new = "0.5"
-pretty_assertions = "1.4"
-rasn = "0.9"
+derive_builder = "0.13"
+derive_more = "0.99"
+derive-new = "0.6"
+prost = "0.12"
+prost-types = "0.12"
 
 [build-dependencies]
 anyhow = "1.0"
-asn1rs = "0.3"
-bindgen = "0.65"
-cc = { version = "1.0", features = ["parallel"] }
+glob = "0.3"
 prettyplease = "0.2"
-syn = { version = "2.0", features = ["full", "visit-mut", "visit", "extra-traits", "parsing"] }
+prost-build = "0.12"
+syn = { version = "2.0", features = ["visit-mut"] }

@@ -5,8 +5,8 @@ use crate::task::event_channel_handler::EVENT_QUEUE;
 use anyhow::{anyhow, Result};
 use aperturec_channel::unreliable::udp;
 use aperturec_channel::AsyncServerMediaChannel;
-use aperturec_protocol::common_types::*;
-use aperturec_protocol::control_messages as cm;
+use aperturec_protocol::common::*;
+use aperturec_protocol::control as cm;
 use aperturec_state_machine::{
     try_recover, try_transition_inner_recover, Recovered, SelfTransitionable, State, Stateful,
     Transitionable, TryTransitionable,
@@ -39,7 +39,7 @@ pub struct Created<B: Backend + 'static> {
     fb_update_req_rx: mpsc::UnboundedReceiver<cm::FramebufferUpdateRequest>,
     missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
     acked_seq_rx: mpsc::UnboundedReceiver<cm::DecoderSequencePair>,
-    decoder_areas: Vec<cm::DecoderArea>,
+    decoders: Vec<(Decoder, Location, Dimension)>,
     mc_servers: Vec<udp::Server<udp::Connected>>,
     codecs: BTreeMap<u16, Codec>,
     client_addr: SocketAddr,
@@ -82,7 +82,7 @@ pub struct Channels {
 impl<B: Backend + 'static> Task<Created<B>> {
     pub fn new<'d, I>(
         backend: B,
-        decoder_areas: I,
+        decoders: I,
         mc_servers: Vec<udp::Server<udp::Connected>>,
         codecs: BTreeMap<u16, Codec>,
         client_addr: &SocketAddr,
@@ -91,7 +91,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
         missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
     ) -> (Task<Created<B>>, Channels, CancellationToken)
     where
-        I: IntoIterator<Item = &'d cm::DecoderArea>,
+        I: IntoIterator<Item = &'d (Decoder, Location, Dimension)>,
     {
         let (acked_seq_tx, acked_seq_rx) = mpsc::unbounded_channel();
         let ct = CancellationToken::new();
@@ -103,7 +103,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
                 fb_update_req_rx,
                 missed_frame_rx,
                 acked_seq_rx,
-                decoder_areas: decoder_areas.into_iter().cloned().collect(),
+                decoders: decoders.into_iter().cloned().collect(),
                 mc_servers,
                 codecs,
                 client_addr: *client_addr,
@@ -132,29 +132,27 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
         let mut encoder_cts = BTreeMap::new();
         let mut encoders = BTreeMap::new();
 
-        for (decoder_area, mc_server) in self.state.decoder_areas.iter().zip(&self.state.mc_servers)
+        for ((decoder, location, dimension), mc_server) in
+            self.state.decoders.iter().zip(&self.state.mc_servers)
         {
-            addr.set_port(decoder_area.decoder.port);
+            let port = decoder.port as u16;
+            addr.set_port(port);
             let async_mc_server =
                 try_transition_inner_recover!(mc_server.clone(), udp::Closed, |_| self);
             let mc = AsyncServerMediaChannel::new(async_mc_server);
-            let codec = self
-                .state
-                .codecs
-                .remove(&decoder_area.decoder.port)
-                .unwrap_or(Codec::new_raw());
+            let codec = self.state.codecs.remove(&port).unwrap_or(Codec::Raw);
             let (encoder, encoder_channels, encoder_ct) =
-                Encoder::new(decoder_area.clone(), mc, codec);
+                Encoder::new(decoder, location, dimension, mc, codec);
             let running = try_transition_inner_recover!(
                 encoder,
                 encoder::Created<AsyncServerMediaChannel>,
                 |_| self
             );
-            encoders.insert(decoder_area.decoder.port, running);
-            acked_frame_txs.insert(decoder_area.decoder.port, encoder_channels.acked_frame_tx);
-            fb_txs.insert(decoder_area.decoder.port, encoder_channels.fb_tx);
-            missed_frame_txs.insert(decoder_area.decoder.port, encoder_channels.missed_frame_tx);
-            encoder_cts.insert(decoder_area.decoder.port, encoder_ct);
+            encoders.insert(port, running);
+            acked_frame_txs.insert(port, encoder_channels.acked_frame_tx);
+            fb_txs.insert(port, encoder_channels.fb_tx);
+            missed_frame_txs.insert(port, encoder_channels.missed_frame_tx);
+            encoder_cts.insert(port, encoder_ct);
         }
 
         let mut damage_stream = try_recover!(self.state.backend.damage_stream().await, self).fuse();
@@ -177,9 +175,16 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
                         break Ok(())
                     }
                     Some(acked_seq_pair) = acked_seq_stream.next() => {
-                        match acked_frame_txs.get(&acked_seq_pair.decoder.port) {
+                        let decoder = match acked_seq_pair.decoder {
+                            Some(decoder) => decoder,
+                            None => {
+                                log::warn!("Received ACK without decoder");
+                                continue;
+                            }
+                        };
+                        match acked_frame_txs.get(&(decoder.port as u16)) {
                             Some(channel) => channel.send(acked_seq_pair.sequence_id).await?,
-                            None => log::warn!("Received HB for untracked decoder {}", acked_seq_pair.decoder.port),
+                            None => log::warn!("Received HB for untracked decoder {}", decoder.port),
                         }
                     }
                     else => break Err(anyhow!("Acked sequence stream exhausted")),
@@ -257,14 +262,22 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
                         break Ok(());
                     }
                     Some(missed_frame_report) = missed_frame_stream.next() => {
-                        aperturec_metrics::builtins::packet_lost(missed_frame_report.frames.len());
-                        match missed_frame_txs.get(&missed_frame_report.decoder.port) {
+                        let decoder = match &missed_frame_report.decoder {
+                            Some(decoder) => decoder,
+                            None => {
+                                log::warn!("Received MFR without decoder");
+                                continue;
+                            },
+                        };
+
+                        aperturec_metrics::builtins::packet_lost(missed_frame_report.frame_sequence_ids.len());
+                        match missed_frame_txs.get(&(decoder.port as u16)) {
                             Some(channel) => {
-                                for frame in &missed_frame_report.frames {
-                                    channel.send(frame.clone())?;
+                                for frame in &missed_frame_report.frame_sequence_ids {
+                                    channel.send(*frame)?;
                                 }
                             },
-                            None => log::warn!("Received missed frame report for invalid decoder {}", missed_frame_report.decoder.port),
+                            None => log::warn!("Received missed frame report for invalid decoder {}", decoder.port),
                         }
                     }
                     else => break Err(anyhow!("Exhausted missed frame report stream"))

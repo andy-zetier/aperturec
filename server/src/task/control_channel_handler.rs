@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use aperturec_channel::reliable::tcp;
 use aperturec_channel::*;
-use aperturec_protocol::control_messages as cm;
+use aperturec_protocol::control as cm;
+use aperturec_protocol::control::client_to_server as cm_c2s;
+use aperturec_protocol::control::server_to_client as cm_s2c;
 use aperturec_state_machine::{
     transition, Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
 };
@@ -29,7 +31,7 @@ pub struct Created {
     fb_update_req_tx: mpsc::UnboundedSender<cm::FramebufferUpdateRequest>,
     hb_resp_tx: mpsc::UnboundedSender<cm::HeartbeatResponse>,
     missed_frame_tx: mpsc::UnboundedSender<cm::MissedFrameReport>,
-    to_send_rx: mpsc::Receiver<cm::ServerToClientMessage>,
+    to_send_rx: mpsc::Receiver<cm_s2c::Message>,
     received_goodbye: oneshot::Sender<()>,
     ct: CancellationToken,
 }
@@ -46,7 +48,7 @@ pub struct Terminated {
 }
 
 pub struct Channels {
-    pub to_send_tx: mpsc::Sender<cm::ServerToClientMessage>,
+    pub to_send_tx: mpsc::Sender<cm_s2c::Message>,
     pub fb_update_req_rx: mpsc::UnboundedReceiver<cm::FramebufferUpdateRequest>,
     pub hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
     pub missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
@@ -144,26 +146,26 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                             log::trace!("Received control channel message {:?}", msg);
                         }
                         match cc_msg_res {
-                            Ok(cm::ClientToServerMessage::ClientInit(_)) => {
+                            Ok(cm_c2s::Message::ClientInit(_)) => {
                                 log::warn!("Spurious ClientInit message");
                             }
-                            Ok(cm::ClientToServerMessage::ClientGoodbye(_)) => {
+                            Ok(cm_c2s::Message::ClientGoodbye(_)) => {
                                 if self.state.received_goodbye.send(()).is_err() {
                                     log::error!("Failed to send notify goodbye, server probably already dying");
                                 }
                                 break Ok(());
                             }
-                            Ok(cm::ClientToServerMessage::HeartbeatResponse(hb_resp)) => {
+                            Ok(cm_c2s::Message::HeartbeatResponse(hb_resp)) => {
                                 if let Err(err) = self.state.hb_resp_tx.send(hb_resp) {
                                     break Err(anyhow!("Could not forward HB response: {}", err));
                                 }
                             }
-                            Ok(cm::ClientToServerMessage::FramebufferUpdateRequest(update_req)) => {
+                            Ok(cm_c2s::Message::FramebufferUpdateRequest(update_req)) => {
                                 if let Err(err) = self.state.fb_update_req_tx.send(update_req) {
                                     break Err(anyhow!("Could not forward update request to FB update request channel: {}", err));
                                 }
                             }
-                            Ok(cm::ClientToServerMessage::MissedFrameReport(report)) => {
+                            Ok(cm_c2s::Message::MissedFrameReport(report)) => {
                                 if let Err(err) = self.state.missed_frame_tx.send(report) {
                                     break Err(anyhow!("Could not forward missed frame report to missed frame report channel: {}", err));
                                 } else {
@@ -171,7 +173,6 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                                 }
                             }
                             Err(e) => break Err(anyhow!("Failed to receive on control channel: {}", e)),
-                            msg => break Err(anyhow!("Unhandled control channel message: {:?}", msg)),
                         }
                     }
                     _ = rx_ct.cancelled() => {

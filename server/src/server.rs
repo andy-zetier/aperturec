@@ -5,12 +5,14 @@ use crate::task::{
 };
 
 use anyhow::{anyhow, Result};
-use aperturec_channel::codec::der::unreliable::ReceiverSimplex;
+use aperturec_channel::codec::unreliable::ReceiverSimplex;
 use aperturec_channel::reliable::tcp;
 use aperturec_channel::unreliable::udp;
 use aperturec_channel::*;
-use aperturec_protocol::common_types::*;
-use aperturec_protocol::control_messages as cm;
+use aperturec_protocol::common::*;
+use aperturec_protocol::control as cm;
+use aperturec_protocol::control::client_to_server as cm_c2s;
+use aperturec_protocol::media::client_to_server as mm_c2s;
 use aperturec_protocol::*;
 use aperturec_state_machine::*;
 use aperturec_trace::log;
@@ -28,7 +30,7 @@ pub struct Configuration {
     event_channel_addr: SocketAddr,
     media_channel_addr: SocketAddr,
     name: String,
-    temp_client_id: ClientId,
+    temp_client_id: u64,
     initial_program: String,
     max_width: usize,
     max_height: usize,
@@ -73,7 +75,7 @@ pub struct AuthenticatedClient<B: Backend + 'static> {
     ec_server: tcp::Server<tcp::Listening>,
     client_hb_interval: Duration,
     client_hb_response_interval: Duration,
-    decoder_areas: Vec<cm::DecoderArea>,
+    decoders: Vec<(Decoder, Location, Dimension)>,
     mc_servers: Vec<udp::Server<udp::Listening>>,
     codecs: BTreeMap<u16, Codec>,
 }
@@ -85,7 +87,7 @@ pub struct ChannelsAccepted<B: Backend + 'static> {
     ec: AsyncServerEventChannel,
     client_hb_interval: Duration,
     client_hb_response_interval: Duration,
-    decoder_areas: Vec<cm::DecoderArea>,
+    decoders: Vec<(Decoder, Location, Dimension)>,
     mc_servers: Vec<udp::Server<udp::Connected>>,
     codecs: BTreeMap<u16, Codec>,
 }
@@ -338,7 +340,7 @@ impl<B: Backend + 'static> TryTransitionable<AuthenticatedClient<B>, ChannelsLis
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let msg = try_recover!(self.state.cc.receive().await, self);
         let client_init = match msg {
-            control_messages::ClientToServerMessage::ClientInit(client_init) => client_init,
+            cm_c2s::Message::ClientInit(client_init) => client_init,
             _ => return_recover!(self, "non client init message received"),
         };
         log::trace!("Client init: {:#?}", client_init);
@@ -349,13 +351,17 @@ impl<B: Backend + 'static> TryTransitionable<AuthenticatedClient<B>, ChannelsLis
             return_recover!(self, "client sent invalid decoder max");
         }
 
-        let client_resolution = &client_init.client_info.display_size;
+        let client_resolution = match client_init.client_info.and_then(|ci| ci.display_size) {
+            Some(display_size) => display_size,
+            _ => return_recover!(self, "Client did not provide display size"),
+        };
+
         let (resolution, partitions) = partition(
-            client_resolution,
+            &client_resolution,
             client_init.max_decoder_count.try_into().unwrap(),
         );
 
-        let mut decoder_areas: Vec<cm::DecoderArea> = vec![];
+        let mut decoders: Vec<(Decoder, Location, Dimension)> = vec![];
         let mut mc_servers: Vec<udp::Server<udp::Listening>> = vec![];
         let port_start = self.config.media_channel_addr.port();
         let mut local_mc_addr = self.config.media_channel_addr;
@@ -376,42 +382,48 @@ impl<B: Backend + 'static> TryTransitionable<AuthenticatedClient<B>, ChannelsLis
                 }
             });
 
-            decoder_areas.push(cm::DecoderArea::new(
-                Decoder::new(mc_server_listening.local_addr().port()),
+            decoders.push((
+                Decoder::new(mc_server_listening.local_addr().port() as u32),
                 Location::new(rect.origin.x as u64, rect.origin.y as u64),
                 Dimension::new(rect.size.width as u64, rect.size.height as u64),
             ));
             mc_servers.push(mc_server_listening);
         }
 
-        let codecs = decoder_areas
+        let preferred_codec = match client_init.client_caps {
+            Some(caps) => {
+                if caps.supported_codecs.contains(&Codec::Zlib.into()) {
+                    Codec::Zlib
+                } else {
+                    Codec::Raw
+                }
+            }
+            None => Codec::Raw,
+        };
+
+        let codecs = decoders
             .iter()
-            .map(|decoder_area| {
-                (
-                    decoder_area.decoder.port,
-                    if client_init
-                        .client_caps
-                        .supported_codecs
-                        .contains(&Codec::new_zlib())
-                    {
-                        Codec::new_zlib()
-                    } else {
-                        Codec::new_raw()
-                    },
-                )
-            })
+            .map(|(decoder, _, _)| (decoder.port as u16, preferred_codec))
             .collect();
         try_recover!(self.state.backend.set_resolution(&resolution).await, self);
         log::trace!("Resolution set to {:?}", resolution);
         let cursor_bitmaps = try_recover!(self.state.backend.cursor_bitmaps().await, self);
 
-        let client_id = ClientId(rand::random());
+        let decoder_areas: Vec<_> = decoders
+            .iter()
+            .map(|(decoder, location, dimension)| cm::DecoderArea {
+                decoder: Some(decoder.clone()),
+                location: Some(location.clone()),
+                dimension: Some(dimension.clone()),
+            })
+            .collect();
+        let client_id: u64 = rand::random();
         let server_init = try_recover!(
             cm::ServerInitBuilder::default()
-                .client_id(client_id.clone())
+                .client_id(client_id)
                 .server_name(self.config.name.clone())
                 .cursor_bitmaps(cursor_bitmaps)
-                .decoder_areas(decoder_areas.clone())
+                .decoder_areas(decoder_areas)
                 .event_port(self.config.event_channel_addr.port())
                 .display_size(Dimension::new(
                     resolution.width as u64,
@@ -422,24 +434,32 @@ impl<B: Backend + 'static> TryTransitionable<AuthenticatedClient<B>, ChannelsLis
         );
         log::trace!("Server init: {:#?}", server_init);
 
-        try_recover!(
-            self.state
-                .cc
-                .send(cm::ServerToClientMessage::new_server_init(server_init))
-                .await,
+        try_recover!(self.state.cc.send(server_init.into()).await, self);
+
+        let client_hb_interval = try_recover!(
+            client_init
+                .client_heartbeat_interval
+                .map(|d| Duration::from_secs(d.seconds as u64)
+                    + Duration::from_nanos(d.nanos as u64))
+                .ok_or(anyhow!("No client HB interval")),
             self
         );
-
+        let client_hb_response_interval = try_recover!(
+            client_init
+                .client_heartbeat_response_interval
+                .map(|d| Duration::from_secs(d.seconds as u64)
+                    + Duration::from_nanos(d.nanos as u64))
+                .ok_or(anyhow!("No client HB response interval")),
+            self
+        );
         Ok(Server {
             state: AuthenticatedClient {
                 backend: self.state.backend,
                 cc: self.state.cc,
                 ec_server: self.state.ec_server,
-                client_hb_interval: Duration::from_millis(client_init.client_heartbeat_interval.0),
-                client_hb_response_interval: Duration::from_millis(
-                    client_init.client_heartbeat_response_interval.0,
-                ),
-                decoder_areas,
+                client_hb_interval,
+                client_hb_response_interval,
+                decoders,
                 mc_servers,
                 codecs,
             },
@@ -524,22 +544,16 @@ impl<B: Backend + 'static> TryTransitionable<ChannelsAccepted<B>, ChannelsListen
             let port = mc_server.local_addr().port();
             let mut mc_rs: ReceiverSimplex<
                 udp::Server<udp::Listening>,
-                media_messages::ClientToServerMessage,
+                mm_c2s::Message,
+                media::ClientToServer,
             > = ReceiverSimplex::new(mc_server);
 
             loop {
                 match mc_rs.receive() {
-                    Ok(media_messages::ClientToServerMessage::MediaKeepalive(mk)) => {
+                    Ok(mm_c2s::Message::MediaKeepalive(mk)) => {
                         log::trace!("Received initial {:?}", mk);
                         break;
                     }
-                    Ok(msg) => return_recover!(
-                        recover_mc_server_constructor!(),
-                        format!(
-                            "Received unexpected media channel message from Decoder {}: {:?}",
-                            port, msg
-                        )
-                    ),
                     Err(ref err) => {
                         if err
                             .downcast_ref::<std::io::Error>()
@@ -591,7 +605,7 @@ impl<B: Backend + 'static> TryTransitionable<ChannelsAccepted<B>, ChannelsListen
                 ec,
                 client_hb_interval: self.state.client_hb_interval,
                 client_hb_response_interval: self.state.client_hb_response_interval,
-                decoder_areas: self.state.decoder_areas,
+                decoders: self.state.decoders,
                 mc_servers,
                 codecs: self.state.codecs,
             },
@@ -620,7 +634,7 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, ChannelsListening<B>>
         let (backend_task, backend_channels, backend_ct) =
             backend::Task::<backend::Created<B>>::new(
                 self.state.backend,
-                &self.state.decoder_areas,
+                &self.state.decoders,
                 self.state.mc_servers,
                 self.state.codecs,
                 &remote_addr,
@@ -924,57 +938,55 @@ mod test {
     use crate::server::*;
 
     use aperturec_channel::reliable::tcp;
-    use aperturec_protocol::control_messages::*;
-    use aperturec_protocol::media_messages::MediaKeepalive;
+    use aperturec_protocol::control::client_to_server as cm_c2s;
+    use aperturec_protocol::control::server_to_client as cm_s2c;
+    use aperturec_protocol::control::*;
+    use aperturec_protocol::media::MediaKeepalive;
     use serial_test::serial;
 
-    fn client_init_msg(id: u64) -> ClientToServerMessage {
-        ClientToServerMessage::new_client_init(
-            ClientInitBuilder::default()
-                .temp_id(ClientId(id))
-                .client_info(
-                    ClientInfoBuilder::default()
-                        .version(
-                            SemVerBuilder::default()
-                                .major(0)
-                                .minor(1)
-                                .patch(2)
-                                .build()
-                                .expect("SemVer build"),
-                        )
-                        .build_id("asdf".into())
-                        .os(Os::new_linux())
-                        .os_version("Bionic Beaver".into())
-                        .ssl_library("OpenSSL".into())
-                        .ssl_version("1.2".into())
-                        .bitness(Bitness::new_b64())
-                        .endianness(Endianness::new_big())
-                        .architecture(Architecture::new_x86())
-                        .cpu_id("Haswell".into())
-                        .number_of_cores(4)
-                        .amount_of_ram("2.4Gb".into())
-                        .display_size(
-                            DimensionBuilder::default()
-                                .width(1024)
-                                .height(768)
-                                .build()
-                                .expect("Dimension build"),
-                        )
-                        .build()
-                        .expect("ClientInfo build"),
-                )
-                .client_caps(
-                    ClientCapsBuilder::default()
-                        .supported_codecs(vec![Codec::new_zlib()])
-                        .build()
-                        .expect("ClientCaps build"),
-                )
-                .client_heartbeat_interval(DurationMs(1000))
-                .client_heartbeat_response_interval(DurationMs(1000))
-                .max_decoder_count(3)
-                .build()
-                .expect("ClientInit build"),
-        )
+    fn client_init_msg(id: u64) -> cm_c2s::Message {
+        ClientInitBuilder::default()
+            .temp_id(id)
+            .client_info(
+                ClientInfoBuilder::default()
+                    .version(SemVer::new(0, 1, 2))
+                    .build_id("asdf")
+                    .os(Os::Linux)
+                    .os_version("Bionic Beaver")
+                    .ssl_library("OpenSSL")
+                    .ssl_version("1.2")
+                    .bitness(Bitness::B64)
+                    .endianness(Endianness::Big)
+                    .architecture(Architecture::X86)
+                    .cpu_id("Haswell")
+                    .number_of_cores(4_u32)
+                    .amount_of_ram("2.4Gb")
+                    .display_size(
+                        DimensionBuilder::default()
+                            .width(1024_u64)
+                            .height(768_u64)
+                            .build()
+                            .expect("Dimension build"),
+                    )
+                    .build()
+                    .expect("ClientInfo build"),
+            )
+            .client_caps(
+                ClientCapsBuilder::default()
+                    .supported_codecs(vec![Codec::Zlib.into()])
+                    .build()
+                    .expect("ClientCaps build"),
+            )
+            .client_heartbeat_interval::<prost_types::Duration>(
+                Duration::from_millis(1000_u64).try_into().unwrap(),
+            )
+            .client_heartbeat_response_interval::<prost_types::Duration>(
+                Duration::from_millis(1000_u64).try_into().unwrap(),
+            )
+            .max_decoder_count(3_u32)
+            .build()
+            .expect("ClientInit build")
+            .into()
     }
 
     async fn server_cc_accepted(
@@ -988,7 +1000,7 @@ mod test {
             .event_channel_addr(SocketAddr::new("127.0.0.1".parse().unwrap(), ec_port))
             .media_channel_addr(SocketAddr::new("127.0.0.1".parse().unwrap(), mc_port))
             .name("test server".into())
-            .temp_client_id(ClientId(client_id))
+            .temp_client_id(client_id)
             .initial_program("glxgears".to_owned())
             .max_width(1920)
             .max_height(1080)
@@ -1081,7 +1093,7 @@ mod test {
     async fn client_init() {
         let (server, mut client_cc) = server_client_authenticated(1234, 8004, 8005, 8008).await;
         let msg = client_cc.receive().await.expect("receiving server init");
-        let server_init = if let cm::ServerToClientMessage::ServerInit(server_init) = msg {
+        let server_init = if let cm_s2c::Message::ServerInit(server_init) = msg {
             assert_eq!(server_init.decoder_areas.len(), 2);
             server_init
         } else {
@@ -1089,25 +1101,94 @@ mod test {
         };
 
         assert_eq!(server_init.decoder_areas.len(), 2);
-        assert_eq!(server_init.decoder_areas[0].dimension.width, 512);
-        assert_eq!(server_init.decoder_areas[1].dimension.width, 512);
-        assert_eq!(server_init.decoder_areas[0].dimension.height, 768);
-        assert_eq!(server_init.decoder_areas[1].dimension.height, 768);
-        assert_eq!(server_init.decoder_areas[0].location.x_position, 0);
-        assert_eq!(server_init.decoder_areas[1].location.x_position, 512);
-        assert_eq!(server_init.decoder_areas[0].location.y_position, 0);
-        assert_eq!(server_init.decoder_areas[1].location.y_position, 0);
-        assert_eq!(server_init.display_size.width, 1024);
-        assert_eq!(server_init.display_size.height, 768);
+        assert_eq!(
+            server_init.decoder_areas[0]
+                .dimension
+                .as_ref()
+                .expect("dimension")
+                .width,
+            512
+        );
+        assert_eq!(
+            server_init.decoder_areas[1]
+                .dimension
+                .as_ref()
+                .expect("dimension")
+                .width,
+            512
+        );
+        assert_eq!(
+            server_init.decoder_areas[0]
+                .dimension
+                .as_ref()
+                .expect("dimension")
+                .height,
+            768
+        );
+        assert_eq!(
+            server_init.decoder_areas[1]
+                .dimension
+                .as_ref()
+                .expect("dimension")
+                .height,
+            768
+        );
+        assert_eq!(
+            server_init.decoder_areas[0]
+                .location
+                .as_ref()
+                .expect("location")
+                .x_position,
+            0
+        );
+        assert_eq!(
+            server_init.decoder_areas[1]
+                .location
+                .as_ref()
+                .expect("location")
+                .x_position,
+            512
+        );
+        assert_eq!(
+            server_init.decoder_areas[0]
+                .location
+                .as_ref()
+                .expect("location")
+                .y_position,
+            0
+        );
+        assert_eq!(
+            server_init.decoder_areas[1]
+                .location
+                .as_ref()
+                .expect("location")
+                .y_position,
+            0
+        );
+        assert_eq!(
+            server_init
+                .display_size
+                .as_ref()
+                .expect("display_size")
+                .width,
+            1024
+        );
+        assert_eq!(
+            server_init
+                .display_size
+                .as_ref()
+                .expect("display_size")
+                .height,
+            768
+        );
         let _client_ec = client_ec(8005).await;
 
         for i in 0..server_init.decoder_areas.len() {
-            let i = i as u16;
-            let mut client_decoder = client_mc(8008 + i).await;
+            let mut client_decoder = client_mc((8008 + i) as u16).await;
             let _ = client_decoder
-                .send(media_messages::ClientToServerMessage::MediaKeepalive(
-                    MediaKeepalive::new(Decoder::new(1337 + i)),
-                ))
+                .send(mm_c2s::Message::MediaKeepalive(MediaKeepalive::new(
+                    Decoder::new((1337 + i) as u32).into(),
+                )))
                 .await
                 .expect("Send MediaKeepalive");
         }

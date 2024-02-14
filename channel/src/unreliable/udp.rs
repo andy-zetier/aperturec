@@ -9,7 +9,6 @@ use std::net::SocketAddr;
 pub struct Server<S: State> {
     state: S,
     local_addr: SocketAddr,
-    is_nonblocking: bool,
 }
 
 #[derive(Stateful, Debug)]
@@ -18,7 +17,6 @@ pub struct Client<S: State> {
     state: S,
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
-    is_nonblocking: bool,
 }
 
 #[derive(State, Debug)]
@@ -54,7 +52,6 @@ impl Server<Closed> {
         Server {
             state: Closed,
             local_addr: local_addr.into(),
-            is_nonblocking: true,
         }
     }
 
@@ -62,7 +59,6 @@ impl Server<Closed> {
         Server {
             state: Closed,
             local_addr: local_addr.into(),
-            is_nonblocking: false,
         }
     }
 }
@@ -86,7 +82,6 @@ impl Client<Closed> {
                 "0.0.0.0:0".parse().unwrap()
             },
             remote_addr: remote_addr.into(),
-            is_nonblocking: true,
         }
     }
 
@@ -102,7 +97,6 @@ impl Client<Closed> {
                 "0.0.0.0:0".parse().unwrap()
             },
             remote_addr: remote_addr.into(),
-            is_nonblocking: false,
         }
     }
 }
@@ -120,7 +114,6 @@ impl Clone for Client<Connected> {
             },
             local_addr: self.local_addr,
             remote_addr: self.remote_addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -137,7 +130,6 @@ impl Clone for Server<Listening> {
                 last_remote_addr: self.state.last_remote_addr,
             },
             local_addr: self.local_addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -154,7 +146,6 @@ impl Clone for Server<Connected> {
                 remote_addr: self.state.remote_addr,
             },
             local_addr: self.local_addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -169,6 +160,7 @@ where
 
 fn socket_sync_to_async(udp_socket: &std::net::UdpSocket) -> anyhow::Result<tokio::net::UdpSocket> {
     let cpy = udp_socket.try_clone()?;
+    cpy.set_nonblocking(true)?;
     Ok(tokio::net::UdpSocket::from_std(cpy)?)
 }
 
@@ -182,9 +174,8 @@ impl TryTransitionable<Listening, Closed> for Server<Closed> {
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let socket = try_recover!(do_udp_bind(&self.local_addr).await, self);
+        try_recover!(socket.set_nonblocking(false), self);
         let local_addr = try_recover!(socket.local_addr(), self);
-
-        try_recover!(socket.set_nonblocking(self.is_nonblocking), self);
 
         Ok(Server {
             state: Listening {
@@ -192,7 +183,6 @@ impl TryTransitionable<Listening, Closed> for Server<Closed> {
                 last_remote_addr: "0.0.0.0:0".parse().unwrap(),
             },
             local_addr,
-            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -214,7 +204,6 @@ impl TryTransitionable<Connected, Closed> for Server<Listening> {
                 remote_addr: self.state.last_remote_addr,
             },
             local_addr: self.local_addr,
-            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -226,7 +215,6 @@ impl Transitionable<Closed> for Server<Listening> {
         Server {
             state: Closed,
             local_addr: self.local_addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -238,7 +226,6 @@ impl Transitionable<Closed> for Server<Connected> {
         Server {
             state: Closed,
             local_addr: self.local_addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -256,7 +243,6 @@ impl TryTransitionable<AsyncConnected, Closed> for Server<Connected> {
         Ok(Server {
             state: AsyncConnected { socket },
             local_addr: self.local_addr,
-            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -271,8 +257,7 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let socket = try_recover!(do_udp_bind(&self.local_addr).await, self);
-
-        try_recover!(socket.set_nonblocking(self.is_nonblocking), self);
+        try_recover!(socket.set_nonblocking(false), self);
         try_recover!(socket.connect(self.remote_addr), self);
 
         Ok(Client {
@@ -282,7 +267,6 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
                 remote_addr: self.remote_addr,
             },
             remote_addr: self.remote_addr,
-            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -295,7 +279,6 @@ impl Transitionable<Closed> for Client<Connected> {
             state: Closed,
             local_addr: self.local_addr,
             remote_addr: self.remote_addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -314,7 +297,6 @@ impl TryTransitionable<AsyncConnected, Closed> for Client<Connected> {
             state: AsyncConnected { socket },
             local_addr: self.local_addr,
             remote_addr: self.remote_addr,
-            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -354,7 +336,6 @@ impl RawSender for Client<Connected> {
     }
 }
 
-#[async_trait]
 impl AsyncRawReceiver for Server<AsyncConnected> {
     async fn receive(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
         let (recv_amt, _) = self.state.socket.recv_from(buf).await?;
@@ -362,7 +343,6 @@ impl AsyncRawReceiver for Server<AsyncConnected> {
     }
 }
 
-#[async_trait]
 impl AsyncRawReceiver for Client<AsyncConnected> {
     async fn receive(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
         let (recv_amt, _) = self.state.socket.recv_from(buf).await?;
@@ -370,14 +350,12 @@ impl AsyncRawReceiver for Client<AsyncConnected> {
     }
 }
 
-#[async_trait]
 impl AsyncRawSender for Server<AsyncConnected> {
     async fn send(&mut self, buf: &[u8]) -> anyhow::Result<usize> {
         Ok(self.state.socket.send(buf).await?)
     }
 }
 
-#[async_trait]
 impl AsyncRawSender for Client<AsyncConnected> {
     async fn send(&mut self, buf: &[u8]) -> anyhow::Result<usize> {
         Ok(self.state.socket.send(buf).await?)

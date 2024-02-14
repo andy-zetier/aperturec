@@ -2,8 +2,8 @@ use crate::backend::{Backend, DamageStream, Event, FramebufferUpdate};
 use crate::task::encoder::*;
 
 use anyhow::{anyhow, bail, Result};
-use aperturec_protocol::common_types::*;
-use aperturec_protocol::event_messages as em;
+use aperturec_protocol::common::*;
+use aperturec_protocol::event as em;
 use aperturec_trace::log;
 use aperturec_trace::queue::{self, deq, enq, trace_queue};
 use async_trait::async_trait;
@@ -31,10 +31,10 @@ use xcb::{CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply
 const X_DAMAGE_QUEUE: queue::Queue = trace_queue!("x:damage");
 
 fn u8_for_button(button: &em::Button) -> u8 {
-    match button {
-        em::Button::MappedButton(mapped) => mapped.value_index() as u8,
-        em::Button::UnmappedButton(unmapped) => *unmapped,
-        unknown_button => panic!("Unknown button type {:?}", unknown_button),
+    match button.kind {
+        Some(em::button::Kind::MappedButton(idx)) => idx as u8 - 1,
+        Some(em::button::Kind::UnmappedButton(idx)) => idx as u8,
+        None => panic!("Button with no interior mapping"),
     }
 }
 
@@ -192,8 +192,8 @@ impl Backend for X {
 
     async fn notify_event(&mut self, event: Event) -> Result<()> {
         match event {
-            Event::KeyEvent(key_event) => {
-                let keycode = key_event.key as x::Keycode;
+            Event::Key { key, is_depressed } => {
+                let keycode = key as x::Keycode;
                 if keycode > self.connection.max_keycode || keycode < self.connection.min_keycode {
                     log::warn!(
                         "Received key event for key outside range ({},{}): {}. Dropping the event.",
@@ -203,16 +203,16 @@ impl Backend for X {
                     );
                     return Ok(());
                 }
-                let event_type_num = if key_event.down {
+                let event_type_num = if is_depressed {
                     x::KeyPressEvent::NUMBER
                 } else {
                     // hard-coded for same reasons as pointer event
                     3
                 } as u8;
-                log::info!("key_event.key: {}", key_event.key);
+                log::info!("key_event.key: {}", key);
                 let req = xtest::FakeInput {
                     r#type: event_type_num,
-                    detail: key_event.key as u8,
+                    detail: key as u8,
                     time: x::CURRENT_TIME,
                     root: self.root_window()?,
                     root_x: 0,
@@ -221,9 +221,13 @@ impl Backend for X {
                 };
                 self.connection.checked_void_request(req).await?;
             }
-            Event::PointerEvent(pointer_event) => {
-                for button_state in pointer_event.button_states {
-                    let event_type_num = if button_state.is_depressed {
+            Event::Pointer {
+                location,
+                button_states,
+                cursor: _,
+            } => {
+                for (button, is_depressed) in button_states {
+                    let event_type_num = if is_depressed {
                         x::ButtonPressEvent::NUMBER
                     } else {
                         // We should just be able to use x::ButtonReleaseEvent::NUMBER here, but
@@ -236,11 +240,11 @@ impl Backend for X {
                     log::debug!("event_type_num: {}", event_type_num);
                     let req = xtest::FakeInput {
                         r#type: event_type_num,
-                        detail: u8_for_button(&button_state.button) + 1,
+                        detail: u8_for_button(&button) + 1,
                         time: x::CURRENT_TIME,
                         root: self.root_window()?,
-                        root_x: pointer_event.location.x_position as i16,
-                        root_y: pointer_event.location.y_position as i16,
+                        root_x: location.x_position as i16,
+                        root_y: location.y_position as i16,
                         deviceid: 0,
                     };
 
@@ -256,29 +260,25 @@ impl Backend for X {
                     detail: 0,
                     time: x::CURRENT_TIME,
                     root: self.root_window()?,
-                    root_x: pointer_event.location.x_position as i16,
-                    root_y: pointer_event.location.y_position as i16,
+                    root_x: location.x_position as i16,
+                    root_y: location.y_position as i16,
                     deviceid: 0,
                 };
                 log::trace!("Sending event {:#?}", req);
                 self.connection.checked_void_request(req).await?;
             }
-            Event::DisplayEvent(display_event) => {
-                let size = Size::new(
-                    display_event.display_size.width as usize,
-                    display_event.display_size.height as usize,
-                );
+            Event::Display { size } => {
+                let size = Size::new(size.width as usize, size.height as usize);
                 self.set_resolution(&size).await?;
             }
-            other_event => bail!("Unhandled event: {:?}", other_event),
         }
 
         Ok(())
     }
 
-    async fn cursor_bitmaps(&self) -> Result<Option<Vec<CursorBitmap>>> {
+    async fn cursor_bitmaps(&self) -> Result<Vec<CursorBitmap>> {
         // TODO actually implement
-        Ok(None)
+        Ok(vec![])
     }
 
     async fn set_resolution(&mut self, resolution: &Size) -> Result<()> {

@@ -1,5 +1,3 @@
-use super::*;
-
 use aperturec_state_machine::*;
 use async_trait::async_trait;
 use std::io;
@@ -14,7 +12,6 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub struct Server<S: State> {
     state: S,
     addr: SocketAddr,
-    is_nonblocking: bool,
 }
 
 #[derive(State, Debug)]
@@ -62,7 +59,6 @@ impl Server<Closed> {
         Server {
             state: Closed,
             addr: addr.into(),
-            is_nonblocking: true,
         }
     }
 
@@ -70,7 +66,6 @@ impl Server<Closed> {
         Server {
             state: Closed,
             addr: addr.into(),
-            is_nonblocking: false,
         }
     }
 }
@@ -90,7 +85,6 @@ impl TryTransitionable<Listening, Closed> for Server<Closed> {
         Ok(Server {
             state: Listening { listener },
             addr: local_addr,
-            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -102,7 +96,6 @@ impl Transitionable<Closed> for Server<Listening> {
         Server {
             addr: self.addr,
             state: Closed,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -122,15 +115,12 @@ impl TryTransitionable<Accepted, Listening> for Server<Listening> {
         // Disable Nagle's algorithm for lower latency
         try_recover!(stream.set_nodelay(true), self, Listening);
 
-        try_recover!(stream.set_nonblocking(self.is_nonblocking), self, Listening);
-
         Ok(Server {
             state: Accepted {
                 stream,
                 listener: self.state.listener,
             },
             addr: self.addr,
-            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -153,7 +143,6 @@ impl TryTransitionable<AsyncAccepted, Listening> for Server<Accepted> {
                 listener: self.state.listener,
             },
             addr: self.addr,
-            is_nonblocking: true,
         })
     }
 }
@@ -167,7 +156,6 @@ impl Transitionable<Listening> for Server<Accepted> {
                 listener: self.state.listener,
             },
             addr: self.addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -181,7 +169,6 @@ impl Transitionable<Listening> for Server<AsyncAccepted> {
                 listener: self.state.listener,
             },
             addr: self.addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -199,12 +186,6 @@ impl Write for Server<Accepted> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.state.stream.flush()
-    }
-}
-
-impl NonblockableIO for Server<Accepted> {
-    fn is_nonblocking(&self) -> bool {
-        self.is_nonblocking
     }
 }
 
@@ -243,7 +224,6 @@ impl AsyncWrite for Server<AsyncAccepted> {
 pub struct Client<S: State> {
     state: S,
     addr: SocketAddr,
-    is_nonblocking: bool,
 }
 
 impl SelfTransitionable for Client<Closed> {}
@@ -263,7 +243,6 @@ impl Client<Closed> {
         Client {
             state: Closed,
             addr: addr.into(),
-            is_nonblocking: true,
         }
     }
 
@@ -271,7 +250,6 @@ impl Client<Closed> {
         Client {
             state: Closed,
             addr: addr.into(),
-            is_nonblocking: false,
         }
     }
 }
@@ -287,7 +265,6 @@ impl Clone for Client<Connected> {
                     .expect("clone connected client"),
             },
             addr: self.addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -312,12 +289,9 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
         // Disable Nagle's algorithm for lower latency
         try_recover!(stream.set_nodelay(true), self);
 
-        try_recover!(stream.set_nonblocking(self.is_nonblocking), self);
-
         Ok(Client {
             addr: self.addr,
             state: Connected { stream },
-            is_nonblocking: self.is_nonblocking,
         })
     }
 }
@@ -338,7 +312,6 @@ impl TryTransitionable<AsyncConnected, Closed> for Client<Connected> {
         Ok(Client {
             state: AsyncConnected { stream },
             addr: self.addr,
-            is_nonblocking: true,
         })
     }
 }
@@ -350,7 +323,6 @@ impl Transitionable<Closed> for Client<Connected> {
         Client {
             state: Closed,
             addr: self.addr,
-            is_nonblocking: self.is_nonblocking,
         }
     }
 }
@@ -368,12 +340,6 @@ impl Write for Client<Connected> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.state.stream.flush()
-    }
-}
-
-impl NonblockableIO for Client<Connected> {
-    fn is_nonblocking(&self) -> bool {
-        self.is_nonblocking
     }
 }
 
