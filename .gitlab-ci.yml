@@ -244,10 +244,7 @@ package:push-deb:
     entrypoint: [""]
   script:
     - gem install package_cloud
-    - ./ci/scripts/package_upload.sh $CRATES
-  parallel:
-    matrix:
-      - CRATES: !reference [.crates:package]
+    - ./ci/scripts/package_upload.sh
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   needs:

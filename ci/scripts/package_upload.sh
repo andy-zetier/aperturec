@@ -3,14 +3,12 @@ set -e # Exit on error
 set -u # Exit on unset variables
 set -x # Print each command as it is run
 
-COMPONENT="$1"
-
 # From https://stackoverflow.com/questions/192292/how-best-to-include-other-scripts
 REPO="${BASH_SOURCE%/*}/../.."
 if [[ ! -d "${REPO}" ]]; then REPO="$PWD/../"; fi
 
 # Define the base directory
-BASE_DIR="$REPO/$COMPONENT/target/"
+BASE_DIR="$REPO/target"
 
 # Initialize a counter for .deb files
 deb_counter=0
