@@ -933,6 +933,7 @@ mod tcp_test {
     use aperturec_protocol::event;
     use aperturec_state_machine::TryTransitionable;
     use std::net::SocketAddr;
+    use std::time::Duration;
 
     macro_rules! tcp_client_and_server {
         ($ip:expr, $port:expr) => {{
@@ -989,8 +990,12 @@ mod tcp_test {
                 .client_caps(ClientCaps {
                     supported_codecs: vec![Codec::Zlib.into()],
                 })
-                .client_heartbeat_interval_ms(1000_u32)
-                .client_heartbeat_response_interval_ms(1000_u32)
+                .client_heartbeat_interval::<prost_types::Duration>(
+                    Duration::from_millis(1000_u64).try_into().unwrap(),
+                )
+                .client_heartbeat_response_interval::<prost_types::Duration>(
+                    Duration::from_millis(1000_u64).try_into().unwrap(),
+                )
                 .max_decoder_count(1_u32)
                 .build()
                 .expect("ClientInit build")
@@ -1179,8 +1184,8 @@ mod udp_test {
                 .location(Location::new(0, 0))
                 .rectangle(mm::Rectangle::new(
                     Codec::Raw.into(),
-                    vec![0xc5; 1024].into(),
                     None,
+                    vec![0xc5; 1024].into(),
                 ))
                 .build()
                 .expect("RectangleUpdate build")])

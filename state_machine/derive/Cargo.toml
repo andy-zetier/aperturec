@@ -1,7 +1,8 @@
 [package]
 name = "aperturec-state-machine-derive"
-version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+version.workspace = true
+readme = "README.md"
 
 [lib]
 proc-macro = true

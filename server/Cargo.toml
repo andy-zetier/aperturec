@@ -1,8 +1,8 @@
 [package]
 name = "aperturec-server"
-version = "0.2.0"
-edition = "2021"
-description = "Server component of ApertureC"
+description = "ApertureC Server"
+edition.workspace = true
+version.workspace = true
 
 [dependencies]
 anyhow = "1.0"
@@ -42,11 +42,7 @@ name = "tracking_buffer_bench"
 harness = false
 
 [package.metadata.deb]
-copyright = "2023, Zetier Inc."
+copyright = "2024, Zetier Inc."
 depends = "$auto, xvfb"
 maintainer = "ApertureC Team <aperturec@zetier.com>"
 section = "x11"
-
-[profile.release]
-lto = "fat"
-codegen-units = 1

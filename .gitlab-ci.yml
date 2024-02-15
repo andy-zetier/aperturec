@@ -8,23 +8,12 @@ stages:
   - amd64
   - arm64
 
-.crates:all:
-  - channel
-  - client
-  - metrics
-  - protocol
-  - server
-  - state_machine
-  - trace
 .crates:package:
   - client
   - server
-.crates:no-extra-depends:
-  - channel
-  - metrics
-  - protocol
-  - state_machine
-  - trace
+.crates:no-extra-dependencies: "channel,metrics,protocol,state_machine,trace"
+.crates:server-dependencies: "server"
+.crates:client-dependencies: "client"
 
 .images:debian:
   - ubuntu:20.04
@@ -134,8 +123,6 @@ create-images:deploy-multiarch:
     - job: create-images:build
 
 .cargo:
-  before_script:
-    - cd "$CRATE"
   interruptible: true
   variables:
     OS_VARIANT: debian
@@ -144,6 +131,8 @@ create-images:deploy-multiarch:
     IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
     IMAGE: "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_BASE"
   image: $IMAGE
+  before_script:
+    - export CARGO_ARGS=`sed -e 's/^/-p aperturec-/g' -e 's/,/ -p aperturec-/g' -e 's/_/-/g' <<< $CRATES`
   rules:
     - if: $CI_COMMIT_BRANCH
       changes:
@@ -163,25 +152,26 @@ cargo:check-build-test:
     - .runner-arch:dependent
     - .cargo
   script:
-    - cargo fmt -- --check
-    - cargo build && git diff-index --quiet HEAD -- && cargo clean
-    - cargo test && git diff-index --quiet HEAD -- && cargo clean
-    - cargo build --release && git diff-index --quiet HEAD --
+    - cargo fmt $CARGO_ARGS -- --check
+    - cargo build $CARGO_ARGS
+    - cargo test $CARGO_ARGS
+    - cargo build $CARGO_ARGS --release
     - |-
-      if [[ -f target/release/aperturec-$CRATE ]]; then
-        mv target/release/aperturec-$CRATE target/release/aperturec-$CRATE-$IMAGE_BASE-$ARCHITECTURE
+      if [[ -f target/release/aperturec-$CRATES ]]; then
+        mv target/release/aperturec-$CRATES target/release/aperturec-$CRATES-$IMAGE_BASE-$ARCHITECTURE
       fi
+    - git diff-index --quiet HEAD
   parallel:
     matrix:
-      - CRATE: !reference [.crates:no-extra-depends]
+      - CRATES: !reference [.crates:no-extra-dependencies]
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: rust-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATE: server
+      - CRATES: !reference [.crates:server-dependencies]
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATE: client
+      - CRATES: !reference [.crates:client-dependencies]
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
@@ -189,7 +179,7 @@ cargo:check-build-test:
     - job: create-images:deploy-multiarch
       optional: true
   artifacts:
-    paths: [$CRATE/target/release/aperturec-$CRATE-$IMAGE_BASE-$ARCHITECTURE]
+    paths: [target/release/aperturec-$CRATES-$IMAGE_BASE-$ARCHITECTURE]
 
 cargo:doc:
   stage: doc
@@ -197,17 +187,17 @@ cargo:doc:
     - .cargo
     - .runner-arch:independent
   script:
-    - cargo doc
+    - cargo doc $CARGO_ARGS
   artifacts:
     paths:
-      - $CRATE/target/doc/aperturec_$CRATE/
+      - target/doc/
   parallel:
     matrix:
-      - CRATE: !reference [.crates:no-extra-depends]
+      - CRATES: !reference [.crates:no-extra-dependencies]
         IMAGE_TARGET: rust-image
-      - CRATE: server
+      - CRATES: !reference [.crates:server-dependencies]
         IMAGE_TARGET: server-image
-      - CRATE: client
+      - CRATES: !reference [.crates:client-dependencies]
         IMAGE_TARGET: client-image
   needs:
     - job: cargo:check-build-test
@@ -218,29 +208,29 @@ package:create-deb:
     - .cargo
     - .runner-arch:dependent
   script:
-    - mv target/release/aperturec-$CRATE-$IMAGE_BASE-$ARCHITECTURE target/release/aperturec-$CRATE
-    - cargo deb -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID" --no-build -- --release
+    - mv target/release/aperturec-$CRATES-$IMAGE_BASE-$ARCHITECTURE target/release/aperturec-$CRATES
+    - cargo deb $CARGO_ARGS -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID" --no-build -- --release
   artifacts:
-    paths: [$CRATE/target/*/*/aperturec-$CRATE_*_*.deb]
+    paths: [target/*/*/aperturec-$CRATES_*_*.deb]
   needs:
     - job: cargo:check-build-test
       parallel:
         matrix:
-          - CRATE: server
+          - CRATES: server
             IMAGE_BASE: !reference [.images:debian]
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
-          - CRATE: client
+          - CRATES: client
             IMAGE_BASE: !reference [.images:debian]
             IMAGE_TARGET: client-image
             ARCHIECTURE: !reference [.architectures:all]
   parallel:
     matrix:
-      - CRATE: server
+      - CRATES: server
         IMAGE_BASE: !reference [.images:debian]
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATE: client
+      - CRATES: client
         IMAGE_BASE: !reference [.images:debian]
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
@@ -254,10 +244,10 @@ package:push-deb:
     entrypoint: [""]
   script:
     - gem install package_cloud
-    - ./ci/scripts/package_upload.sh $CRATE
+    - ./ci/scripts/package_upload.sh $CRATES
   parallel:
     matrix:
-      - CRATE: !reference [.crates:package]
+      - CRATES: !reference [.crates:package]
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   needs:
