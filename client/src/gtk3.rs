@@ -185,7 +185,19 @@ fn render_image(cr: &Context, image: &ImageSurface, origin: (u32, u32), dimensio
 
     cr.set_source_surface(image, x, y)
         .expect("GTK surface is in an invalid state");
-    cr.paint().expect("GTK invalid Cairo surface state");
+
+    // Temporarily set clip to the current surface to prevent EXTEND_PAD from interfering with
+    // adjacent Surfaces
+    cr.save().expect("Failed to save cairo context");
+    cr.rectangle(x, y, w, h);
+    cr.clip();
+
+    // Surfaces use EXTEND_NONE by default, however, we need to coerce the underlying pattern to
+    // use EXTEND_PAD to deal with transparent edge pixels on scaled displays
+    cr.source().set_extend(gtk::cairo::Extend::Pad);
+
+    cr.paint().expect("Invalid cairo surface state");
+    cr.restore().expect("Failed to restore cairo context");
 
     cr.set_source_rgba(0., 0., 0., 0.);
 }
