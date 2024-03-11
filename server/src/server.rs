@@ -19,7 +19,8 @@ use aperturec_state_machine::*;
 use aperturec_trace::log;
 use async_trait::async_trait;
 use derive_builder::Builder;
-use std::collections::BTreeMap;
+use std::cmp::{max, min};
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -135,47 +136,20 @@ impl<B: Backend + 'static> Server<Running<B>> {
     }
 }
 
-fn do_partition(num_partitions: usize, rect: encoder::Rect) -> Vec<encoder::Rect> {
-    if num_partitions == 0 {
-        return vec![];
-    } else if num_partitions == 1 {
-        return vec![rect];
+#[derive(Copy, Clone)]
+struct FactorPair {
+    w: usize,
+    h: usize,
+}
+
+impl FactorPair {
+    fn update<T>(&mut self, width: T, height: T)
+    where
+        T: Into<usize>,
+    {
+        self.w = width.into();
+        self.h = height.into();
     }
-
-    let num_partitions_per_half = num_partitions / 2;
-    let (lhs_rect, rhs_rect) = if rect.size.width > rect.size.height {
-        let child_width = rect.size.width / 2;
-        let child_size = encoder::Size::new(child_width, rect.size.height);
-
-        (
-            encoder::Rect {
-                size: child_size,
-                origin: rect.origin,
-            },
-            encoder::Rect {
-                size: child_size,
-                origin: rect.origin + encoder::Size::new(child_width, 0),
-            },
-        )
-    } else {
-        let child_height = rect.size.height / 2;
-        let child_size = encoder::Size::new(rect.size.width, child_height);
-
-        (
-            encoder::Rect {
-                size: child_size,
-                origin: rect.origin,
-            },
-            encoder::Rect {
-                size: child_size,
-                origin: rect.origin + encoder::Size::new(0, child_height),
-            },
-        )
-    };
-    let mut lhs = do_partition(num_partitions_per_half, lhs_rect);
-    let mut rhs = do_partition(num_partitions_per_half, rhs_rect);
-    lhs.append(&mut rhs);
-    lhs
 }
 
 fn partition(
@@ -187,17 +161,97 @@ fn partition(
     } else {
         max_decoder_count
     };
-    let client_resolution = encoder::Size::new(
-        client_resolution.width as usize,
-        client_resolution.height as usize,
-    );
-    let partitions = do_partition(
-        n_encoders,
+
+    let width = client_resolution.width as usize;
+    let height = client_resolution.height as usize;
+
+    //
+    // Gather a list of factor pairs for the given n_encoders arranged from largest aspect
+    // ratio to the least.
+    //
+    let mut factors: VecDeque<_> = (1..=n_encoders).filter(|&x| n_encoders % x == 0).collect();
+
+    let mut factor_pairs: Vec<FactorPair> = vec![
+        FactorPair { w: 0, h: 0 };
+        (if factors.len() & 0x1 == 1 {
+            factors.len() + 1
+        } else {
+            factors.len()
+        }) / 2
+    ];
+
+    for fp in factor_pairs.iter_mut() {
+        let f0 = factors.pop_front().expect("pop front");
+        if !factors.is_empty() {
+            let f1 = factors.pop_back().expect("pop back");
+            if width >= height {
+                fp.update(max(f0, f1), min(f0, f1));
+            } else {
+                fp.update(min(f0, f1), max(f0, f1));
+            }
+        } else {
+            fp.update(f0, f0);
+        }
+    }
+
+    if !factors.is_empty() {
+        panic!(
+            "{} factors of {} remain! {:#?}",
+            factors.len(),
+            n_encoders,
+            factors
+        );
+    }
+
+    if factor_pairs.is_empty() {
+        panic!("{} {}x{} has no factor pairs!", n_encoders, width, height);
+    }
+
+    //
+    // Define a series of tests for the FactorPairs, in descending order, of how well a
+    // FactorPair divides the requested width and height.
+    //
+    type FactorTest<'a> = dyn Fn(&FactorPair) -> bool + 'a;
+    let tests: Vec<Box<FactorTest>> = vec![
+        Box::new(|fp| width % fp.w == 0 && height % fp.h == 0),
+        Box::new(|fp| width % fp.w == 1 && height % fp.h == 0),
+        Box::new(|fp| width % fp.w == 0 && height % fp.h == 1),
+        Box::new(|fp| width % fp.w == 0 || height % fp.h == 0),
+    ];
+
+    //
+    // Evaluate each test, from best to worst, against the FactorPairs which are arranged in
+    // increasing aspect ratio. Break when we find the best fit. Note the last test and the
+    // FactorPair with the highest aspect ratio form a base case since 1 divides anything.
+    //
+    let mut best_fit = factor_pairs[0];
+    'outer: for test in tests.iter() {
+        for fp in factor_pairs.iter().rev() {
+            if test(fp) {
+                best_fit = *fp;
+                break 'outer;
+            }
+        }
+    }
+
+    let sz = encoder::Size::new(width / best_fit.w, height / best_fit.h);
+
+    let mut partitions = vec![
         encoder::Rect {
-            size: client_resolution,
-            origin: encoder::Point::new(0, 0),
-        },
-    );
+            size: sz,
+            origin: euclid::Point2D::new(0, 0)
+        };
+        best_fit.h * best_fit.w
+    ];
+
+    let mut i = 0;
+    for y in 0..best_fit.h {
+        for x in 0..best_fit.w {
+            partitions[i].origin.x = x * sz.width;
+            partitions[i].origin.y = y * sz.height;
+            i += 1;
+        }
+    }
 
     let server_width = partitions
         .iter()
@@ -1257,5 +1311,30 @@ mod test {
             .try_transition()
             .await
             .expect("failed to start running");
+    }
+
+    #[test]
+    fn partitions() {
+        let mut dims = vec![];
+
+        dims.push((Dimension::new(800, 600), 8));
+        dims.push((Dimension::new(1470, 956), 8));
+        dims.push((Dimension::new(813, 600), 32));
+
+        for d in dims.iter() {
+            let (_, partitions) = partition(&d.0, d.1);
+            for p in partitions.iter() {
+                assert!(
+                    p.origin.x == 0 || (p.origin.x % p.width()) == 0,
+                    "Invalid x/width {:#?}",
+                    p,
+                );
+                assert!(
+                    p.origin.y == 0 || (p.origin.y % p.height()) == 0,
+                    "Invalid y/height {:#?}",
+                    p,
+                );
+            }
+        }
     }
 }
