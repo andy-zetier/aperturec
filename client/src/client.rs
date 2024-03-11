@@ -232,6 +232,7 @@ pub struct Configuration {
     pub keepalive_timeout: Duration,
     pub win_width: u64,
     pub win_height: u64,
+    pub root_program: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -409,6 +410,7 @@ impl Client {
                     .expect("Failed to convert Duration"),
             )
             .max_decoder_count::<u32>(self.config.decoder_max.into())
+            .root_program(self.config.root_program.clone().unwrap_or(String::from("")))
             .build()
             .expect("Failed to generate ClientInit!")
     }
@@ -749,6 +751,7 @@ impl Client {
         log::debug!("Client Init sent, waiting for ServerInit...");
         let si = match client_cc_read.receive() {
             Ok(cm_s2c::Message::ServerInit(si)) => si,
+            Ok(cm_s2c::Message::ServerGoodbye(gb)) => panic!("Server sent goodbye: {:?}", gb),
             Ok(_) => panic!("Unexpected message received, expected ServerInit"),
             Err(other) => panic!("Failed to read ServerInit: {:?}", other),
         };
@@ -1104,6 +1107,7 @@ mod test {
             .id(1234)
             .max_fps(Duration::from_secs((1 / 30u16).into()))
             .keepalive_timeout(Duration::from_secs(1))
+            .root_program(Some("glxgears".into()))
             .build()
             .expect("Failed to build Configuration!")
     }

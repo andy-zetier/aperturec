@@ -99,14 +99,18 @@ impl TryFrom<em_c2s::Message> for Event {
 
 #[async_trait]
 pub trait Backend: Sized + Send + Sync + fmt::Debug {
-    async fn initialize<N, S>(initial_program: S, max_width: N, max_height: N) -> Result<Self>
+    async fn initialize<N>(max_width: N, max_height: N) -> Result<Self>
     where
-        N: Into<Option<usize>> + Send,
-        S: AsRef<str> + Send;
+        N: Into<Option<usize>> + Send;
     async fn notify_event(&mut self, event: Event) -> Result<()>;
     async fn cursor_bitmaps(&self) -> Result<Vec<CursorBitmap>>;
     async fn set_resolution(&mut self, resolution: &Size) -> Result<()>;
     async fn resolution(&self) -> Result<Size>;
     async fn damage_stream(&self) -> Result<DamageStream>;
     async fn capture_area(&self, area: Rect) -> Result<FramebufferUpdate>;
+    async fn start_root_process<S>(&mut self, root_process: S, should_replace: bool) -> Result<()>
+    where
+        S: AsRef<str> + Send;
+    async fn wait_root_process(&mut self) -> Result<()>;
+    fn root_process_exited(&self) -> bool;
 }

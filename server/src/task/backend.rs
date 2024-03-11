@@ -16,7 +16,6 @@ use aperturec_trace::queue::deq;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
-use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -43,7 +42,6 @@ pub struct Created<B: Backend + 'static> {
     mc_servers: Vec<udp::Server<udp::Connected>>,
     codecs: BTreeMap<u16, Codec>,
     client_addr: SocketAddr,
-    ct: CancellationToken,
 }
 
 impl<B: Backend + 'static> Task<Created<B>> {
@@ -54,13 +52,37 @@ impl<B: Backend + 'static> Task<Created<B>> {
 
 #[derive(State, Debug)]
 pub struct Running<B: Backend + 'static> {
-    task: JoinHandle<(B, Result<()>)>,
+    acked_seq_subtask: JoinHandle<Result<()>>,
+    acked_seq_subtask_ct: CancellationToken,
+    backend_subtask: JoinHandle<(B, Result<()>)>,
+    backend_subtask_ct: CancellationToken,
+    missed_frame_subtask: JoinHandle<Result<()>>,
+    missed_frame_subtask_ct: CancellationToken,
+    fb_update_req_subtask: JoinHandle<Result<()>>,
+    fb_update_req_subtask_ct: CancellationToken,
+    encoder_subtasks: BTreeMap<
+        u16,
+        JoinHandle<
+            Result<
+                encoder::Encoder<encoder::Terminated>,
+                aperturec_state_machine::Recovered<
+                    encoder::Encoder<encoder::Terminated>,
+                    anyhow::Error,
+                >,
+            >,
+        >,
+    >,
+    encoder_subtask_cts: BTreeMap<u16, CancellationToken>,
     ct: CancellationToken,
 }
 
 impl<B: Backend + 'static> Task<Running<B>> {
     pub fn stop(&self) {
         self.state.ct.cancel();
+    }
+
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.state.ct
     }
 }
 
@@ -72,6 +94,10 @@ pub struct Terminated<B: Backend + 'static> {
 impl<B: Backend + 'static> Task<Terminated<B>> {
     pub fn into_backend(self) -> B {
         self.state.backend
+    }
+
+    pub fn root_process_exited(&self) -> bool {
+        self.state.backend.root_process_exited()
     }
 }
 
@@ -89,12 +115,11 @@ impl<B: Backend + 'static> Task<Created<B>> {
         event_rx: mpsc::UnboundedReceiver<Event>,
         fb_update_req_rx: mpsc::UnboundedReceiver<cm::FramebufferUpdateRequest>,
         missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
-    ) -> (Task<Created<B>>, Channels, CancellationToken)
+    ) -> (Task<Created<B>>, Channels)
     where
         I: IntoIterator<Item = &'d (Decoder, Location, Dimension)>,
     {
         let (acked_seq_tx, acked_seq_rx) = mpsc::unbounded_channel();
-        let ct = CancellationToken::new();
 
         let task = Task {
             state: Created {
@@ -107,11 +132,10 @@ impl<B: Backend + 'static> Task<Created<B>> {
                 mc_servers,
                 codecs,
                 client_addr: *client_addr,
-                ct: ct.clone(),
             },
         };
 
-        (task, Channels { acked_seq_tx }, ct)
+        (task, Channels { acked_seq_tx })
     }
 }
 
@@ -126,11 +150,13 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let mut addr = self.state.client_addr;
 
+        let subtask_ct = CancellationToken::new();
+
         let mut acked_frame_txs = BTreeMap::new();
         let mut fb_txs = BTreeMap::new();
         let mut missed_frame_txs = BTreeMap::new();
-        let mut encoder_cts = BTreeMap::new();
-        let mut encoders = BTreeMap::new();
+        let mut encoder_subtasks = BTreeMap::new();
+        let mut encoder_subtask_cts = BTreeMap::new();
 
         for ((decoder, location, dimension), mc_server) in
             self.state.decoders.iter().zip(&self.state.mc_servers)
@@ -141,18 +167,20 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
                 try_transition_inner_recover!(mc_server.clone(), udp::Closed, |_| self);
             let mc = AsyncServerMediaChannel::new(async_mc_server);
             let codec = self.state.codecs.remove(&port).unwrap_or(Codec::Raw);
-            let (encoder, encoder_channels, encoder_ct) =
-                Encoder::new(decoder, location, dimension, mc, codec);
+            let (encoder, encoder_channels) =
+                Encoder::new(decoder, location, dimension, mc, codec, subtask_ct.clone());
             let running = try_transition_inner_recover!(
                 encoder,
                 encoder::Created<AsyncServerMediaChannel>,
                 |_| self
             );
-            encoders.insert(port, running);
+            let ct = running.cancellation_token().clone();
+            let subtask = tokio::spawn(async move { running.try_transition().await });
+            encoder_subtasks.insert(port, subtask);
+            encoder_subtask_cts.insert(port, ct);
             acked_frame_txs.insert(port, encoder_channels.acked_frame_tx);
             fb_txs.insert(port, encoder_channels.fb_tx);
             missed_frame_txs.insert(port, encoder_channels.missed_frame_tx);
-            encoder_cts.insert(port, encoder_ct);
         }
 
         let mut damage_stream = try_recover!(self.state.backend.damage_stream().await, self).fuse();
@@ -163,10 +191,9 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
             UnboundedReceiverStream::new(self.state.missed_frame_rx).fuse();
         let mut acked_seq_stream = UnboundedReceiverStream::new(self.state.acked_seq_rx).fuse();
 
-        let backend = Arc::new(RwLock::new(self.state.backend));
-
-        let ct = self.state.ct.clone();
-        let mut acked_seq_subtask = tokio::spawn(async move {
+        let acked_seq_subtask_ct = CancellationToken::new();
+        let ct = acked_seq_subtask_ct.clone();
+        let acked_seq_subtask = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     biased;
@@ -192,26 +219,40 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
             }
         });
 
-        let damage_subtask_backend = backend.clone();
-        let ct = self.state.ct.clone();
-        let mut damage_subtask = tokio::spawn(async move {
-            let loop_res: Result<()> = 'select: loop {
+        let backend_subtask_ct = CancellationToken::new();
+        let ct = backend_subtask_ct.clone();
+        let backend_subtask = tokio::spawn(async move {
+            let loop_res = 'select: loop {
                 tokio::select! {
                     biased;
                     _ = ct.cancelled() => {
-                        log::info!("Damage subtask cancelled");
+                        log::info!("Backend subtask cancelled");
                         break Ok(());
+                    }
+                    _ = self.state.backend.wait_root_process() => {
+                        log::debug!("Root process exited");
+                        break Ok(());
+                    }
+                    Some(event) = event_stream.next() => {
+                        if let Err(e) = self.state.backend.notify_event(event).await {
+                            log::warn!("Failed to notify backend of event: {}", e);
+                            continue;
+                        }
+                        deq!(EVENT_QUEUE);
                     }
                     Some(damage_area) = damage_stream.next() => {
                         let fbu = Arc::new({
-                            let be = damage_subtask_backend.read();
-                            match be.capture_area(damage_area).await {
-                                Err(err) => break 'select Err(err),
+                            match self.state.backend.capture_area(damage_area).await {
+                                Err(err) => {
+                                    log::error!("Failed to capture screen: {}", err);
+                                    break 'select Err(err);
+                                },
                                 Ok(fbu) => fbu,
                             }
                         });
                         for channel in &mut fb_txs.values_mut() {
                             if let Err(err) = channel.send(fbu.clone()) {
+                                log::error!("Failed to send FBU to encoder: {}", err);
                                 break 'select Err(err.into());
                             }
                         }
@@ -219,41 +260,12 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
                     else => break Err(anyhow!("damage stream exhuasted"))
                 }
             };
-            (
-                Arc::into_inner(damage_subtask_backend).map(|lock| lock.into_inner()),
-                loop_res,
-            )
+            (self.state.backend, loop_res)
         });
 
-        let event_subtask_backend = backend.clone();
-        let ct = self.state.ct.clone();
-        let mut event_subtask = tokio::spawn(async move {
-            let loop_res = loop {
-                tokio::select! {
-                    biased;
-                    _ = ct.cancelled() => {
-                        log::info!("Event subtask cancelled");
-                        break Ok(());
-                    }
-                    Some(event) = event_stream.next() => {
-                        let mut be = event_subtask_backend.write();
-                        if let Err(e) = be.notify_event(event).await {
-                            log::warn!("Failed to notify backend of event: {}", e);
-                            continue;
-                        }
-                        deq!(EVENT_QUEUE);
-                    }
-                    else => break Err(anyhow!("event stream exhausted"))
-                }
-            };
-            (
-                Arc::into_inner(event_subtask_backend).map(|lock| lock.into_inner()),
-                loop_res,
-            )
-        });
-
-        let ct = self.state.ct.clone();
-        let mut missed_frame_subtask = tokio::spawn(async move {
+        let missed_frame_subtask_ct = CancellationToken::new();
+        let ct = missed_frame_subtask_ct.clone();
+        let missed_frame_subtask = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     biased;
@@ -285,8 +297,9 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
             }
         });
 
-        let ct = self.state.ct.clone();
-        let mut fb_update_req_subtask = tokio::spawn(async move {
+        let fb_update_req_subtask_ct = CancellationToken::new();
+        let ct = fb_update_req_subtask_ct.clone();
+        let fb_update_req_subtask = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     biased;
@@ -301,98 +314,20 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
                 }
             }
         });
-
-        let mut enc_result_futs = FuturesUnordered::new();
-        encoders
-            .into_iter()
-            .map(|(port, enc)| enc.try_transition().map(move |fut| (port, fut)))
-            .for_each(|fut| enc_result_futs.push(fut));
-
-        let ct = self.state.ct.clone();
-        let task = tokio::spawn(async move {
-            log::trace!("Running backend task");
-            let mut backend_recovered = None;
-            let mut has_cancelled_subtasks = false;
-            let loop_res = loop {
-                tokio::select! {
-                    acked_seq_subtask_res = &mut acked_seq_subtask, if !acked_seq_subtask.is_finished() => {
-                        match acked_seq_subtask_res {
-                            Ok(Ok(())) => (),
-                            Ok(Err(err)) => log::error!("acked sequence subtask exited with error: {}", err),
-                            Err(err) => log::error!("acked sequence subtask panicked: {}", err),
-                        }
-                    }
-                    event_subtask_res = &mut event_subtask, if !event_subtask.is_finished() => {
-                        match event_subtask_res {
-                            Ok((backend_opt, res)) => {
-                                if let Err(err) = res {
-                                    log::error!("event subtask exited with error: {}", err);
-                                }
-                                if let Some(backend) = backend_opt {
-                                    backend_recovered = Some(backend)
-                                }
-                            },
-                            Err(err) => log::error!("event subtask panicked: {}", err),
-                        }
-                    }
-                    damage_subtask_res = &mut damage_subtask, if !damage_subtask.is_finished() => {
-                        match damage_subtask_res {
-                            Ok((backend_opt, res)) => {
-                                if let Err(err) = res {
-                                    log::error!("damage subtask exited with error: {}", err);
-                                }
-                                if let Some(backend) = backend_opt {
-                                    backend_recovered = Some(backend)
-                                }
-                            },
-                            Err(err) => log::error!("damage subtask panicked: {}", err),
-                        }
-                    }
-                    missed_frame_subtask_res = &mut missed_frame_subtask, if !missed_frame_subtask.is_finished() => {
-                        match missed_frame_subtask_res {
-                            Ok(Ok(())) => (),
-                            Ok(Err(err)) => log::error!("acked sequence subtask exited with error: {}", err),
-                            Err(err) => log::error!("acked sequence subtask panicked: {}", err),
-                        }
-                    }
-                    fb_update_req_subtask_res = &mut fb_update_req_subtask, if !fb_update_req_subtask.is_finished() => {
-                        match fb_update_req_subtask_res {
-                            Ok(Ok(())) => (),
-                            Ok(Err(err)) => log::error!("fb update req subtask exited with error: {}", err),
-                            Err(err) => log::error!("fb update req subtask panicked: {}", err),
-                        }
-                    }
-                    Some((port, enc_res)) = enc_result_futs.next() => {
-                        match enc_res {
-                            Ok(_) => log::info!("Encoder {} terminated successfully", port),
-                            Err(Recovered { error, .. }) => log::info!("Encoder {} terminated with error: {}", port, error),
-                        }
-                    }
-                    _ = self.state.ct.cancelled(), if !has_cancelled_subtasks => {
-                        log::info!("backend task cancelled");
-                        while let Some((_, ct)) = encoder_cts.pop_first() {
-                            ct.cancel();
-                        }
-                        has_cancelled_subtasks = true;
-                    }
-                    else => {
-                        log::info!("All backend futures exhausted");
-                        break Ok::<_, anyhow::Error>(())
-                    }
-                }
-            };
-            if backend_recovered.is_none() {
-                backend_recovered = Arc::into_inner(backend).map(|lock| lock.into_inner());
-            }
-            log::trace!("Backend task complete");
-            (
-                backend_recovered.expect("backend was not recovered"),
-                loop_res,
-            )
-        });
-
         Ok(Task {
-            state: Running { task, ct },
+            state: Running {
+                ct: CancellationToken::new(),
+                acked_seq_subtask,
+                acked_seq_subtask_ct,
+                backend_subtask,
+                backend_subtask_ct,
+                missed_frame_subtask,
+                missed_frame_subtask_ct,
+                fb_update_req_subtask,
+                fb_update_req_subtask_ct,
+                encoder_subtasks,
+                encoder_subtask_cts,
+            },
         })
     }
 }
@@ -406,16 +341,106 @@ impl<B: Backend + 'static> TryTransitionable<Terminated<B>, Terminated<B>> for T
     async fn try_transition(
         mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        match self.state.task.await {
-            Ok((backend, res)) => {
-                if let Err(err) = res {
-                    log::warn!("backend task returned error: {}", err);
+        let mut enc_result_futs = FuturesUnordered::new();
+        self.state
+            .encoder_subtasks
+            .into_iter()
+            .map(|(port, subtask)| subtask.map(move |fut| (port, fut)))
+            .for_each(|fut| enc_result_futs.push(fut));
+
+        let mut top_level_cleanup_executed = false;
+        let mut backend_recovered = None;
+        let (
+            mut acked_seq_cleanedup,
+            mut backend_cleanedup,
+            mut missed_frame_cleanedup,
+            mut fb_update_req_cleanedup,
+        ) = (false, false, false, false);
+
+        let loop_res = loop {
+            tokio::select! {
+                _ = self.state.ct.cancelled(), if !top_level_cleanup_executed => {
+                    log::debug!("backend task cancelled");
+                    top_level_cleanup_executed = true;
+                    self.state.acked_seq_subtask_ct.cancel();
+                    self.state.backend_subtask_ct.cancel();
+                    self.state.missed_frame_subtask_ct.cancel();
+                    self.state.fb_update_req_subtask_ct.cancel();
+                    self.state.encoder_subtask_cts.iter().for_each(|(_, ct)| ct.cancel());
                 }
-                Ok(Task {
-                    state: Terminated { backend },
-                })
+                acked_seq_subtask_res = &mut self.state.acked_seq_subtask, if !acked_seq_cleanedup => {
+                    log::debug!("acked seq subtask exiting");
+                    self.state.ct.cancel();
+                    acked_seq_cleanedup = true;
+                    match acked_seq_subtask_res {
+                        Ok(Ok(())) => (),
+                        Ok(Err(err)) => log::error!("acked sequence subtask exited with error: {}", err),
+                        Err(err) => log::error!("acked sequence subtask panicked: {}", err),
+                    }
+                }
+                backend_subtask_res = &mut self.state.backend_subtask, if !backend_cleanedup => {
+                    log::debug!("backend subtask exiting");
+                    self.state.ct.cancel();
+                    backend_cleanedup = true;
+                    match backend_subtask_res {
+                        Ok((backend, res)) => {
+                            if let Err(err) = res {
+                                log::error!("backend subtask exited with error: {}", err);
+                            }
+                            backend_recovered = Some(backend);
+                        },
+                        Err(err) => log::error!("backend subtask panicked: {}", err),
+                    }
+                }
+                missed_frame_subtask_res = &mut self.state.missed_frame_subtask, if !missed_frame_cleanedup => {
+                    log::debug!("missed frame subtask exiting");
+                    self.state.ct.cancel();
+                    missed_frame_cleanedup = true;
+                    match missed_frame_subtask_res {
+                        Ok(Ok(())) => (),
+                        Ok(Err(err)) => log::error!("acked sequence subtask exited with error: {}", err),
+                        Err(err) => log::error!("acked sequence subtask panicked: {}", err),
+                    }
+                }
+                fb_update_req_subtask_res = &mut self.state.fb_update_req_subtask, if !fb_update_req_cleanedup => {
+                    log::debug!("FB update req subtask exiting");
+                    self.state.ct.cancel();
+                    fb_update_req_cleanedup = true;
+                    match fb_update_req_subtask_res {
+                        Ok(Ok(())) => (),
+                        Ok(Err(err)) => log::error!("fb update req subtask exited with error: {}", err),
+                        Err(err) => log::error!("fb update req subtask panicked: {}", err),
+                    }
+                }
+                Some((port, enc_res)) = enc_result_futs.next() => {
+                    log::debug!("Encoder {} exiting", port);
+                    self.state.ct.cancel();
+                    match enc_res {
+                        Ok(Ok(_)) => log::info!("Encoder {} terminated successfully", port),
+                        Ok(Err(Recovered { error, .. })) => log::info!("Encoder {} terminated with error: {}", port, error),
+                        Err(err) => log::error!("Encoder {} panicked: {}", port, err),
+                    }
+                }
+                else => {
+                    log::info!("All backend futures exhausted");
+                    break Ok::<_, anyhow::Error>(())
+                }
             }
-            Err(err) => panic!("backend task panicked: {}", err),
+        };
+        log::trace!("Backend task complete");
+
+        let task = Task {
+            state: Terminated {
+                backend: backend_recovered.expect("backend was not recovered"),
+            },
+        };
+
+        match loop_res {
+            Ok(()) => Ok(task),
+            Err(error) => Err(Recovered {
+                stateful: task,
+                error,
+            }),
         }
     }
 }
@@ -425,17 +450,15 @@ impl<B: Backend + 'static> Transitionable<Terminated<B>> for Task<Running<B>> {
 
     fn transition(self) -> Self::NextStateful {
         self.stop();
-        let backend = match Handle::current().block_on(async move {
-            let task = self.state.task;
-            task.await
-        }) {
-            Ok((backend, Ok(()))) => backend,
-            Ok((backend, Err(err))) => {
-                log::error!("backend task terminated in failure with error {}", err);
-                backend
-            }
-            Err(join_err) => panic!("Join error in backend task: {}", join_err),
-        };
+        let backend =
+            match Handle::current().block_on(async move { self.state.backend_subtask.await }) {
+                Ok((backend, Ok(()))) => backend,
+                Ok((backend, Err(err))) => {
+                    log::error!("backend task terminated in failure with error {}", err);
+                    backend
+                }
+                Err(join_err) => panic!("Join error in backend task: {}", join_err),
+            };
         Task {
             state: Terminated { backend },
         }

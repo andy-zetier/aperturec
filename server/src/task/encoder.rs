@@ -249,11 +249,11 @@ where
         dimension: &Dimension,
         send_recv: AsyncDuplex,
         codec: Codec,
-    ) -> (Self, Channels, CancellationToken) {
+        ct: CancellationToken,
+    ) -> (Self, Channels) {
         let (fb_tx, fb_rx) = mpsc::unbounded_channel();
         let (missed_frame_tx, missed_frame_rx) = mpsc::unbounded_channel();
         let (acked_frame_tx, acked_frame_rx) = mpsc::channel(1);
-        let ct = CancellationToken::new();
 
         let enc = Encoder {
             state: Created {
@@ -275,7 +275,6 @@ where
                 missed_frame_tx,
                 acked_frame_tx,
             },
-            ct,
         )
     }
 }
@@ -1195,6 +1194,10 @@ where
 impl Encoder<Running> {
     pub fn stop(&self) {
         self.state.ct.cancel();
+    }
+
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.state.ct
     }
 }
 

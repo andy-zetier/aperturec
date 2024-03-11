@@ -33,7 +33,6 @@ pub struct Created {
     hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
     cc_send_tx: mpsc::Sender<cm_s2c::Message>,
     acked_seq_tx: mpsc::UnboundedSender<cm::DecoderSequencePair>,
-    ct: CancellationToken,
 }
 
 #[derive(State, Debug)]
@@ -52,8 +51,7 @@ impl Task<Created> {
         acked_seq_tx: mpsc::UnboundedSender<cm::DecoderSequencePair>,
         hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
         cc_send_tx: mpsc::Sender<cm_s2c::Message>,
-    ) -> (Self, CancellationToken) {
-        let ct = CancellationToken::new();
+    ) -> Self {
         let task = Task {
             state: Created {
                 cc_send_tx,
@@ -61,16 +59,19 @@ impl Task<Created> {
                 hb_resp_interval,
                 hb_resp_rx,
                 acked_seq_tx,
-                ct: ct.clone(),
             },
         };
-        (task, ct)
+        task
     }
 }
 
 impl Task<Running> {
     pub fn stop(&self) {
         self.state.ct.cancel();
+    }
+
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.state.ct
     }
 }
 
@@ -83,7 +84,9 @@ impl TryTransitionable<Running, Created> for Task<Created> {
     async fn try_transition(
         mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let ct = self.state.ct.clone();
+        let task_ct = CancellationToken::new();
+        let ct = task_ct.clone();
+
         let task = tokio::spawn(async move {
             log::trace!("Running heartbeat task");
             let hb_req_interval = time::interval(self.state.hb_req_interval);
@@ -97,7 +100,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
             loop {
                 tokio::select! {
                     biased;
-                    _ = self.state.ct.cancelled() => {
+                    _ = task_ct.cancelled() => {
                         log::info!("heartbeat task cancelled");
                         break Ok(());
                     }
@@ -128,7 +131,6 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                         let req = cm::HeartbeatRequest::new(hb_id);
                         metrics::rtt_outgoing(hb_id);
                         self.state.cc_send_tx.send(req.into()).await?;
-
 
                         unacked_hb_reqs.insert(hb_id);
                         let task_hb_id = hb_id;

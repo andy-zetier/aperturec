@@ -12,6 +12,7 @@ use aperturec_channel::*;
 use aperturec_protocol::common::*;
 use aperturec_protocol::control as cm;
 use aperturec_protocol::control::client_to_server as cm_c2s;
+use aperturec_protocol::control::server_to_client as cm_s2c;
 use aperturec_protocol::media::client_to_server as mm_c2s;
 use aperturec_protocol::*;
 use aperturec_state_machine::*;
@@ -21,7 +22,7 @@ use derive_builder::Builder;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Builder, Debug, Clone)]
@@ -31,9 +32,10 @@ pub struct Configuration {
     media_channel_addr: SocketAddr,
     name: String,
     temp_client_id: u64,
-    initial_program: String,
     max_width: usize,
     max_height: usize,
+    #[builder(setter(strip_option), default)]
+    default_root_program: Option<String>,
 }
 
 #[derive(Stateful, Debug)]
@@ -94,15 +96,12 @@ pub struct ChannelsAccepted<B: Backend + 'static> {
 
 #[derive(State)]
 pub struct Running<B: Backend + 'static> {
+    ct: CancellationToken,
+    cc_tx: mpsc::Sender<cm_s2c::Message>,
     backend_task: backend::Task<backend::Running<B>>,
-    backend_ct: CancellationToken,
     heartbeat_task: heartbeat::Task<heartbeat::Running>,
-    heartbeat_ct: CancellationToken,
     cc_handler_task: cc_handler::Task<cc_handler::Running>,
-    cc_handler_ct: CancellationToken,
     ec_handler_task: ec_handler::Task<ec_handler::Running>,
-    ec_handler_ct: CancellationToken,
-    received_goodbye: oneshot::Receiver<()>,
 }
 
 #[derive(State)]
@@ -113,20 +112,26 @@ pub struct SessionComplete<B: Backend + 'static> {
 }
 
 impl Server<Created> {
-    pub fn new(config: Configuration) -> Self {
-        Server {
+    pub fn new(config: Configuration) -> Result<Self> {
+        if let Some(default_root_program) = &config.default_root_program {
+            which::which(default_root_program).map_err(|e| {
+                anyhow!(
+                    "Cannot launch server with default root program '{}': {}",
+                    default_root_program,
+                    e
+                )
+            })?;
+        }
+        Ok(Server {
             state: Created,
             config,
-        }
+        })
     }
 }
 
 impl<B: Backend + 'static> Server<Running<B>> {
     pub fn stop(&self) {
-        self.state.backend_ct.cancel();
-        self.state.heartbeat_ct.cancel();
-        self.state.cc_handler_ct.cancel();
-        self.state.ec_handler_ct.cancel();
+        self.state.ct.cancel();
     }
 }
 
@@ -222,12 +227,7 @@ impl<B: Backend + 'static> TryTransitionable<BackendInitialized<B>, Created> for
         Ok(Server {
             state: BackendInitialized {
                 backend: try_recover!(
-                    B::initialize(
-                        &self.config.initial_program,
-                        self.config.max_width,
-                        self.config.max_height
-                    )
-                    .await,
+                    B::initialize(self.config.max_width, self.config.max_height).await,
                     self
                 ),
             },
@@ -345,10 +345,42 @@ impl<B: Backend + 'static> TryTransitionable<AuthenticatedClient<B>, ChannelsLis
         };
         log::trace!("Client init: {:#?}", client_init);
         if client_init.temp_id != self.config.temp_client_id {
+            let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::AuthenticationFailure);
+            try_recover!(self.state.cc.send(msg.into()).await, self);
             return_recover!(self, "mismatched temporary ID");
         }
         if client_init.max_decoder_count < 1 {
+            let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::InvalidConfiguration);
+            try_recover!(self.state.cc.send(msg.into()).await, self);
             return_recover!(self, "client sent invalid decoder max");
+        }
+
+        let (root_process, should_replace) = if client_init.root_program.is_empty() {
+            (self.config.default_root_program.as_ref(), false)
+        } else {
+            (Some(&client_init.root_program), true)
+        };
+        if let Some(root_process) = root_process {
+            try_recover!(
+                self.state
+                    .backend
+                    .start_root_process(root_process, should_replace)
+                    .await,
+                (|| async move {
+                    log::error!("Failed to launch root process");
+                    let msg =
+                        cm::ServerGoodbye::from(cm::ServerGoodbyeReason::RootProcessLaunchFailed);
+                    self.state
+                        .cc
+                        .send(msg.clone().into())
+                        .await
+                        .unwrap_or_else(|e| {
+                            log::error!("Failed to send server goodbye {:?}: {}", msg, e)
+                        });
+                    self
+                })()
+                .await
+            );
         }
 
         let client_resolution = match client_init.client_info.and_then(|ci| ci.display_size) {
@@ -626,23 +658,21 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, ChannelsListening<B>>
         mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let remote_addr = try_recover!(self.state.cc.as_ref().as_ref().peer_addr(), self);
-        let (cc_handler_task, cc_handler_channels, cc_handler_ct) =
-            cc_handler::Task::new(self.state.cc);
-        let (ec_handler_task, ec_handler_channels, ec_handler_ct) =
-            ec_handler::Task::new(self.state.ec);
 
-        let (backend_task, backend_channels, backend_ct) =
-            backend::Task::<backend::Created<B>>::new(
-                self.state.backend,
-                &self.state.decoders,
-                self.state.mc_servers,
-                self.state.codecs,
-                &remote_addr,
-                ec_handler_channels.event_rx,
-                cc_handler_channels.fb_update_req_rx,
-                cc_handler_channels.missed_frame_rx,
-            );
-        let (heartbeat_task, heartbeat_ct) = heartbeat::Task::<heartbeat::Created>::new(
+        let (cc_handler_task, cc_handler_channels) = cc_handler::Task::new(self.state.cc);
+        let (ec_handler_task, ec_handler_channels) = ec_handler::Task::new(self.state.ec);
+
+        let (backend_task, backend_channels) = backend::Task::<backend::Created<B>>::new(
+            self.state.backend,
+            &self.state.decoders,
+            self.state.mc_servers,
+            self.state.codecs,
+            &remote_addr,
+            ec_handler_channels.event_rx,
+            cc_handler_channels.fb_update_req_rx,
+            cc_handler_channels.missed_frame_rx,
+        );
+        let heartbeat_task = heartbeat::Task::<heartbeat::Created>::new(
             self.state.client_hb_interval,
             self.state.client_hb_response_interval,
             backend_channels.acked_seq_tx.clone(),
@@ -709,15 +739,12 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, ChannelsListening<B>>
 
         Ok(Server {
             state: Running {
+                ct: CancellationToken::new(),
+                cc_tx: cc_handler_channels.to_send_tx.clone(),
                 backend_task,
-                backend_ct,
                 heartbeat_task,
-                heartbeat_ct,
                 cc_handler_task,
-                cc_handler_ct,
                 ec_handler_task,
-                ec_handler_ct,
-                received_goodbye: cc_handler_channels.received_goodbye,
             },
             config: self.config,
         })
@@ -755,6 +782,11 @@ impl<B: Backend + 'static> TryTransitionable<SessionComplete<B>, SessionComplete
         let mut cc_handler_terminated = None;
         let mut ec_handler_terminated = None;
 
+        let heartbeat_ct = self.state.heartbeat_task.cancellation_token().clone();
+        let backend_ct = self.state.backend_task.cancellation_token().clone();
+        let cc_handler_ct = self.state.cc_handler_task.cancellation_token().clone();
+        let ec_handler_ct = self.state.ec_handler_task.cancellation_token().clone();
+
         let mut backend_task =
             tokio::spawn(async move { self.state.backend_task.try_transition().await });
         let mut heartbeat_task =
@@ -764,43 +796,67 @@ impl<B: Backend + 'static> TryTransitionable<SessionComplete<B>, SessionComplete
         let mut ec_handler_task =
             tokio::spawn(async move { self.state.ec_handler_task.try_transition().await });
 
-        let mut has_cancelled_subtasks = false;
+        let mut top_level_cleanup_executed = false;
+        let mut has_sent_gb = false;
+        let mut server_gb_reason: Option<cm::ServerGoodbyeReason> = None;
         loop {
             tokio::select! {
-                _ = &mut self.state.received_goodbye, if !has_cancelled_subtasks => {
-                    self.state.backend_ct.cancel();
-                    self.state.cc_handler_ct.cancel();
-                    self.state.ec_handler_ct.cancel();
-                    self.state.heartbeat_ct.cancel();
-                    has_cancelled_subtasks = true;
+                biased;
+                _ = self.state.ct.cancelled(), if !top_level_cleanup_executed => {
+                    log::debug!("Server task is cancelled");
+                    top_level_cleanup_executed = true;
+                    heartbeat_ct.cancel();
+                    backend_ct.cancel();
+                    ec_handler_ct.cancel();
                 }
-                be_term = &mut backend_task, if backend_terminated.is_none() => {
-                    backend_terminated = Some(be_term);
-                    self.state.heartbeat_ct.cancel();
-                    self.state.cc_handler_ct.cancel();
-                    self.state.ec_handler_ct.cancel();
-                    has_cancelled_subtasks = true;
+                _ = self.state.ct.cancelled(), if server_gb_reason.is_some() && !has_sent_gb => {
+                    if let Some(reason) = server_gb_reason {
+                        log::debug!("Sending server goodbye: {:?}", reason);
+                        let msg = cm::ServerGoodbye::from(reason).into();
+                        self.state.cc_tx.send(msg).await
+                            .unwrap_or_else(|e| log::error!("Failed to send server goodbye: {}", e));
+                    }
+                    has_sent_gb = true;
+                    cc_handler_ct.cancel();
                 }
                 hb_term = &mut heartbeat_task, if heartbeat_terminated.is_none() => {
+                    log::debug!("Heartbeat subtask completed");
+                    if server_gb_reason.is_none() && hb_term.is_err() {
+                        server_gb_reason = Some(cm::ServerGoodbyeReason::NetworkError);
+                    }
                     heartbeat_terminated = Some(hb_term);
-                    self.state.backend_ct.cancel();
-                    self.state.cc_handler_ct.cancel();
-                    self.state.ec_handler_ct.cancel();
-                    has_cancelled_subtasks = true;
+                    self.state.ct.cancel();
                 }
-                cc_term = &mut cc_handler_task, if cc_handler_terminated.is_none() => {
-                    cc_handler_terminated = Some(cc_term);
-                    self.state.backend_ct.cancel();
-                    self.state.heartbeat_ct.cancel();
-                    self.state.ec_handler_ct.cancel();
-                    has_cancelled_subtasks = true;
+                be_term = &mut backend_task, if backend_terminated.is_none() => {
+                    log::debug!("Backend subtask completed");
+                    if server_gb_reason.is_none() {
+                        server_gb_reason = match &be_term {
+                            Ok(Err(_)) | Err(_) => Some(cm::ServerGoodbyeReason::InternalError),
+                            Ok(Ok(be_task_terminated)) => if be_task_terminated.root_process_exited() {
+                                Some(cm::ServerGoodbyeReason::RootExited)
+                            } else {
+                                None
+                            }
+                        };
+                    }
+                    backend_terminated = Some(be_term);
+                    self.state.ct.cancel();
                 }
                 ec_term = &mut ec_handler_task, if ec_handler_terminated.is_none() => {
+                    log::debug!("EC subtask completed");
+                    if server_gb_reason.is_none() && ec_term.is_err() {
+                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
+                    }
                     ec_handler_terminated = Some(ec_term);
-                    self.state.backend_ct.cancel();
-                    self.state.heartbeat_ct.cancel();
-                    self.state.cc_handler_ct.cancel();
-                    has_cancelled_subtasks = true;
+                    self.state.ct.cancel();
+                }
+                cc_term = &mut cc_handler_task, if cc_handler_terminated.is_none() => {
+                    log::debug!("CC subtask completed");
+                    if server_gb_reason.is_none() && cc_term.is_err() {
+                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
+                    }
+                    cc_handler_terminated = Some(cc_term);
+                    self.state.ct.cancel();
                 }
                 else => break
             }
@@ -984,6 +1040,7 @@ mod test {
                 Duration::from_millis(1000_u64).try_into().unwrap(),
             )
             .max_decoder_count(3_u32)
+            .root_program("glxgears")
             .build()
             .expect("ClientInit build")
             .into()
@@ -1001,12 +1058,12 @@ mod test {
             .media_channel_addr(SocketAddr::new("127.0.0.1".parse().unwrap(), mc_port))
             .name("test server".into())
             .temp_client_id(client_id)
-            .initial_program("glxgears".to_owned())
             .max_width(1920)
             .max_height(1080)
             .build()
             .expect("Configuration build");
         let server: Server<ChannelsListening<X>> = Server::new(server_config.clone())
+            .expect("Create server instance")
             .try_transition()
             .await
             .expect("Failed initialize X backend")

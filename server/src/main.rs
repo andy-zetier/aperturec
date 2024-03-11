@@ -8,9 +8,35 @@ use clap::Parser;
 use gethostname::gethostname;
 use std::path::PathBuf;
 
+#[derive(Debug, clap::Args)]
+#[group(required = true, multiple = false)]
+pub struct DefaultRootProgramGroup {
+    /// Default root program to launch if client does not specify (likely a desktop environment)
+    #[arg(short, long)]
+    root_program: Option<String>,
+
+    /// Allow no root program to be set. This will result in clients connecting to an
+    /// empty screen unless a root program is launched out of band
+    #[arg(long)]
+    no_root_program: bool,
+}
+
+impl From<DefaultRootProgramGroup> for Option<String> {
+    fn from(g: DefaultRootProgramGroup) -> Option<String> {
+        match (g.root_program, g.no_root_program) {
+            (Some(root_program), false) => Some(root_program),
+            (None, true) => None,
+            _ => unreachable!("root-program and no-root-program in invalid state"),
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    #[clap(flatten)]
+    default_root_program: DefaultRootProgramGroup,
+
     /// External IP address for the server to listen on
     #[arg(short, long, default_value = "0.0.0.0")]
     bind_address: String,
@@ -39,10 +65,6 @@ struct Args {
     /// Initial ID that a client can use to connect to the server
     #[arg(short, long, default_value = "1234")]
     temp_client_id: u64,
-
-    /// Initial client program to launch (likely a desktop environment)
-    #[arg(short, long, default_value_t = String::from("gnome-shell"))]
-    initial_program: String,
 
     /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
     /// verbosity. The maximum is 3. Overwrites the behavior set via AC_TRACE_FILTER environment
@@ -114,18 +136,21 @@ async fn main() -> Result<()> {
         args.control_port,
     );
 
-    let config = ConfigurationBuilder::default()
+    let mut config_builder = ConfigurationBuilder::default();
+    config_builder
         .control_channel_addr(format!("{}:{}", args.bind_address, args.control_port).parse()?)
         .event_channel_addr(format!("{}:{}", args.bind_address, args.event_port).parse()?)
         .media_channel_addr(format!("{}:{}", args.bind_address, args.encoder_port_start).parse()?)
         .name(args.name)
         .temp_client_id(args.temp_client_id)
-        .initial_program(args.initial_program)
         .max_width(dims[0])
-        .max_height(dims[1])
-        .build()?;
+        .max_height(dims[1]);
+    if let Some(default_root_program) = args.default_root_program.into() {
+        config_builder.default_root_program(default_root_program);
+    }
+    let config = config_builder.build()?;
 
-    let server = Server::<Created>::new(config);
+    let server = Server::<Created>::new(config)?;
     let server: Server<BackendInitialized<backend::X>> = server
         .try_transition()
         .await

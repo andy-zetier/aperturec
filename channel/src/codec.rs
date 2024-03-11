@@ -555,12 +555,32 @@ pub mod reliable {
         control::ClientToServer,
         control::ServerToClient,
     >;
+    pub type AsyncServerControlChannelReadHalf = AsyncReceiverSimplex<
+        tokio::io::ReadHalf<tcp::Server<tcp::AsyncAccepted>>,
+        control::client_to_server::Message,
+        control::ClientToServer,
+    >;
+    pub type AsyncServerControlChannelWriteHalf = AsyncSenderSimplex<
+        tokio::io::WriteHalf<tcp::Server<tcp::AsyncAccepted>>,
+        control::server_to_client::Message,
+        control::ServerToClient,
+    >;
 
     pub type AsyncClientControlChannel = AsyncDuplex<
         tcp::Client<tcp::AsyncConnected>,
         control::server_to_client::Message,
         control::client_to_server::Message,
         control::ServerToClient,
+        control::ClientToServer,
+    >;
+    pub type AsyncClientControlChannelReadHalf = AsyncReceiverSimplex<
+        tokio::io::ReadHalf<tcp::Client<tcp::AsyncConnected>>,
+        control::server_to_client::Message,
+        control::ServerToClient,
+    >;
+    pub type AsyncClientControlChannelWriteHalf = AsyncSenderSimplex<
+        tokio::io::WriteHalf<tcp::Client<tcp::AsyncConnected>>,
+        control::client_to_server::Message,
         control::ClientToServer,
     >;
 
@@ -997,6 +1017,7 @@ mod tcp_test {
                     Duration::from_millis(1000_u64).try_into().unwrap(),
                 )
                 .max_decoder_count(1_u32)
+                .root_program("glxgears")
                 .build()
                 .expect("ClientInit build")
         }};

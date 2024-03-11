@@ -29,6 +29,7 @@ use xcb::{randr, xtest, BaseEvent, Connection, Extension};
 use xcb::{CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply};
 
 const X_DAMAGE_QUEUE: queue::Queue = trace_queue!("x:damage");
+const CHILD_STARTUP_WAIT_TIME_MS: Duration = Duration::from_millis(1000);
 
 fn u8_for_button(button: &em::Button) -> u8 {
     match button.kind {
@@ -45,12 +46,85 @@ pub struct X {
     max_height: usize,
     connection: XConnection,
     root_drawable: Drawable,
+    root_process: Option<(String, Child)>,
+    root_process_exited: bool,
     _xvfb_proc: Child,
-    _initial_program_proc: Child,
 }
 
 #[async_trait]
 impl Backend for X {
+    fn root_process_exited(&self) -> bool {
+        self.root_process_exited
+    }
+
+    async fn wait_root_process(&mut self) -> Result<()> {
+        if self.root_process.is_none() {
+            return std::future::pending().await;
+        }
+
+        let (root_process_cmdline, ref mut root_process) = self.root_process.as_mut().unwrap();
+
+        let es = root_process.wait().await?;
+        log::debug!(
+            "Root program '{}' exited with result {}",
+            root_process_cmdline,
+            es
+        );
+
+        self.root_process_exited = true;
+        self.root_process = None;
+        Ok(())
+    }
+
+    async fn start_root_process<S>(&mut self, root_process: S, should_replace: bool) -> Result<()>
+    where
+        S: AsRef<str> + Send,
+    {
+        if let Some((curr_root_process_cmdline, ref mut curr_root_process)) =
+            self.root_process.as_mut()
+        {
+            if should_replace {
+                log::warn!(
+                    "Replacing current root program '{}' with '{}'",
+                    curr_root_process_cmdline,
+                    root_process.as_ref()
+                );
+
+                curr_root_process.start_kill()?;
+                curr_root_process.wait().await?;
+            } else {
+                log::debug!(
+                    "Not replacing current program '{}'",
+                    curr_root_process_cmdline
+                );
+                return Ok(());
+            }
+        }
+        self.root_process = None;
+
+        let mut root_process_args = Shlex::new(root_process.as_ref());
+        let root_process_exe = root_process_args
+            .next()
+            .ok_or(anyhow!("Empty initial program provided"))?;
+        let mut root_process_cmd = Command::new::<&str>(root_process_exe.as_ref());
+        root_process_cmd
+            .args(root_process_args)
+            .env("DISPLAY", &self.display_name)
+            .env("XDG_SESSION_TYPE", "x11")
+            .kill_on_drop(true);
+        log::debug!(
+            "Starting {} with command `{:?}`",
+            root_process.as_ref(),
+            root_process_cmd
+        );
+        let root_process_proc = root_process_cmd.spawn()?;
+        log::debug!("Launched {}", root_process.as_ref());
+        self.root_process = Some((String::from(root_process.as_ref()), root_process_proc));
+        self.root_process_exited = false;
+
+        Ok(())
+    }
+
     async fn capture_area(&self, area: Rect) -> Result<FramebufferUpdate> {
         let get_image_reply = self
             .connection
@@ -107,12 +181,10 @@ impl Backend for X {
             .boxed())
     }
 
-    async fn initialize<N, S>(initial_program: S, max_width: N, max_height: N) -> Result<Self>
+    async fn initialize<N>(max_width: N, max_height: N) -> Result<Self>
     where
         N: Into<Option<usize>> + Send,
-        S: AsRef<str> + Send,
     {
-        const CHILD_STARTUP_WAIT_TIME_MS: Duration = Duration::from_millis(1000);
         let max_width = max_width.into().unwrap_or(Self::DEFAULT_MAX_WIDTH);
         let max_height = max_height.into().unwrap_or(Self::DEFAULT_MAX_HEIGHT);
 
@@ -144,28 +216,6 @@ impl Backend for X {
         display_name = format!(":{}", display_name.trim().trim_end());
         log::trace!("Started X server with name \"{}\"", display_name);
 
-        let mut initial_program_args = Shlex::new(initial_program.as_ref());
-        let initial_program_exe = initial_program_args
-            .next()
-            .ok_or(anyhow!("Empty initial program provided"))?;
-        let mut initial_program_cmd = Command::new::<&str>(initial_program_exe.as_ref());
-        initial_program_cmd
-            .args(initial_program_args)
-            .env("DISPLAY", &display_name)
-            .env("XDG_SESSION_TYPE", "x11")
-            .kill_on_drop(true);
-        log::debug!(
-            "Starting {} with command `{:?}`",
-            initial_program.as_ref(),
-            initial_program_cmd
-        );
-        let mut initial_program_proc = initial_program_cmd.spawn()?;
-        time::sleep(CHILD_STARTUP_WAIT_TIME_MS).await;
-        if let Ok(Some(status)) = initial_program_proc.try_wait() {
-            bail!("{} exited with status {}", initial_program.as_ref(), status);
-        }
-        log::trace!("Launched {}", initial_program.as_ref());
-
         log::trace!("Creating new XConnection");
         let connection = XConnection::new(&*display_name)?;
         log::trace!("Querying for damage extension version");
@@ -185,8 +235,9 @@ impl Backend for X {
             max_height,
             connection,
             root_drawable,
+            root_process: None,
+            root_process_exited: false,
             _xvfb_proc: xvfb_proc,
-            _initial_program_proc: initial_program_proc,
         })
     }
 
@@ -627,9 +678,10 @@ mod test {
     #[serial]
     async fn retrieve_damage_from_stream() {
         const NUM_UPDATES: usize = 20;
-        let x = X::initialize("glxgears", 1920, 1080)
+        let mut x = X::initialize(1920, 1080).await.expect("x initialize");
+        x.start_root_process("glxgears", false)
             .await
-            .expect("x initialize");
+            .expect("launch glxgears");
         let damage_stream = x.damage_stream().await.expect("damage stream");
         let mut first = damage_stream.take(NUM_UPDATES);
         let mut count: usize = 0;
@@ -645,9 +697,10 @@ mod test {
     #[serial]
     async fn get_resolution() {
         setup();
-        let x = X::initialize("glxgears", 1920, 1080)
+        let mut x = X::initialize(1920, 1080).await.expect("x initialize");
+        x.start_root_process("glxgears", false)
             .await
-            .expect("x initialize");
+            .expect("launch glxgears");
         let res = x.resolution().await.expect("resolution");
         assert_eq!(res.width, 1920);
         assert_eq!(res.height, 1080);
@@ -656,9 +709,10 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn set_resolution() {
-        let mut x = X::initialize("glxgears", 1920, 1080)
+        let mut x = X::initialize(1920, 1080).await.expect("x initialize");
+        x.start_root_process("glxgears", false)
             .await
-            .expect("x initialize");
+            .expect("launch glxgears");
         let new = Size::new(1024, 768);
         x.set_resolution(&new).await.expect("set resolution");
         assert_eq!(new, x.resolution().await.expect("get resolution"));

@@ -9,7 +9,11 @@ pub type ClientEventChannel = codec::reliable::ClientEventChannel;
 pub type ServerMediaChannel = codec::unreliable::ServerMediaChannel;
 pub type ClientMediaChannel = codec::unreliable::ClientMediaChannel;
 pub type AsyncServerControlChannel = codec::reliable::AsyncServerControlChannel;
+pub type AsyncServerControlChannelReadHalf = codec::reliable::AsyncServerControlChannelReadHalf;
+pub type AsyncServerControlChannelWriteHalf = codec::reliable::AsyncServerControlChannelWriteHalf;
 pub type AsyncClientControlChannel = codec::reliable::AsyncClientControlChannel;
+pub type AsyncClientControlChannelReadHalf = codec::reliable::AsyncClientControlChannelReadHalf;
+pub type AsyncClientControlChannelWriteHalf = codec::reliable::AsyncClientControlChannelWriteHalf;
 pub type AsyncServerEventChannel = codec::reliable::AsyncServerEventChannel;
 pub type AsyncClientEventChannel = codec::reliable::AsyncClientEventChannel;
 pub type AsyncServerMediaChannel = codec::unreliable::AsyncServerMediaChannel;
@@ -36,10 +40,9 @@ mod async_variants {
         #[allow(async_fn_in_trait)]
         async fn receive(&mut self) -> anyhow::Result<Self::Message>;
 
-        fn stream(self) -> impl Stream<Item = Self::Message> {
+        fn stream(self) -> impl Stream<Item = anyhow::Result<Self::Message>> {
             stream::unfold(self, |mut receiver| async move {
-                let msg = receiver.receive().await.ok()?;
-                Some((msg, receiver))
+                Some((receiver.receive().await, receiver))
             })
         }
     }

@@ -45,24 +45,32 @@ pub struct Channels {
 }
 
 impl Task<Created> {
-    pub fn new(ec: AsyncServerEventChannel) -> (Self, Channels, CancellationToken) {
+    pub fn new(ec: AsyncServerEventChannel) -> (Self, Channels) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let ct = CancellationToken::new();
         (
             Task {
                 state: Created {
                     ec,
                     event_tx,
-                    ct: ct.clone(),
+                    ct: CancellationToken::new(),
                 },
             },
             Channels { event_rx },
-            ct,
         )
     }
 
     pub fn into_event_channel_server(self) -> tcp::Server<tcp::Listening> {
         transition!(self.state.ec.into_inner(), tcp::Listening)
+    }
+}
+
+impl Task<Running> {
+    pub fn stop(&self) {
+        self.state.ct.cancel();
+    }
+
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.state.ct
     }
 }
 

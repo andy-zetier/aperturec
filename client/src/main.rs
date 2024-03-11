@@ -47,8 +47,12 @@ struct Args {
     metrics_pushgateway: Option<String>,
 
     /// Display size specified as WIDTHxHEIGHT.
-    #[arg(index = 2, default_value = "800x600")]
+    #[arg(index = 3, default_value = "800x600")]
     screen_size: String,
+
+    /// Root program to launch on connection. E.g. `gnome-shell`
+    #[arg(index = 2)]
+    root_program: Option<String>,
 
     /// IP address of the server including control channel port. Eg. 10.10.10.11:46454 or
     /// [::1]:46454
@@ -126,6 +130,7 @@ fn main() -> Result<()> {
         .id(args.temp_client_id)
         .max_fps(Duration::from_secs_f32(1.0/(args.fps_max as f32)))
         .keepalive_timeout(Duration::from_secs(args.keepalive_timeout))
+        .root_program(args.root_program)
         .build()?;
 
     log::debug!("{:#?}", config);

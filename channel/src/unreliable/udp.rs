@@ -175,6 +175,7 @@ impl TryTransitionable<Listening, Closed> for Server<Closed> {
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let socket = try_recover!(do_udp_bind(&self.local_addr).await, self);
         try_recover!(socket.set_nonblocking(false), self);
+        try_recover!(socket.set_read_timeout(None), self);
         let local_addr = try_recover!(socket.local_addr(), self);
 
         Ok(Server {
@@ -258,6 +259,7 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let socket = try_recover!(do_udp_bind(&self.local_addr).await, self);
         try_recover!(socket.set_nonblocking(false), self);
+        try_recover!(socket.set_read_timeout(None), self);
         try_recover!(socket.connect(self.remote_addr), self);
 
         Ok(Client {
