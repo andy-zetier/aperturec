@@ -179,6 +179,7 @@ pub enum ControlMessage {
     UpdateReceivedMessage(u16, u64, Vec<u64>),
     UiClosed(GoodbyeMessage),
     EventChannelDied(GoodbyeMessage),
+    SigintReceived,
 }
 
 //
@@ -842,6 +843,18 @@ impl Client {
         });
 
         //
+        // Setup SIGINT handler
+        //
+        let control_tx = itc.notify_control_tx.clone();
+        ctrlc::set_handler(move || {
+            log::warn!("SIGINT received, exiting");
+            control_tx
+                .send(ControlMessage::SigintReceived)
+                .expect("Failed to notify control channel of SIGINT");
+        })
+        .unwrap_or_else(|e| log::error!("Unable to install SIGINT handler: '{}'", e));
+
+        //
         // Setup core Control Channel thread
         //
         let client_id = self.id;
@@ -947,15 +960,26 @@ impl Client {
 
                         },
                         Ok(ControlMessage::UiClosed(gm)) => {
-                            let _ = control_tx_tx.send(gm.to_client_goodbye(client_id).into());
+                            control_tx_tx.send(gm.to_client_goodbye(client_id).into())
+                                .unwrap_or_else(|e| log::error!("Failed to send client goodbye to control channel: {}", e));
                             log::trace!("Sent ClientGoodbye: User Requested");
                             log::info!("Disconnecting from server, sent ClientGoodbye");
                             break;
                         },
                         Ok(ControlMessage::EventChannelDied(gm)) => {
-                            let _ = control_to_ui_tx.send(UiMessage::QuitMessage("Event Channel Died".to_string()));
-                            let _ = control_tx_tx.send(gm.to_client_goodbye(client_id).into());
+                            control_to_ui_tx.send(UiMessage::QuitMessage("Event Channel Died".to_string()))
+                                .unwrap_or_else(|e| log::error!("Failed to send QuitMessage to UI: {}", e));
+                            control_tx_tx.send(gm.to_client_goodbye(client_id).into())
+                                .unwrap_or_else(|e| log::error!("Failed to send client goodbye to control channel: {}", e));
                             log::trace!("Sent ClientGoodbye: Network Error");
+                            break;
+                        },
+                        Ok(ControlMessage::SigintReceived) => {
+                            control_to_ui_tx.send(UiMessage::QuitMessage("SIGINT".to_string()))
+                                .unwrap_or_else(|e| log::error!("Failed to send QuitMessage to UI: {}", e));
+                            control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into())
+                                .unwrap_or_else(|e| log::error!("Failed to send client goodbye to control channel: {}", e));
+                            log::trace!("Sent ClientGoodbye: SIGINT");
                             break;
                         },
                         Err(err) => {
@@ -963,6 +987,7 @@ impl Client {
                             break;
                         }
                     }
+
                 }
             } // loop
 

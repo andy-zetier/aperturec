@@ -135,6 +135,7 @@ fn main() -> Result<()> {
 
     log::debug!("{:#?}", config);
 
+    let mut metrics_started = false;
     if args.metrics_log || args.metrics_csv.is_some() || args.metrics_pushgateway.is_some() {
         let mut exporters: Vec<Exporter> = vec![];
         if args.metrics_log {
@@ -164,16 +165,13 @@ fn main() -> Result<()> {
             .with_exporters(exporters)
             .init()
             .expect("Failed to setup metrics");
-
-        ctrlc::set_handler(move || {
-            aperturec_metrics::stop();
-            std::process::exit(0);
-        })
-        .expect("ctrlc");
+        metrics_started = true;
     }
 
     client::run_client(config.clone())?;
-    aperturec_metrics::stop();
+    if metrics_started {
+        aperturec_metrics::stop();
+    }
 
     Ok(())
 }
