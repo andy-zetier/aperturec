@@ -246,6 +246,6 @@ package:push-deb:
     - gem install package_cloud
     - ./ci/scripts/package_upload.sh
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
   needs:
     - job: package:create-deb
