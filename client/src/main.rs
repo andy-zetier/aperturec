@@ -54,8 +54,8 @@ struct Args {
     #[arg(index = 2)]
     root_program: Option<String>,
 
-    /// IP address of the server including control channel port. Eg. 10.10.10.11:46454 or
-    /// [::1]:46454
+    /// Hostname or IP address of the server, optionally including a control port. Eg. mybox.com,
+    /// 10.10.10.10:46454, myotherbox.io:12345, [::1]
     #[arg(index = 1)]
     server_address: String,
 
@@ -115,20 +115,12 @@ fn main() -> Result<()> {
     let config = client::ConfigurationBuilder::default()
         .decoder_max(decoder_max)
         .name(gethostname().into_string().unwrap())
-        .server_addr(args.server_address.parse().expect(
-                "Invalid server address. Must include control channel port number. eg '65.56.128.5:12345'"))
-        .bind_address(format!(
-                "{}:{}",
-                if args.server_address.starts_with("127.0.0.1:") {
-                    String::from("127.0.0.1")
-                } else {
-                    String::from("0.0.0.0")
-                },
-                args.decoder_port_start).parse().expect("Invalid bind_address or port_start"))
+        .server_addr(args.server_address)
+        .decoder_port_start(args.decoder_port_start)
         .win_height(dims[1])
         .win_width(dims[0])
         .id(args.temp_client_id)
-        .max_fps(Duration::from_secs_f32(1.0/(args.fps_max as f32)))
+        .max_fps(Duration::from_secs_f32(1.0 / (args.fps_max as f32)))
         .keepalive_timeout(Duration::from_secs(args.keepalive_timeout))
         .root_program(args.root_program)
         .build()?;

@@ -26,7 +26,7 @@ use derive_builder::Builder;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::ErrorKind;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +36,8 @@ use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
 const VERSION_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
 const VERSION_MINOR: &str = env!("CARGO_PKG_VERSION_MINOR");
 const VERSION_PATCH: &str = env!("CARGO_PKG_VERSION_PATCH");
+
+const DEFAULT_SERVER_CC_PORT: u16 = 46452;
 
 //
 // Internal position representation
@@ -200,7 +202,34 @@ async fn new_async_udp_client(
         .expect("Failed to Connect")
 }
 
-async fn new_async_tcp_client_retry(
+async fn new_async_tcp_client_retry_from_host(
+    host: &str,
+    port: u16,
+    retry: Duration,
+) -> Result<(SocketAddr, tcp::Client<tcp::Connected>)> {
+    log::info!("Attempting to connect to {}:{}", host, port);
+    'retry: loop {
+        'sa: for sa in (host, port).to_socket_addrs()? {
+            log::info!("Connecting to {}", sa);
+            match tcp::Client::new_blocking(sa).try_transition().await {
+                Ok(client) => break 'retry Ok((sa, client)),
+                Err(recovered) => {
+                    log::warn!("Failed to connect to {}: {}", sa, recovered.error);
+                    continue 'sa;
+                }
+            };
+        }
+        log::error!(
+            "Failed to connect to {}:{}, retrying in {:?}...",
+            host,
+            port,
+            retry
+        );
+        tokio::time::sleep(retry).await;
+    }
+}
+
+async fn new_async_tcp_client_retry_from_addr(
     addr: SocketAddr,
     retry: Duration,
 ) -> tcp::Client<tcp::Connected> {
@@ -215,7 +244,7 @@ async fn new_async_tcp_client_retry(
                 retry
             ),
         }
-        thread::sleep(retry);
+        tokio::time::sleep(retry).await;
     }
 }
 
@@ -226,8 +255,8 @@ async fn new_async_tcp_client_retry(
 pub struct Configuration {
     pub decoder_max: u16,
     pub name: String,
-    pub server_addr: SocketAddr,
-    pub bind_address: SocketAddr,
+    pub server_addr: String,
+    pub decoder_port_start: u16,
     pub id: u64,
     pub max_fps: Duration,
     pub keepalive_timeout: Duration,
@@ -264,8 +293,6 @@ impl ClientDecoder {
 
 pub struct Client {
     config: Configuration,
-    decoders: BTreeMap<u16, ClientDecoder>,
-    event_port: Option<u16>,
     async_rt: tokio::runtime::Runtime,
     id: u64,
     server_name: Option<String>,
@@ -274,6 +301,11 @@ pub struct Client {
     heartbeat_response_interval: Duration,
     control_jh: Option<thread::JoinHandle<()>>,
     should_stop: Arc<AtomicBool>,
+    server_addr: Option<IpAddr>,
+    server_control_port: Option<u16>,
+    server_event_port: Option<u16>,
+    bind_addr: Option<IpAddr>,
+    decoders: BTreeMap<u16, ClientDecoder>,
 }
 
 impl Client {
@@ -287,8 +319,6 @@ impl Client {
 
         Self {
             config: config.clone(),
-            decoders,
-            event_port: None,
             async_rt,
             id,
             server_name: None,
@@ -315,6 +345,11 @@ impl Client {
 
             control_jh: None,
             should_stop: Arc::new(AtomicBool::new(false)),
+            server_addr: None,
+            server_control_port: None,
+            server_event_port: None,
+            bind_addr: None,
+            decoders,
         }
     }
 
@@ -417,8 +452,6 @@ impl Client {
     }
 
     fn setup_decoders(&mut self, itc: &ItcChannels) -> Result<()> {
-        let port_start = self.config.bind_address.port();
-
         assert!(
             itc.img_to_decoder_rxs.len() == self.config.decoder_max.into(),
             "img_to_decoder_rxs.len() != decoder_max ({} != {})",
@@ -429,20 +462,20 @@ impl Client {
         for (rem_port, decoder) in &self.decoders {
             let decoder_id = decoder.id;
             let remote_port = *rem_port;
-            let local_port = if port_start == 0 {
+            let local_port = if self.config.decoder_port_start == 0 {
                 0
             } else {
-                port_start + decoder_id
+                self.config.decoder_port_start + decoder_id
             };
 
-            let mut decoder_addr = self.config.server_addr;
-            decoder_addr.set_port(remote_port);
+            let encoder_addr =
+                SocketAddr::from((self.server_addr.expect("server addr not set"), remote_port));
 
             let udp_client = self
                 .async_rt
                 .block_on(self.async_rt.spawn(new_async_udp_client(
-                    decoder_addr,
-                    SocketAddr::new(self.config.bind_address.ip(), local_port),
+                    encoder_addr,
+                    SocketAddr::new(self.bind_addr.expect("bind addr not set"), local_port),
                 )))
                 .expect("Failed to create UDP client");
 
@@ -467,7 +500,7 @@ impl Client {
                             log::warn!(
                                 "[decoder {}] Failed to send keepalive to {}: {}",
                                 local_port,
-                                decoder_addr,
+                                encoder_addr,
                                 err
                             );
                         }
@@ -731,21 +764,33 @@ impl Client {
     }
 
     fn setup_control_channel(&mut self, itc: &ItcChannels) -> Result<()> {
-        let control_to_ui_tx = itc.control_to_ui_tx.clone();
+        let (server_host, server_cc_port) = match self.config.server_addr.rsplit_once(":") {
+            Some((host, port)) => (host.to_string(), port.parse::<u16>()?),
+            None => (self.config.server_addr.clone(), DEFAULT_SERVER_CC_PORT),
+        };
 
-        log::info!("Connecting to {}...", &self.config.server_addr);
-        let tcp_client = self
-            .async_rt
-            .block_on(self.async_rt.spawn(new_async_tcp_client_retry(
-                self.config.server_addr,
-                self.tcp_retry_interval,
-            )))
-            .expect("Failed to create control channel TCP connection");
+        let retry_interval = self.tcp_retry_interval.clone();
+        let (cc_socket_addr, tcp_client) =
+            self.async_rt.block_on(self.async_rt.spawn(async move {
+                new_async_tcp_client_retry_from_host(&server_host, server_cc_port, retry_interval)
+                    .await
+            }))??;
+        let server_addr = cc_socket_addr.ip();
+        self.server_addr = Some(server_addr);
+        self.server_control_port = Some(cc_socket_addr.port());
+        self.bind_addr = Some(match (server_addr.is_loopback(), server_addr.is_ipv4()) {
+            (true, true) => Ipv4Addr::LOCALHOST.into(),
+            (true, false) => Ipv6Addr::LOCALHOST.into(),
+            (false, true) => Ipv4Addr::UNSPECIFIED.into(),
+            (false, false) => Ipv6Addr::UNSPECIFIED.into(),
+        });
+
+        let control_to_ui_tx = itc.control_to_ui_tx.clone();
+        let client_cc = ClientControlChannel::new(tcp_client);
 
         let ci = self.generate_client_init();
         log::debug!("{:#?}", &ci);
 
-        let client_cc = ClientControlChannel::new(tcp_client);
         let (mut client_cc_read, mut client_cc_write) = client_cc.split();
         client_cc_write.send(ci.into())?;
 
@@ -764,7 +809,7 @@ impl Client {
         //
         self.id = si.client_id;
         self.server_name = Some(si.server_name);
-        self.event_port = Some(si.event_port.try_into().expect("Invalid event port"));
+        self.server_event_port = Some(si.event_port.try_into().expect("Invalid event port"));
         let display_size = si.display_size.expect("No display size provided");
         self.config.win_height = display_size.height;
         self.config.win_width = display_size.width;
@@ -1000,11 +1045,13 @@ impl Client {
 
     fn setup_event_channel(&self, itc: &ItcChannels) -> Result<()> {
         let event_rx = itc.event_from_ui_rx.take().unwrap();
-        let mut event_addr = self.config.server_addr;
-        event_addr.set_port(*self.event_port.as_ref().unwrap());
+        let event_addr = SocketAddr::from((
+            self.server_addr.expect("server addr not set"),
+            self.server_event_port.expect("client addr not set"),
+        ));
         let tcp_client = self
             .async_rt
-            .block_on(self.async_rt.spawn(new_async_tcp_client_retry(
+            .block_on(self.async_rt.spawn(new_async_tcp_client_retry_from_addr(
                 event_addr,
                 self.tcp_retry_interval,
             )))
@@ -1121,24 +1168,29 @@ mod test {
         });
     }
 
-    fn generate_configuration(dec_max: u16, width: u64, height: u64) -> Configuration {
+    fn generate_configuration(
+        dec_max: u16,
+        width: u64,
+        height: u64,
+        decoder_port_start: u16,
+    ) -> Configuration {
         ConfigurationBuilder::default()
             .decoder_max(dec_max)
             .name(String::from("test_client"))
-            .server_addr("127.0.0.1:8765".parse().unwrap())
-            .bind_address("127.0.0.1:0".parse().unwrap())
+            .server_addr(String::from("127.0.0.1:8765"))
             .win_width(width)
             .win_height(height)
             .id(1234)
             .max_fps(Duration::from_secs((1 / 30u16).into()))
             .keepalive_timeout(Duration::from_secs(1))
             .root_program(Some("glxgears".into()))
+            .decoder_port_start(decoder_port_start)
             .build()
             .expect("Failed to build Configuration!")
     }
 
     fn generate_default_configuration() -> Configuration {
-        generate_configuration(4, 800, 600)
+        generate_configuration(4, 800, 600, 46454)
     }
 
     fn is_udp_port_open(port: u16) -> bool {
@@ -1148,9 +1200,8 @@ mod test {
         }
     }
 
-    async fn new_async_tcp_server(addr: String) -> tcp::Server<tcp::Accepted> {
-        let addr: SocketAddr = addr.parse().expect("Failed to parse SocketAddr");
-        tcp::Server::new_blocking(addr)
+    async fn new_async_tcp_server(addr: IpAddr, port: u16) -> tcp::Server<tcp::Accepted> {
+        tcp::Server::new_blocking(SocketAddr::from((addr, port)))
             .try_transition()
             .await
             .expect("Failed to Listen")
@@ -1172,14 +1223,17 @@ mod test {
     fn setup_decoders() {
         setup();
         let begin_port = 8653;
-        let mut config = generate_default_configuration();
-        config.bind_address.set_port(begin_port);
+        let config = generate_configuration(4, 800, 600, begin_port);
         let itc = ItcChannels::new(&config);
         let mut client = Client::new(&config);
 
         for i in 0..config.decoder_max {
             client.decoders.insert(1234 + i, ClientDecoder::new(i));
         }
+
+        let localhost: IpAddr = "127.0.0.1".parse().expect("localhost IP");
+        client.server_addr = Some(localhost);
+        client.bind_addr = Some(localhost);
 
         client
             .setup_decoders(&itc)
@@ -1206,6 +1260,12 @@ mod test {
         // Use a short retry interval for the test
         client.tcp_retry_interval = std::time::Duration::from_millis(100);
 
+        let server_sa: SocketAddr = client
+            .config
+            .server_addr
+            .parse()
+            .expect("Parse server addr");
+
         //
         // spawn fake server
         //
@@ -1216,9 +1276,7 @@ mod test {
                 .expect("Failed to build tokio Runtime");
 
             let tcp_server = async_rt
-                .block_on(
-                    async_rt.spawn(new_async_tcp_server(client.config.server_addr.to_string())),
-                )
+                .block_on(async_rt.spawn(new_async_tcp_server(server_sa.ip(), server_sa.port())))
                 .expect("Failed to create TCP server");
             let mut server_cc = ServerControlChannel::new(tcp_server);
             let _ci = loop {
@@ -1249,7 +1307,7 @@ mod test {
             .setup_control_channel(&itc)
             .expect("Failed to startup Control Channel");
         assert_eq!(client.server_name, Some(String::from("test_server")));
-        assert_eq!(client.event_port, Some(1234));
+        assert_eq!(client.server_event_port, Some(1234));
     }
 
     #[test]
@@ -1262,6 +1320,9 @@ mod test {
         // Use a short retry interval for the test
         client.tcp_retry_interval = std::time::Duration::from_millis(100);
 
+        let server_addr: IpAddr = "127.0.0.1".parse().expect("server IP");
+        let event_port = 8764;
+
         //
         // Spawn fake server
         //
@@ -1271,11 +1332,8 @@ mod test {
                 .build()
                 .expect("Failed to build tokio Runtime");
 
-            let mut event_addr = client.config.server_addr.clone();
-            event_addr.set_port(8764);
-
             let tcp_server = async_rt
-                .block_on(async_rt.spawn(new_async_tcp_server(event_addr.to_string())))
+                .block_on(async_rt.spawn(new_async_tcp_server(server_addr.clone(), event_port)))
                 .expect("Failed to create TCP server");
             let mut server_cc = ServerEventChannel::new(tcp_server);
             let _event = loop {
@@ -1286,7 +1344,8 @@ mod test {
             };
         });
 
-        client.event_port = Some(8764);
+        client.server_addr = Some(server_addr);
+        client.server_event_port = Some(event_port);
         client
             .setup_event_channel(&itc)
             .expect("Failed to setup Event Channel");
