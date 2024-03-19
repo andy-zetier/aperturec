@@ -91,12 +91,18 @@ create-images:build:
         IMAGE_BASE: !reference [.images:fedora]
         ARCHITECTURE: !reference [.architectures:all]
         IMAGE_TARGET: !reference [.targets:all]
+      - OS_VARIANT: fedora
+        IMAGE_BASE: fedora:rawhide
+        ARCHITECTURE: amd64
+        IMAGE_TARGET: client-image-windows
 
-create-images:deploy-multiarch:
+create-images:deploy-manifest:
   stage: create-images
   image:
     name: mplatform/manifest-tool:alpine
     entrypoint: [""]
+  variables:
+    PLATFORMS: linux/amd64,linux/arm64
   extends:
     - .runner-arch:independent
     - .create-images
@@ -108,7 +114,7 @@ create-images:deploy-multiarch:
       --password $CI_REGISTRY_PASSWORD
       push
       from-args
-      --platforms linux/amd64,linux/arm64
+      --platforms $PLATFORMS
       --template "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-ARCH-$IMAGE_BASE"
       --target "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_BASE"
   parallel:
@@ -119,20 +125,22 @@ create-images:deploy-multiarch:
       - OS_VARIANT: fedora
         IMAGE_BASE: !reference [.images:fedora]
         IMAGE_TARGET: !reference [.targets:all]
+      - OS_VARIANT: fedora
+        IMAGE_BASE: fedora:rawhide
+        ARCHITECTURE: amd64
+        IMAGE_TARGET: client-image-windows
+        PLATFORMS: linux/amd64
   needs:
     - job: create-images:build
 
-.cargo:
+.custom-image:
   interruptible: true
   variables:
     OS_VARIANT: debian
     IMAGE_BASE: ubuntu:20.04
-    IMAGE_TARGET: rust-image
     IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
     IMAGE: "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_BASE"
   image: $IMAGE
-  before_script:
-    - export CARGO_ARGS=`sed -e 's/^/-p aperturec-/g' -e 's/,/ -p aperturec-/g' -e 's/_/-/g' <<< $CRATES`
   rules:
     - if: $CI_COMMIT_BRANCH
       changes:
@@ -145,6 +153,14 @@ create-images:deploy-multiarch:
     - if: $CI_COMMIT_BRANCH
       variables:
         IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
+
+.cargo:
+  extends: .custom-image
+  interruptible: true
+  variables:
+    IMAGE_TARGET: rust-image
+  before_script:
+    - export CARGO_ARGS=`sed -e 's/^/-p aperturec-/g' -e 's/,/ -p aperturec-/g' -e 's/_/-/g' <<< $CRATES`
 
 cargo:check-build-test:
   stage: check-build-test
@@ -176,10 +192,34 @@ cargo:check-build-test:
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
   needs:
-    - job: create-images:deploy-multiarch
+    - job: create-images:deploy-manifest
       optional: true
   artifacts:
     paths: [target/release/aperturec-$CRATES-$IMAGE_BASE-$ARCHITECTURE]
+
+cargo:check-build-windows-client:
+  stage: check-build-test
+  extends:
+    - .runner-arch:dependent
+    - .cargo
+  script:
+    - cargo fmt $CARGO_ARGS -- --check
+    - cargo build $CARGO_ARGS
+    - mkdir test_executables
+    - cargo test $CARGO_ARGS -q --no-run --message-format=json | jq -r 'select(.profile.test == true) | .filenames[]' | xargs -I {} cp {} test_executables/
+    - cargo build $CARGO_ARGS --release
+    - mv target/x86_64-pc-windows-gnu/release/aperturec-$CRATES.exe .
+    - git diff-index --quiet HEAD
+  variables:
+    CRATES: client
+    IMAGE_BASE: fedora:rawhide
+    IMAGE_TARGET: client-image-windows
+    ARCHITECTURE: amd64
+  needs:
+    - job: create-images:deploy-manifest
+      optional: true
+  artifacts:
+    paths: [test_executables, aperturec-$CRATES.exe]
 
 cargo:doc:
   stage: doc
@@ -201,6 +241,23 @@ cargo:doc:
         IMAGE_TARGET: client-image
   needs:
     - job: cargo:check-build-test
+
+package:windows-client:
+  stage: package
+  extends:
+    - .runner-arch:dependent
+    - .custom-image
+  script:
+    - $CI_PROJECT_DIR/ci/scripts/create-windows-package.sh
+  variables:
+    CRATES: client
+    IMAGE_BASE: fedora:rawhide
+    IMAGE_TARGET: client-image-windows
+    ARCHITECTURE: amd64
+  needs:
+    - job: cargo:check-build-windows-client
+  artifacts:
+    paths: [aperturec-client-win.zip]
 
 package:create-deb:
   stage: package

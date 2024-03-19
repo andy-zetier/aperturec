@@ -34,6 +34,25 @@ RUN $APT_UPDATE && $APT_INSTALL tzdata libgtk-3-dev lsb-release && $APT_CLEAN
 FROM --platform=${ARCHITECTURE} rust-image as client-image-fedora
 RUN $DNF_INSTALL tzdata gtk3-devel && $DNF_CLEAN
 
+FROM --platform=${ARCHITECTURE} base-image-fedora as pe-util-build-windows
+RUN $DNF_INSTALL -y gcc-c++ boost-devel libstdc++-static glibc-static && $DNF_CLEAN
+RUN git clone https://github.com/gsauthof/pe-util
+WORKDIR pe-util
+RUN git submodule update --init
+RUN mkdir build
+WORKDIR build
+RUN cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-static" -DCMAKE_FIND_LIBRARY_SUFFIXES=".a"
+RUN make
+
+FROM --platform=${ARCHITECTURE} rust-image as client-image-windows
+COPY --from=pe-util-build-windows /root/pe-util/build/peldd /usr/bin/peldd
+RUN $DNF_INSTALL mingw64-gcc mingw64-freetype mingw64-cairo mingw64-harfbuzz mingw64-pango mingw64-poppler mingw64-gtk3 mingw64-winpthreads-static mingw64-glib2-static mingw64-openssl boost zip jq && $DNF_CLEAN
+ENV PKG_CONFIG_ALLOW_CROSS=1
+ENV PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/sys-root/mingw/lib/pkgconfig/
+ENV GTK_INSTALL_PATH=/usr/x86_64-w64-mingw32/sys-root/mingw/
+ENV CARGO_BUILD_TARGET=x86_64-pc-windows-gnu
+RUN rustup target add x86_64-pc-windows-gnu
+
 FROM --platform=${ARCHITECTURE} client-image-${OS_VARIANT} as client-image
 
 FROM --platform=${ARCHITECTURE} rust-image as server-image-debian
