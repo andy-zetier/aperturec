@@ -25,6 +25,9 @@ rand = "0.8.5"
 sysinfo = "0.29.10"
 tokio = { version = "1.32.0", features = ["full"] }
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.54", features=["Win32_UI_Input_KeyboardAndMouse"]}
+
 [package.metadata.deb]
 copyright = "2024, Zetier Inc."
 maintainer = "ApertureC Team <aperturec@zetier.com>"

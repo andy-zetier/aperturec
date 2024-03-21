@@ -17,6 +17,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
+
 use crossbeam_channel::{unbounded, Receiver, Sender};
 
 pub struct ItcChannels {
@@ -111,15 +114,54 @@ impl KeyboardShortcut {
     }
 }
 
+// Converts a Windows virtual key code to the OEM scan code using the native Windows API.
+// Reason driving this function (and using the unsafe Windows API) is that when working with GTK,
+// the keycode associated with the EventKey on Windows ends up being the virtual key code
+// (see https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes) whereas
+// the `keycode` crate that we use for mapping keycodes to Xkb expects the Windows OEM scan code.
+//
+// # Arguments
+//
+// * `virtual_key` - The virtual key code to convert.
+//
+// # Returns
+//
+// Returns the scan code corresponding to the virtual key code.
+#[cfg(target_os = "windows")]
+fn convert_win_virtual_key_to_scan_code(virtual_key: u32) -> anyhow::Result<u32> {
+    let scancode = unsafe { MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC_EX) };
+    if scancode == 0 {
+        // MapVirtualKeyW returns 0 if it fails to convert the virtual key code
+        anyhow::bail!(
+            "Failed to convert virtual key code {:#X} to scan code",
+            virtual_key
+        )
+    }
+    Ok(scancode)
+}
+
 fn gtk_key_to_x11(key: &gtk::gdk::EventKey) -> u16 {
     let keycode = key.keycode().expect("Failed to get keycode!");
-    let mapping = if cfg!(target_os = "macos") {
-        KeyMapping::Mac(keycode)
-    } else if cfg!(target_os = "windows") {
-        KeyMapping::Win(keycode)
-    } else {
-        KeyMapping::Xkb(keycode)
+
+    let mapping = {
+        #[cfg(target_os = "macos")]
+        {
+            KeyMapping::Mac(keycode)
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let scancode = convert_win_virtual_key_to_scan_code(keycode as u32)
+                .unwrap_or_else(|err| panic!("{}", err));
+            KeyMapping::Win(scancode as u16)
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            KeyMapping::Xkb(keycode)
+        }
     };
+
     let map = KeyMap::try_from(mapping).expect("Could not convert native key code");
     map.xkb
 }
