@@ -158,25 +158,23 @@ async fn main() -> Result<()> {
     let mut listening = server.try_transition().await.expect("failed listening");
 
     loop {
-        let cc_accepted: Server<ControlChannelAccepted<_>> = try_transition_continue!(
-            listening,
-            listening,
-            |e| log::error!("Error accepting CC: {}", e)
-        );
-        let client_authed = try_transition_continue!(cc_accepted, listening, |e| log::error!(
-            "Error authenticating client: {}",
-            e
-        ));
-        let channels_accepted = try_transition_continue!(
-            client_authed,
-            listening,
-            |e| log::error!("Error accepting EC or MC: {}", e)
-        );
+        let cc_accepted: Server<ControlChannelAccepted<_>> =
+            try_transition_continue_async!(listening, listening, |e| async move {
+                log::error!("Error accepting CC: {}", e)
+            });
+        let client_authed =
+            try_transition_continue_async!(cc_accepted, listening, |e| async move {
+                log::error!("Error authenticating client: {}", e)
+            });
+        let channels_accepted =
+            try_transition_continue_async!(client_authed, listening, |e| async move {
+                log::error!("Error accepting EC or MC: {}", e)
+            });
 
-        let running = try_transition_continue!(channels_accepted, listening, |e| log::error!(
-            "Error starting session: {}",
-            e
-        ));
+        let running =
+            try_transition_continue_async!(channels_accepted, listening, |e| async move {
+                log::error!("Error starting session: {}", e)
+            });
 
         let session_complete = match running.try_transition().await {
             Ok(session_complete) => {
@@ -189,6 +187,6 @@ async fn main() -> Result<()> {
             }
         };
 
-        listening = transition!(session_complete, ChannelsListening<_>);
+        listening = transition_async!(session_complete, ChannelsListening<_>);
     }
 }

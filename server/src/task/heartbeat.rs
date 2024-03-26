@@ -2,11 +2,8 @@ use anyhow::{anyhow, Result};
 
 use aperturec_protocol::control as cm;
 use aperturec_protocol::control::server_to_client as cm_s2c;
-use aperturec_state_machine::{
-    Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
-};
+use aperturec_state_machine::*;
 use aperturec_trace::log;
-use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use linear_map::set::LinearSet;
@@ -75,14 +72,13 @@ impl Task<Running> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<Running, Created> for Task<Created> {
+impl AsyncTryTransitionable<Running, Created> for Task<Created> {
     type SuccessStateful = Task<Running>;
     type FailureStateful = Task<Created>;
     type Error = anyhow::Error;
 
     async fn try_transition(
-        mut self,
+        self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let task_ct = CancellationToken::new();
         let ct = task_ct.clone();
@@ -121,6 +117,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                             Err(join_error) => break Err(anyhow!("Failed to join HB resp task: {}", join_error)),
                         };
                         if unacked_hb_reqs.contains(&expired_hb_resp_id) {
+                            log::warn!("No response received for HB {} in time", expired_hb_resp_id);
                             self.state.cc_send_tx.send(cm::ServerGoodbye::new(cm::ServerGoodbyeReason::NetworkError.into()).into()).await?;
                             log::trace!("Sent server goodbye message");
                             break Err(anyhow!("Did not receive heartbeat response for {:?} in required interval {:?}", expired_hb_resp_id, self.state.hb_resp_interval));
@@ -149,8 +146,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<Terminated, Terminated> for Task<Running> {
+impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
     type SuccessStateful = Task<Terminated>;
     type FailureStateful = Task<Terminated>;
     type Error = anyhow::Error;
@@ -178,10 +174,10 @@ impl TryTransitionable<Terminated, Terminated> for Task<Running> {
     }
 }
 
-impl Transitionable<Terminated> for Task<Running> {
+impl AsyncTransitionable<Terminated> for Task<Running> {
     type NextStateful = Task<Terminated>;
 
-    fn transition(self) -> Self::NextStateful {
+    async fn transition(self) -> Self::NextStateful {
         self.stop();
         match Handle::current().block_on(async move {
             let task = self.state.task;

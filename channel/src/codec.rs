@@ -5,143 +5,143 @@ pub mod reliable {
     use aperturec_protocol::*;
     use prost::Message;
     use std::error::Error;
-    use std::io::{self, BufRead, Read, Write};
+    use std::io::{ErrorKind, Read, Write};
     use std::marker::PhantomData;
-    use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
-
-    const BUF_READER_CAPACITY: usize = 4096 * 32;
-
-    fn fill_buf_reader<R: Read>(reader: &mut std::io::BufReader<R>) -> anyhow::Result<()> {
-        let curr_bytes_in_buffer = reader.buffer().len();
-        match reader.fill_buf() {
-            Ok(buffer) => {
-                aperturec_metrics::builtins::rx_bytes(buffer.len() - curr_bytes_in_buffer);
-            }
-            Err(e) => {
-                if e.kind() != io::ErrorKind::Interrupted && e.kind() != io::ErrorKind::WouldBlock {
-                    return Err(e.into());
-                }
-            }
-        }
-
-        Ok(())
-    }
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
     fn do_receive<R: Read, RM: Message + Default>(
         reader: &mut std::io::BufReader<R>,
+        buf: &mut Vec<u8>,
     ) -> anyhow::Result<RM> {
-        if reader.buffer().is_empty() {
-            fill_buf_reader(reader)?;
+        if buf.is_empty() {
+            buf.resize(1, 0);
+            reader.read_exact(&mut buf[0..])?;
+            aperturec_metrics::builtins::rx_bytes(1);
         }
 
-        let msg_length = loop {
-            match prost::decode_length_delimiter(reader.buffer()) {
-                Ok(msg_length) => break msg_length,
-                Err(decode_err) => {
-                    if reader.buffer().len() >= 10 {
-                        Err(decode_err)?;
-                    }
-
-                    fill_buf_reader(reader)?;
+        let msg_len = loop {
+            match prost::decode_length_delimiter(&**buf) {
+                Ok(delim) => break delim,
+                Err(_) => {
+                    let cur_len = buf.len();
+                    buf.resize(cur_len + 1, 0);
+                    reader.read_exact(&mut buf[cur_len..])?;
+                    aperturec_metrics::builtins::rx_bytes(1);
                 }
             }
         };
 
-        let length_delimiter_len = prost::length_delimiter_len(msg_length);
-        reader.consume(length_delimiter_len);
+        let delim_len = prost::length_delimiter_len(msg_len);
+        let total_len = delim_len + msg_len;
+        buf.resize(total_len, 0);
+        reader.read_exact(&mut buf[delim_len..])?;
+        aperturec_metrics::builtins::rx_bytes(msg_len);
 
-        while reader.buffer().len() < msg_length {
-            fill_buf_reader(reader)?;
-        }
+        let msg = match RM::decode(&buf[delim_len..]) {
+            Ok(msg) => msg,
+            Err(e) => return Err(e.into()),
+        };
 
-        let msg = RM::decode(&reader.buffer()[..msg_length])?;
-        reader.consume(msg_length);
+        buf.clear();
         Ok(msg)
     }
 
     fn do_send<W: Write, SM: Message>(
         writer: &mut W,
         msg: SM,
-        write_bytes: &mut Vec<u8>,
+        buf: &mut Vec<u8>,
     ) -> anyhow::Result<()> {
-        write_bytes.extend(msg.encode_length_delimited_to_vec());
+        let msg_len = msg.encoded_len();
+        let delim_len = prost::length_delimiter_len(msg_len);
+        let nbytes = msg_len + delim_len;
 
-        while !write_bytes.is_empty() {
-            match writer.write(write_bytes) {
-                Ok(nbytes_written) => {
-                    aperturec_metrics::builtins::tx_bytes(nbytes_written);
-                    write_bytes.drain(..nbytes_written);
-                }
-                Err(e) => {
-                    if e.kind() != io::ErrorKind::WouldBlock
-                        && e.kind() != io::ErrorKind::Interrupted
-                    {
-                        return Err(e.into());
-                    }
-                }
-            }
+        if buf.len() < nbytes {
+            buf.resize(nbytes, 0);
         }
+        msg.encode_length_delimited(&mut &mut buf[..])?;
+
+        writer.write_all(&buf[..nbytes])?;
         writer.flush()?;
+        aperturec_metrics::builtins::tx_bytes(nbytes);
         Ok(())
     }
 
-    async fn fill_buf_reader_async<R: AsyncRead + Unpin>(
+    async fn read_and_extend<R: AsyncRead + Unpin>(
+        nbytes: usize,
         reader: &mut tokio::io::BufReader<R>,
+        buf: &mut Vec<u8>,
     ) -> anyhow::Result<()> {
-        let curr_bytes_in_buffer = reader.buffer().len();
-        reader.fill_buf().await?;
-        aperturec_metrics::builtins::rx_bytes(reader.buffer().len() - curr_bytes_in_buffer);
+        let mut nbytes_read = 0;
+        let mut b = [0_u8; 1];
+        while nbytes_read < nbytes {
+            nbytes_read += match reader.read(&mut b).await {
+                Ok(nbytes) => {
+                    aperturec_metrics::builtins::rx_bytes(nbytes);
+                    nbytes
+                }
+                Err(e) => {
+                    if e.kind() != ErrorKind::Interrupted {
+                        return Err(e.into());
+                    } else {
+                        0
+                    }
+                }
+            };
+            buf.push(b[0]);
+        }
         Ok(())
     }
 
     async fn do_receive_async<R: AsyncRead + Unpin, RM: Message + Default>(
         reader: &mut tokio::io::BufReader<R>,
+        buf: &mut Vec<u8>,
     ) -> anyhow::Result<RM> {
-        let msg_length = loop {
-            match prost::decode_length_delimiter(reader.buffer()) {
-                Ok(msg_length) => break msg_length,
-                Err(e) => {
-                    if reader.buffer().len() >= 10 {
-                        return Err(e.into());
-                    }
+        if buf.is_empty() {
+            read_and_extend(1, reader, buf).await?;
+        }
 
-                    fill_buf_reader_async(reader).await?;
-                }
+        let msg_len = loop {
+            match prost::decode_length_delimiter(&**buf) {
+                Ok(delim) => break delim,
+                Err(_) => read_and_extend(1, reader, buf).await?,
             }
         };
-        let length_delimiter_len = prost::length_delimiter_len(msg_length);
-        reader.consume(length_delimiter_len);
 
-        while reader.buffer().len() < msg_length {
-            fill_buf_reader_async(reader).await?;
-        }
-        let msg = RM::decode(&reader.buffer()[..msg_length])?;
-        reader.consume(msg_length);
+        let delim_len = prost::length_delimiter_len(msg_len);
+        read_and_extend(msg_len, reader, buf).await?;
+
+        let msg = match RM::decode(&buf[delim_len..]) {
+            Ok(msg) => msg,
+            Err(e) => return Err(e.into()),
+        };
+
+        buf.clear();
         Ok(msg)
     }
 
     async fn do_send_async<W: AsyncWrite + Unpin, SM: Message>(
         writer: &mut W,
         msg: SM,
+        buf: &mut Vec<u8>,
     ) -> anyhow::Result<()> {
-        let mut buf = msg.encode_length_delimited_to_vec();
-        let total_write_size = buf.len();
-        let mut buf_slice: &[u8] = &mut buf;
-        let mut nbytes_written = 0;
-        loop {
-            nbytes_written += writer.write_buf(&mut buf_slice).await?;
-            aperturec_metrics::builtins::tx_bytes(nbytes_written);
-            if nbytes_written >= total_write_size {
-                break;
-            }
-            buf_slice = &buf_slice[nbytes_written..];
+        let msg_len = msg.encoded_len();
+        let delim_len = prost::length_delimiter_len(msg_len);
+        let nbytes = msg_len + delim_len;
+
+        if buf.len() < nbytes {
+            buf.resize(nbytes, 0);
         }
+        msg.encode_length_delimited(&mut &mut buf[..])?;
+
+        writer.write_all(&buf[..nbytes]).await?;
         writer.flush().await?;
+        aperturec_metrics::builtins::tx_bytes(nbytes);
         Ok(())
     }
 
     pub struct ReceiverSimplex<R: Read, ApiRm, WireRm> {
         reader: std::io::BufReader<R>,
+        receive_buf: Vec<u8>,
         _api_rm: PhantomData<ApiRm>,
         _wire_rm: PhantomData<WireRm>,
     }
@@ -149,7 +149,8 @@ pub mod reliable {
     impl<R: Read, ApiRm, WireRm> ReceiverSimplex<R, ApiRm, WireRm> {
         pub fn new(reader: R) -> Self {
             ReceiverSimplex {
-                reader: std::io::BufReader::with_capacity(BUF_READER_CAPACITY, reader),
+                reader: std::io::BufReader::new(reader),
+                receive_buf: vec![],
                 _api_rm: PhantomData,
                 _wire_rm: PhantomData,
             }
@@ -182,12 +183,13 @@ pub mod reliable {
         type Message = ApiRm;
 
         fn receive(&mut self) -> anyhow::Result<Self::Message> {
-            Ok(do_receive::<R, WireRm>(&mut self.reader)?.try_into()?)
+            Ok(do_receive::<R, WireRm>(&mut self.reader, &mut self.receive_buf)?.try_into()?)
         }
     }
 
     pub struct AsyncReceiverSimplex<R: AsyncRead, ApiRm, WireRm> {
         reader: tokio::io::BufReader<R>,
+        receive_buf: Vec<u8>,
         _api_rm: PhantomData<ApiRm>,
         _wire_rm: PhantomData<WireRm>,
     }
@@ -195,7 +197,8 @@ pub mod reliable {
     impl<R: AsyncRead, ApiRm, WireRm> AsyncReceiverSimplex<R, ApiRm, WireRm> {
         pub fn new(reader: R) -> Self {
             AsyncReceiverSimplex {
-                reader: tokio::io::BufReader::with_capacity(BUF_READER_CAPACITY, reader),
+                reader: tokio::io::BufReader::new(reader),
+                receive_buf: vec![],
                 _api_rm: PhantomData,
                 _wire_rm: PhantomData,
             }
@@ -228,15 +231,17 @@ pub mod reliable {
         type Message = ApiRm;
 
         async fn receive(&mut self) -> anyhow::Result<Self::Message> {
-            Ok(do_receive_async::<R, WireRm>(&mut self.reader)
-                .await?
-                .try_into()?)
+            Ok(
+                do_receive_async::<R, WireRm>(&mut self.reader, &mut self.receive_buf)
+                    .await?
+                    .try_into()?,
+            )
         }
     }
 
     pub struct SenderSimplex<W: Write, ApiSm, WireSm> {
         writer: W,
-        write_bytes: Vec<u8>,
+        send_buf: Vec<u8>,
         _api_sm: PhantomData<ApiSm>,
         _wire_sm: PhantomData<WireSm>,
     }
@@ -245,7 +250,7 @@ pub mod reliable {
         pub fn new(writer: W) -> Self {
             SenderSimplex {
                 writer,
-                write_bytes: vec![],
+                send_buf: vec![],
                 _api_sm: PhantomData,
                 _wire_sm: PhantomData,
             }
@@ -278,12 +283,13 @@ pub mod reliable {
         type Message = ApiSm;
 
         fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-            do_send::<W, WireSm>(&mut self.writer, msg.try_into()?, &mut self.write_bytes)
+            do_send::<W, WireSm>(&mut self.writer, msg.try_into()?, &mut self.send_buf)
         }
     }
 
     pub struct AsyncSenderSimplex<W: AsyncWrite, ApiSm, WireSm> {
         writer: W,
+        send_buf: Vec<u8>,
         _api_sm: PhantomData<ApiSm>,
         _wire_sm: PhantomData<WireSm>,
     }
@@ -292,6 +298,7 @@ pub mod reliable {
         pub fn new(writer: W) -> Self {
             AsyncSenderSimplex {
                 writer,
+                send_buf: vec![],
                 _api_sm: PhantomData,
                 _wire_sm: PhantomData,
             }
@@ -324,13 +331,14 @@ pub mod reliable {
         type Message = ApiSm;
 
         async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-            do_send_async::<W, WireSm>(&mut self.writer, msg.try_into()?).await
+            do_send_async::<W, WireSm>(&mut self.writer, msg.try_into()?, &mut self.send_buf).await
         }
     }
 
     pub struct Duplex<C: Read + Write, ApiRm, ApiSm, WireRm, WireSm> {
         common_rw: std::io::BufReader<C>,
-        write_bytes: Vec<u8>,
+        receive_buf: Vec<u8>,
+        send_buf: Vec<u8>,
         _api_rm: PhantomData<ApiRm>,
         _api_sm: PhantomData<ApiSm>,
         _wire_rm: PhantomData<WireRm>,
@@ -340,8 +348,9 @@ pub mod reliable {
     impl<C: Read + Write, ApiRm, ApiSm, WireRm, WireSm> Duplex<C, ApiRm, ApiSm, WireRm, WireSm> {
         pub fn new(common_rw: C) -> Self {
             Duplex {
-                common_rw: std::io::BufReader::with_capacity(BUF_READER_CAPACITY, common_rw),
-                write_bytes: vec![],
+                common_rw: std::io::BufReader::new(common_rw),
+                receive_buf: vec![],
+                send_buf: vec![],
                 _api_rm: PhantomData,
                 _api_sm: PhantomData,
                 _wire_rm: PhantomData,
@@ -368,12 +377,13 @@ pub mod reliable {
             (
                 ReceiverSimplex {
                     reader: self.common_rw,
+                    receive_buf: self.receive_buf,
                     _api_rm: PhantomData,
                     _wire_rm: PhantomData,
                 },
                 SenderSimplex {
                     writer: wh,
-                    write_bytes: self.write_bytes,
+                    send_buf: self.send_buf,
                     _api_sm: PhantomData,
                     _wire_sm: PhantomData,
                 },
@@ -406,7 +416,7 @@ pub mod reliable {
     {
         type Message = ApiRm;
         fn receive(&mut self) -> anyhow::Result<ApiRm> {
-            Ok(do_receive::<C, WireRm>(&mut self.common_rw)?.try_into()?)
+            Ok(do_receive::<C, WireRm>(&mut self.common_rw, &mut self.receive_buf)?.try_into()?)
         }
     }
 
@@ -422,18 +432,25 @@ pub mod reliable {
             do_send::<C, WireSm>(
                 self.common_rw.get_mut(),
                 msg.try_into()?,
-                &mut self.write_bytes,
+                &mut self.send_buf,
             )
         }
     }
 
     pub struct AsyncDuplex<C: AsyncRead + AsyncWrite, ApiRm, ApiSm, WireRm, WireSm> {
         common_rw: tokio::io::BufReader<C>,
+        receive_buf: Vec<u8>,
+        send_buf: Vec<u8>,
         _api_rm: PhantomData<ApiRm>,
         _api_sm: PhantomData<ApiSm>,
         _wire_rm: PhantomData<WireRm>,
         _wire_sm: PhantomData<WireSm>,
     }
+
+    pub type AsyncDuplexSendHalf<C, ApiSm, WireSm> =
+        AsyncSenderSimplex<tokio::io::WriteHalf<C>, ApiSm, WireSm>;
+    pub type AsyncDuplexReceiveHalf<C, ApiRm, WireRm> =
+        AsyncReceiverSimplex<tokio::io::ReadHalf<C>, ApiRm, WireRm>;
 
     impl<C, ApiRm, ApiSm, WireRm, WireSm> AsyncDuplex<C, ApiRm, ApiSm, WireRm, WireSm>
     where
@@ -441,7 +458,9 @@ pub mod reliable {
     {
         pub fn new(common_rw: C) -> Self {
             AsyncDuplex {
-                common_rw: tokio::io::BufReader::with_capacity(BUF_READER_CAPACITY, common_rw),
+                common_rw: tokio::io::BufReader::new(common_rw),
+                receive_buf: vec![],
+                send_buf: vec![],
                 _api_rm: PhantomData,
                 _api_sm: PhantomData,
                 _wire_rm: PhantomData,
@@ -456,16 +475,16 @@ pub mod reliable {
         pub fn split(
             self,
         ) -> (
-            AsyncSenderSimplex<tokio::io::WriteHalf<C>, ApiSm, WireSm>,
-            AsyncReceiverSimplex<tokio::io::ReadHalf<C>, ApiRm, WireRm>,
+            AsyncDuplexSendHalf<C, ApiSm, WireSm>,
+            AsyncDuplexReceiveHalf<C, ApiRm, WireRm>,
         ) {
             let (rh, wh) = tokio::io::split(self.common_rw.into_inner());
             (AsyncSenderSimplex::new(wh), AsyncReceiverSimplex::new(rh))
         }
 
         pub fn unsplit(
-            tx: AsyncSenderSimplex<tokio::io::WriteHalf<C>, ApiSm, WireSm>,
-            rx: AsyncReceiverSimplex<tokio::io::ReadHalf<C>, ApiRm, WireRm>,
+            tx: AsyncDuplexSendHalf<C, ApiSm, WireSm>,
+            rx: AsyncDuplexReceiveHalf<C, ApiRm, WireRm>,
         ) -> Self {
             let common_rw = rx.into_inner().unsplit(tx.into_inner());
             AsyncDuplex::new(common_rw)
@@ -499,9 +518,11 @@ pub mod reliable {
     {
         type Message = ApiRm;
         async fn receive(&mut self) -> anyhow::Result<ApiRm> {
-            Ok(do_receive_async::<C, WireRm>(&mut self.common_rw)
-                .await?
-                .try_into()?)
+            Ok(
+                do_receive_async::<C, WireRm>(&mut self.common_rw, &mut self.receive_buf)
+                    .await?
+                    .try_into()?,
+            )
         }
     }
 
@@ -516,7 +537,7 @@ pub mod reliable {
     {
         type Message = ApiSm;
         async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-            do_send_async(&mut self.common_rw, msg.try_into()?).await
+            do_send_async(&mut self.common_rw, msg.try_into()?, &mut self.send_buf).await
         }
     }
 
@@ -951,38 +972,36 @@ mod tcp_test {
     use aperturec_protocol::common::*;
     use aperturec_protocol::control;
     use aperturec_protocol::event;
-    use aperturec_state_machine::TryTransitionable;
+    use aperturec_state_machine::*;
     use std::net::SocketAddr;
     use std::time::Duration;
 
-    macro_rules! tcp_client_and_server {
-        ($ip:expr, $port:expr) => {{
-            let tcp_server = tcp::Server::new(SocketAddr::from(($ip, $port)))
-                .try_transition()
-                .await
-                .expect("failed to listen");
-            let tcp_client = tcp::Client::new(SocketAddr::from(($ip, $port)))
-                .try_transition()
-                .await
-                .expect("Failed to connect");
-            let tcp_server = tcp_server.try_transition().await.expect("Failed to accept");
-            (tcp_client, tcp_server)
-        }};
+    fn tcp_client_and_server<A: Into<SocketAddr>>(
+        addr: A,
+    ) -> (tcp::Client<tcp::Connected>, tcp::Server<tcp::Accepted>) {
+        let addr = addr.into();
+        let server = try_transition!(tcp::Server::new(addr.clone()), tcp::Listening)
+            .expect("Failed to listen");
+        let client = try_transition!(tcp::Client::new(addr), tcp::Connected)
+            .expect("Failed to connect client");
+        let server = try_transition!(server, tcp::Accepted).expect("Failed to accept server");
+        (client, server)
     }
 
-    macro_rules! async_tcp_client_and_server {
-        ($ip:expr, $port:expr) => {{
-            let (sync_client, sync_server) = tcp_client_and_server!($ip, $port);
-            let async_client = sync_client
-                .try_transition()
-                .await
-                .expect("failed to make client async");
-            let async_server = sync_server
-                .try_transition()
-                .await
-                .expect("failed to make server async");
-            (async_client, async_server)
-        }};
+    async fn async_tcp_client_and_server<A: Into<SocketAddr>>(
+        addr: A,
+    ) -> (
+        tcp::Client<tcp::AsyncConnected>,
+        tcp::Server<tcp::AsyncAccepted>,
+    ) {
+        let addr = addr.into();
+        let server = try_transition_async!(tcp::Server::new(addr.clone()), tcp::AsyncListening)
+            .expect("Failed to listen");
+        let client = try_transition_async!(tcp::Client::new(addr), tcp::AsyncConnected)
+            .expect("Failed to connect client");
+        let server =
+            try_transition_async!(server, tcp::AsyncAccepted).expect("Failed to accept server");
+        (client, server)
     }
 
     macro_rules! client_init {
@@ -1046,9 +1065,9 @@ mod tcp_test {
         }};
     }
 
-    #[tokio::test]
-    async fn cc_client_init() {
-        let (tcp_client, tcp_server) = tcp_client_and_server!([127, 0, 0, 1], 9000);
+    #[test]
+    fn cc_client_init() {
+        let (tcp_client, tcp_server) = tcp_client_and_server(([127, 0, 0, 1], 9000));
         let mut server_cc = ServerControlChannel::new(tcp_server);
         let mut client_cc = ClientControlChannel::new(tcp_client);
         let ci: control::client_to_server::Message = client_init!(1234_u32).into();
@@ -1064,7 +1083,7 @@ mod tcp_test {
 
     #[tokio::test]
     async fn cc_client_init_async() {
-        let (tcp_client, tcp_server) = async_tcp_client_and_server!([127, 0, 0, 1], 9001);
+        let (tcp_client, tcp_server) = async_tcp_client_and_server(([127, 0, 0, 1], 9001)).await;
         let mut server_cc = AsyncServerControlChannel::new(tcp_server);
         let mut client_cc = AsyncClientControlChannel::new(tcp_client);
 
@@ -1083,9 +1102,9 @@ mod tcp_test {
         let _tcp_client = client_cc.into_inner();
     }
 
-    #[tokio::test]
-    async fn cc_server_init() {
-        let (tcp_client, tcp_server) = tcp_client_and_server!([127, 0, 0, 1], 9002);
+    #[test]
+    fn cc_server_init() {
+        let (tcp_client, tcp_server) = tcp_client_and_server(([127, 0, 0, 1], 9002));
         let mut server_cc = ServerControlChannel::new(tcp_server);
         let mut client_cc = ClientControlChannel::new(tcp_client);
 
@@ -1102,7 +1121,7 @@ mod tcp_test {
 
     #[tokio::test]
     async fn cc_server_init_async() {
-        let (tcp_client, tcp_server) = async_tcp_client_and_server!([127, 0, 0, 1], 9003);
+        let (tcp_client, tcp_server) = async_tcp_client_and_server(([127, 0, 0, 1], 9003)).await;
         let mut server_cc = AsyncServerControlChannel::new(tcp_server);
         let mut client_cc = AsyncClientControlChannel::new(tcp_client);
 
@@ -1121,9 +1140,9 @@ mod tcp_test {
         let _tcp_client = client_cc.into_inner();
     }
 
-    #[tokio::test]
-    async fn ec_init() {
-        let (tcp_client, tcp_server) = tcp_client_and_server!([127, 0, 0, 1], 9004);
+    #[test]
+    fn ec_init() {
+        let (tcp_client, tcp_server) = tcp_client_and_server(([127, 0, 0, 1], 9004));
         let mut server_ec = ServerEventChannel::new(tcp_server);
         let mut client_ec = ClientEventChannel::new(tcp_client);
 
@@ -1136,7 +1155,7 @@ mod tcp_test {
 
     #[tokio::test]
     async fn ec_init_async() {
-        let (tcp_client, tcp_server) = async_tcp_client_and_server!([127, 0, 0, 1], 9005);
+        let (tcp_client, tcp_server) = async_tcp_client_and_server(([127, 0, 0, 1], 9005)).await;
         let mut server_ec = AsyncServerEventChannel::new(tcp_server);
         let mut client_ec = AsyncClientEventChannel::new(tcp_client);
 
@@ -1161,35 +1180,32 @@ mod udp_test {
     use aperturec_protocol::media as mm;
     use aperturec_protocol::media::client_to_server as mm_c2s;
     use aperturec_protocol::media::server_to_client as mm_s2c;
-    use aperturec_state_machine::TryTransitionable;
+    use aperturec_state_machine::*;
     use std::net::SocketAddr;
 
-    macro_rules! udp_client_and_server {
-        ($ip:expr, $port:expr) => {{
-            let udp_server = udp::Server::new(SocketAddr::from(($ip, $port)))
-                .try_transition()
-                .await
-                .expect("Failed to listen");
-            let udp_client = udp::Client::new(
-                SocketAddr::from(($ip, $port)),
-                Some(SocketAddr::from(($ip, 0))),
-            )
-            .try_transition()
-            .await
-            .expect("Failed to connect");
-            (udp_client, udp_server)
-        }};
+    fn udp_client_and_server<A: Into<SocketAddr>>(
+        addr: A,
+    ) -> (udp::Client<udp::Connected>, udp::Server<udp::Listening>) {
+        let addr = addr.into();
+        let server = try_transition!(udp::Server::new(addr.clone()), udp::Listening)
+            .expect("Failed to listen");
+        let client = try_transition!(udp::Client::new(addr, None), udp::Connected)
+            .expect("Failed to connect client");
+        (client, server)
     }
 
-    macro_rules! async_udp_client_and_sync_server {
-        ($ip:expr, $port:expr) => {{
-            let (sync_client, sync_server) = udp_client_and_server!($ip, $port);
-            let async_client = sync_client
-                .try_transition()
-                .await
-                .expect("Failed to make client async");
-            (async_client, sync_server)
-        }};
+    async fn async_udp_client_and_server<A: Into<SocketAddr>>(
+        addr: A,
+    ) -> (
+        udp::Client<udp::AsyncConnected>,
+        udp::Server<udp::AsyncListening>,
+    ) {
+        let addr = addr.into();
+        let server = try_transition_async!(udp::Server::new(addr.clone()), udp::AsyncListening)
+            .expect("Failed to listen");
+        let client = try_transition_async!(udp::Client::new(addr, None), udp::AsyncConnected)
+            .expect("Failed to connect client");
+        (client, server)
     }
 
     macro_rules! test_c2s_media_message {
@@ -1213,30 +1229,20 @@ mod udp_test {
         }};
     }
 
-    #[tokio::test]
-    async fn mc_init() {
-        let (sync_client, sync_server) = udp_client_and_server!([127, 0, 0, 1], 10000);
-        let mut rs_mc: ReceiverSimplex<
-            udp::Server<udp::Listening>,
-            mm_c2s::Message,
-            mm::ClientToServer,
-        > = ReceiverSimplex::new(sync_server);
+    #[test]
+    fn mc_init() {
+        let (sync_client, sync_server) = udp_client_and_server(([127, 0, 0, 1], 10000));
         let mut client_mc = ClientMediaChannel::new(sync_client);
         let keepalive: mm_c2s::Message = test_c2s_media_message!().into();
         let msg: mm_s2c::Message = test_s2c_media_message!().into();
         client_mc
             .send(keepalive.clone())
             .expect("failed to send media keepalive 1");
-        let recvd = rs_mc
-            .receive()
-            .expect("failed to receive media keepalive 1");
-        assert_eq!(keepalive, recvd);
-        let sync_server = rs_mc
-            .into_inner()
-            .try_transition()
-            .await
-            .expect("mc server connected");
-        let mut server_mc = ServerMediaChannel::new(sync_server);
+        let mut server_mc = ServerMediaChannel::new(
+            sync_server
+                .try_transition()
+                .expect("failed to connect server"),
+        );
         server_mc
             .send(msg.clone())
             .expect("failed to send media message 1");
@@ -1265,12 +1271,8 @@ mod udp_test {
 
     #[tokio::test]
     async fn mc_init_async() {
-        let (async_client, sync_server) = async_udp_client_and_sync_server!([127, 0, 0, 1], 10001);
-        let mut rs_mc: ReceiverSimplex<
-            udp::Server<udp::Listening>,
-            mm_c2s::Message,
-            mm::ClientToServer,
-        > = ReceiverSimplex::new(sync_server);
+        let (async_client, async_server) =
+            async_udp_client_and_server(([127, 0, 0, 1], 10001)).await;
         let mut client_mc = AsyncClientMediaChannel::new(async_client);
         let keepalive: mm_c2s::Message = test_c2s_media_message!().into();
         let msg: mm_s2c::Message = test_s2c_media_message!().into();
@@ -1278,19 +1280,17 @@ mod udp_test {
             .send(keepalive.clone())
             .await
             .expect("failed to send async media keepalive 1");
-        let recvd = rs_mc
+        let mut server_mc = AsyncServerMediaChannel::new(
+            async_server
+                .try_transition()
+                .await
+                .expect("failed to connect server"),
+        );
+        let recvd = server_mc
             .receive()
+            .await
             .expect("failed to receive async media keepalive 1");
         assert_eq!(keepalive, recvd);
-        let async_server = rs_mc
-            .into_inner()
-            .try_transition()
-            .await
-            .expect("Connected")
-            .try_transition()
-            .await
-            .expect("Async Server");
-        let mut server_mc = AsyncServerMediaChannel::new(async_server);
         server_mc
             .send(msg.clone())
             .await

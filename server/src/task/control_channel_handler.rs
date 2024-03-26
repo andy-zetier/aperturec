@@ -4,14 +4,10 @@ use aperturec_channel::*;
 use aperturec_protocol::control as cm;
 use aperturec_protocol::control::client_to_server as cm_c2s;
 use aperturec_protocol::control::server_to_client as cm_s2c;
-use aperturec_state_machine::{
-    transition, Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
-};
+use aperturec_state_machine::*;
 use aperturec_trace::log;
 use aperturec_trace::queue::{self, enq, trace_queue};
-use async_trait::async_trait;
 use futures::StreamExt;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
@@ -45,7 +41,7 @@ pub struct Running {
 
 #[derive(State, Debug)]
 pub struct Terminated {
-    cc: tcp::Server<tcp::Listening>,
+    cc: tcp::Server<tcp::AsyncListening>,
 }
 
 pub struct Channels {
@@ -81,13 +77,13 @@ impl Task<Created> {
         )
     }
 
-    pub fn into_control_channel_server(self) -> tcp::Server<tcp::Listening> {
-        transition!(self.state.cc.into_inner(), tcp::Listening)
+    pub async fn into_control_channel_server(self) -> tcp::Server<tcp::AsyncListening> {
+        transition_async!(self.state.cc.into_inner(), tcp::AsyncListening)
     }
 }
 
 impl Task<Terminated> {
-    pub fn into_control_channel_server(self) -> tcp::Server<tcp::Listening> {
+    pub fn into_control_channel_server(self) -> tcp::Server<tcp::AsyncListening> {
         self.state.cc
     }
 }
@@ -102,14 +98,13 @@ impl Task<Running> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<Running, Created> for Task<Created> {
+impl AsyncTryTransitionable<Running, Created> for Task<Created> {
     type SuccessStateful = Task<Running>;
     type FailureStateful = Task<Created>;
     type Error = anyhow::Error;
 
     async fn try_transition(
-        mut self,
+        self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let (mut cc_tx, mut cc_rx) = self.state.cc.split();
 
@@ -130,7 +125,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
                         match msg_opt {
                             Some(msg) => {
                                 log::trace!("Sending {:?}", msg);
-                                if let Err(err) = cc_tx.send(msg.clone()).await {
+                                if let Err(err) = cc_tx.send(msg).await {
                                     break Err::<(), _>(anyhow!("Unable to send CC msg: {}", err));
                                 }
                             },
@@ -206,8 +201,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<Terminated, Terminated> for Task<Running> {
+impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
     type SuccessStateful = Task<Terminated>;
     type FailureStateful = Task<Terminated>;
     type Error = anyhow::Error;
@@ -259,23 +253,21 @@ impl TryTransitionable<Terminated, Terminated> for Task<Running> {
 
         Ok(Task {
             state: Terminated {
-                cc: transition!(
+                cc: transition_async!(
                     AsyncServerControlChannel::unsplit(cc_tx, cc_rx).into_inner(),
-                    tcp::Listening
+                    tcp::AsyncListening
                 ),
             },
         })
     }
 }
 
-impl Transitionable<Terminated> for Task<Running> {
+impl AsyncTransitionable<Terminated> for Task<Running> {
     type NextStateful = Task<Terminated>;
 
-    fn transition(self) -> Self::NextStateful {
+    async fn transition(self) -> Self::NextStateful {
         self.stop();
-        match Handle::current()
-            .block_on(async move { (self.state.tx_subtask.await, self.state.rx_subtask.await) })
-        {
+        match futures::join!(self.state.tx_subtask, self.state.rx_subtask) {
             (Ok((cc_tx, tx_res)), Ok((cc_rx, rx_res))) => {
                 if let Err(tx_err) = tx_res {
                     log::error!("CC Tx subtask encountered error: {}", tx_err);
@@ -285,9 +277,9 @@ impl Transitionable<Terminated> for Task<Running> {
                 }
                 Task {
                     state: Terminated {
-                        cc: transition!(
+                        cc: transition_async!(
                             AsyncServerControlChannel::unsplit(cc_tx, cc_rx).into_inner(),
-                            tcp::Listening
+                            tcp::AsyncListening
                         ),
                     },
                 }

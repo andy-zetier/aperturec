@@ -1,5 +1,4 @@
 #![doc = include_str!("../README.md")]
-use async_trait::async_trait;
 
 #[macro_use]
 mod macros;
@@ -61,11 +60,44 @@ where
     /// The [`Stateful`] that the transition will force the current [`Stateful`] into
     type NextStateful: Stateful<State = N>;
 
-    /// Transition [`self`] into the [`Self::NextStateful`]
+    /// Transition [`Self`] into the [`Self::NextStateful`]
     ///
-    /// Note that [`self`] is consumed by this method. This enforces that a [`Stateful`] cannot
+    /// Note that [`Self`] is consumed by this method. This enforces that a [`Stateful`] cannot
     /// exist in multiple [`State`]s at the same time.
     fn transition(self) -> Self::NextStateful;
+}
+
+mod async_transitionable {
+    use super::*;
+
+    /// Async variant of [`Transitionable`]
+    #[trait_variant::make(AsyncTransitionable: Send + Sync)]
+    pub trait LocalAsyncTransitionable<N>: Stateful
+    where
+        N: State,
+    {
+        /// The [`Stateful`] that the transition will force the current [`Stateful`] into
+        type NextStateful: Stateful<State = N>;
+
+        /// Transition [`Self`] into the [`Self::NextStateful`]
+        ///
+        /// Note that [`Self`] is consumed by this method. This enforces that a [`Stateful`] cannot
+        /// exist in multiple [`State`]s at the same time.
+        async fn transition(self) -> Self::NextStateful;
+    }
+}
+pub use async_transitionable::AsyncTransitionable;
+
+impl<S, N> AsyncTransitionable<N> for S
+where
+    S: Stateful + Transitionable<N> + Send + Sync,
+    N: State,
+{
+    type NextStateful = S::NextStateful;
+
+    async fn transition(self) -> Self::NextStateful {
+        <Self as Transitionable<N>>::transition(self)
+    }
 }
 
 /// [`Stateful`]s which can transition back to themselves
@@ -123,7 +155,6 @@ where
 ///
 /// Many implementors will return the current [`Stateful`] if they fail. [`Stateful`]s with this
 /// behavior should implement the [`SelfTransitionable`] trait.
-#[async_trait]
 pub trait TryTransitionable<N, R>: Transitionable<R>
 where
     N: State,
@@ -143,10 +174,41 @@ where
     ///
     /// On success, a new [`Self::SuccessStateful`] is returned. On failure, a [`Recovered`] is
     /// returned, with the new [`Self::FailureStateful`] and the error which caused the failure
-    async fn try_transition(
+    fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>>;
 }
+
+mod async_try_transitionable {
+    use super::*;
+
+    /// Async variant of [`TryTransitionable`]
+    #[trait_variant::make(AsyncTryTransitionable: Send + Sync)]
+    pub trait LocalAsyncTryTransitionable<N, R>: AsyncTransitionable<R>
+    where
+        N: State,
+        R: State,
+    {
+        /// New [`Stateful`] if the [`Self::try_transition`] succeeds
+        type SuccessStateful: Stateful<State = N>;
+
+        /// New [`Stateful`] if the [`Self::try_transition`] fails. This will be encapsulated in a
+        /// [`Recovered`]
+        type FailureStateful: Stateful<State = R>;
+
+        /// The error which caused the [`Self::try_transition`] to fail
+        type Error: Into<anyhow::Error>;
+
+        /// Attempt to transition the current [`Stateful`] into [`Self::SuccessStateful`]
+        ///
+        /// On success, a new [`Self::SuccessStateful`] is returned. On failure, a [`Recovered`] is
+        /// returned, with the new [`Self::FailureStateful`] and the error which caused the failure
+        async fn try_transition(
+            self,
+        ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>>;
+    }
+}
+pub use async_try_transitionable::AsyncTryTransitionable;
 
 /// Convenience trait to convert [`Result<S, Recovered<F, E>>`] into the error `E`
 ///
@@ -167,7 +229,7 @@ where
 
     /// Get the underlying error from a failed [`TryTransitionable::try_transition`], or the new
     /// [`Stateful`] if the transition was successful.
-    fn as_error(self) -> Result<Self::SuccessStateful, Self::Error>;
+    fn into_error(self) -> Result<Self::SuccessStateful, Self::Error>;
 }
 
 impl<N, R, S, F, E> Bailable<N, R> for Result<S, Recovered<F, E>>
@@ -181,7 +243,7 @@ where
     type SuccessStateful = S;
     type Error = E;
 
-    fn as_error(self) -> Result<Self::SuccessStateful, Self::Error> {
+    fn into_error(self) -> Result<Self::SuccessStateful, Self::Error> {
         self.map_err(|recovered| recovered.error)
     }
 }
@@ -280,13 +342,12 @@ mod test {
             }
         }
 
-        #[async_trait::async_trait]
         impl TryTransitionable<C, A> for Machine<B> {
             type SuccessStateful = Machine<C>;
             type FailureStateful = Machine<A>;
             type Error = anyhow::Error;
 
-            async fn try_transition(
+            fn try_transition(
                 mut self,
             ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>>
             {
@@ -304,15 +365,10 @@ mod test {
         let a = Machine { state: A };
         let b: Machine<B> = a.transition();
 
-        let recovered = b.try_transition().await.err().unwrap();
+        let recovered = b.try_transition().err().unwrap();
         assert_eq!(recovered.stateful.state, A);
 
-        let success = recovered
-            .stateful
-            .transition()
-            .try_transition()
-            .await
-            .unwrap();
+        let success = recovered.stateful.transition().try_transition().unwrap();
         assert_eq!(success.state, C);
     }
 }

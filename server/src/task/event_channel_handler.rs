@@ -3,13 +3,9 @@ use crate::backend::Event;
 use anyhow::{anyhow, Result};
 use aperturec_channel::reliable::tcp;
 use aperturec_channel::*;
-use aperturec_state_machine::{
-    transition, Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
-};
+use aperturec_state_machine::*;
 use aperturec_trace::log;
 use aperturec_trace::queue::{self, enq, trace_queue};
-use async_trait::async_trait;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -37,7 +33,7 @@ pub struct Running {
 
 #[derive(State, Debug)]
 pub struct Terminated {
-    ec: tcp::Server<tcp::Listening>,
+    ec: tcp::Server<tcp::AsyncListening>,
 }
 
 pub struct Channels {
@@ -59,8 +55,8 @@ impl Task<Created> {
         )
     }
 
-    pub fn into_event_channel_server(self) -> tcp::Server<tcp::Listening> {
-        transition!(self.state.ec.into_inner(), tcp::Listening)
+    pub async fn into_event_channel_server(self) -> tcp::Server<tcp::AsyncListening> {
+        transition_async!(self.state.ec.into_inner(), tcp::AsyncListening)
     }
 }
 
@@ -75,13 +71,12 @@ impl Task<Running> {
 }
 
 impl Task<Terminated> {
-    pub fn into_event_channel_server(self) -> tcp::Server<tcp::Listening> {
+    pub fn into_event_channel_server(self) -> tcp::Server<tcp::AsyncListening> {
         self.state.ec
     }
 }
 
-#[async_trait]
-impl TryTransitionable<Running, Created> for Task<Created> {
+impl AsyncTryTransitionable<Running, Created> for Task<Created> {
     type SuccessStateful = Task<Running>;
     type FailureStateful = Task<Created>;
     type Error = anyhow::Error;
@@ -127,8 +122,7 @@ impl TryTransitionable<Running, Created> for Task<Created> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<Terminated, Terminated> for Task<Running> {
+impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
     type SuccessStateful = Task<Terminated>;
     type FailureStateful = Task<Terminated>;
     type Error = anyhow::Error;
@@ -140,7 +134,7 @@ impl TryTransitionable<Terminated, Terminated> for Task<Running> {
             Ok((ec, res)) => {
                 let stateful = Task {
                     state: Terminated {
-                        ec: transition!(ec.into_inner(), tcp::Listening),
+                        ec: transition_async!(ec.into_inner(), tcp::AsyncListening),
                     },
                 };
                 match res {
@@ -153,13 +147,13 @@ impl TryTransitionable<Terminated, Terminated> for Task<Running> {
     }
 }
 
-impl Transitionable<Terminated> for Task<Running> {
+impl AsyncTransitionable<Terminated> for Task<Running> {
     type NextStateful = Task<Terminated>;
 
-    fn transition(self) -> Self::NextStateful {
+    async fn transition(self) -> Self::NextStateful {
         self.state.ct.cancel();
         let task = self.state.task;
-        let ec = match Handle::current().block_on(task) {
+        let ec = match task.await {
             Ok((ec, Ok(()))) => ec,
             Ok((ec, Err(err))) => {
                 log::error!(
@@ -170,7 +164,7 @@ impl Transitionable<Terminated> for Task<Running> {
             }
             Err(join_err) => panic!("Event channel handler panicked: {}", join_err),
         };
-        let ec = transition!(ec.into_inner(), tcp::Listening);
+        let ec = transition_async!(ec.into_inner(), tcp::AsyncListening);
         Task {
             state: Terminated { ec },
         }

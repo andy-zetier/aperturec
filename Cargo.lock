@@ -131,7 +131,6 @@ dependencies = [
  "aperturec-protocol",
  "aperturec-state-machine",
  "aperturec-trace",
- "async-trait",
  "futures",
  "prost",
  "prost-types",
@@ -161,7 +160,6 @@ dependencies = [
  "prost-types",
  "rand",
  "sysinfo",
- "tokio",
  "windows",
 ]
 
@@ -206,7 +204,6 @@ dependencies = [
  "aperturec-protocol",
  "aperturec-state-machine",
  "aperturec-trace",
- "async-trait",
  "bytes",
  "clap 4.5.0",
  "criterion",
@@ -228,6 +225,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "trait-variant",
  "which 6.0.0",
  "xcb",
 ]
@@ -238,8 +236,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aperturec-state-machine-derive",
- "async-trait",
  "tokio",
+ "trait-variant",
 ]
 
 [[package]]
@@ -297,17 +295,6 @@ name = "ascii"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
-
-[[package]]
-name = "async-trait"
-version = "0.1.77"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c980ee35e870bd1a4d2c8294d4c04d0499e67bca1e4b5cefcc693c2fa00caea9"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.48",
-]
 
 [[package]]
 name = "atk"

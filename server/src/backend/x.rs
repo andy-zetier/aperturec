@@ -1,4 +1,4 @@
-use crate::backend::{Backend, DamageStream, Event, FramebufferUpdate};
+use crate::backend::{Backend, Event, FramebufferUpdate};
 use crate::task::encoder::*;
 
 use anyhow::{anyhow, bail, Result};
@@ -6,14 +6,12 @@ use aperturec_protocol::common::*;
 use aperturec_protocol::event as em;
 use aperturec_trace::log;
 use aperturec_trace::queue::{self, deq, enq, trace_queue};
-use async_trait::async_trait;
 use futures::{future, stream, Stream, StreamExt};
 use ndarray::{Array2, ShapeBuilder};
 use rand::distributions::{Alphanumeric, DistString};
 use shlex::Shlex;
 use std::fmt::{self, Debug, Formatter};
 use std::iter::Iterator;
-use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,7 +49,6 @@ pub struct X {
     _xvfb_proc: Child,
 }
 
-#[async_trait]
 impl Backend for X {
     fn root_process_exited(&self) -> bool {
         self.root_process_exited
@@ -78,7 +75,7 @@ impl Backend for X {
 
     async fn start_root_process<S>(&mut self, root_process: S, should_replace: bool) -> Result<()>
     where
-        S: AsRef<str> + Send,
+        S: AsRef<str> + Send + Sync,
     {
         if let Some((curr_root_process_cmdline, ref mut curr_root_process)) =
             self.root_process.as_mut()
@@ -154,31 +151,29 @@ impl Backend for X {
         })
     }
 
-    async fn damage_stream(&self) -> Result<DamageStream> {
+    async fn damage_stream(&self) -> Result<impl Stream<Item = Rect> + Send + Unpin + 'static> {
         let size = self.resolution().await?;
         let rect = Rect {
             origin: Point::new(0, 0),
             size,
         };
-        Ok(stream::iter([rect])
-            .chain(
-                self.connection
-                    .event_stream()?
-                    .filter_map(|event| match &event.0 {
-                        xcb::Event::Damage(damage::Event::Notify(notify_event)) => {
-                            future::ready(Some(notify_event.area()))
-                        }
-                        other_event => {
-                            log::warn!("Some unexpected event ignored: {:#?}", other_event);
-                            future::ready(None)
-                        }
-                    })
-                    .map(|xcb_rect| Rect {
-                        origin: Point::new(xcb_rect.x as usize, xcb_rect.y as usize),
-                        size: Size::new(xcb_rect.width as usize, xcb_rect.height as usize),
-                    }),
-            )
-            .boxed())
+        Ok(stream::iter([rect]).chain(
+            self.connection
+                .event_stream()?
+                .filter_map(|event| match &event.0 {
+                    xcb::Event::Damage(damage::Event::Notify(notify_event)) => {
+                        future::ready(Some(notify_event.area()))
+                    }
+                    other_event => {
+                        log::warn!("Some unexpected event ignored: {:#?}", other_event);
+                        future::ready(None)
+                    }
+                })
+                .map(|xcb_rect| Rect {
+                    origin: Point::new(xcb_rect.x as usize, xcb_rect.y as usize),
+                    size: Size::new(xcb_rect.width as usize, xcb_rect.height as usize),
+                }),
+        ))
     }
 
     async fn initialize<N>(max_width: N, max_height: N) -> Result<Self>
@@ -563,19 +558,19 @@ impl Debug for XConnection {
     }
 }
 
-type XEventStream = Pin<Box<dyn Stream<Item = Arc<XEvent>> + Send>>;
-
 impl XConnection {
-    fn event_stream(&self) -> Result<XEventStream> {
-        Ok(BroadcastStream::new(self.event_broadcast_rx.resubscribe())
-            .filter_map(|res| match res {
-                Ok(event) => future::ready(Some(event)),
-                Err(bcast_err) => {
-                    log::warn!("event bcast error: {}", bcast_err);
-                    future::ready(None)
-                }
-            })
-            .boxed())
+    fn event_stream(&self) -> Result<impl Stream<Item = Arc<XEvent>> + Send + Sync + Unpin> {
+        Ok(
+            BroadcastStream::new(self.event_broadcast_rx.resubscribe()).filter_map(
+                |res| match res {
+                    Ok(event) => future::ready(Some(event)),
+                    Err(bcast_err) => {
+                        log::warn!("event bcast error: {}", bcast_err);
+                        future::ready(None)
+                    }
+                },
+            ),
+        )
     }
 
     async fn checked_request_with_reply<R>(

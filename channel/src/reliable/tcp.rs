@@ -1,5 +1,4 @@
 use aperturec_state_machine::*;
-use async_trait::async_trait;
 use std::io;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -20,14 +19,20 @@ impl SelfTransitionable for Server<Closed> {}
 
 #[derive(State, Debug)]
 pub struct Listening {
-    listener: tokio::net::TcpListener,
+    listener: std::net::TcpListener,
 }
 impl SelfTransitionable for Server<Listening> {}
 
 #[derive(State, Debug)]
+pub struct AsyncListening {
+    listener: tokio::net::TcpListener,
+}
+impl SelfTransitionable for Server<AsyncListening> {}
+
+#[derive(State, Debug)]
 pub struct Accepted {
     stream: std::net::TcpStream,
-    listener: tokio::net::TcpListener,
+    listener: std::net::TcpListener,
 }
 
 impl AsRef<std::net::TcpStream> for Server<Accepted> {
@@ -61,25 +66,17 @@ impl Server<Closed> {
             addr: addr.into(),
         }
     }
-
-    pub fn new_blocking<A: Into<SocketAddr>>(addr: A) -> Self {
-        Server {
-            state: Closed,
-            addr: addr.into(),
-        }
-    }
 }
 
-#[async_trait]
 impl TryTransitionable<Listening, Closed> for Server<Closed> {
     type SuccessStateful = Server<Listening>;
     type FailureStateful = Server<Closed>;
     type Error = anyhow::Error;
 
-    async fn try_transition(
+    fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let listener = try_recover!(tokio::net::TcpListener::bind(self.addr).await, self);
+        let listener = try_recover!(std::net::TcpListener::bind(self.addr), self);
         let local_addr = try_recover!(listener.local_addr(), self);
 
         Ok(Server {
@@ -100,21 +97,49 @@ impl Transitionable<Closed> for Server<Listening> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<Accepted, Listening> for Server<Listening> {
-    type SuccessStateful = Server<Accepted>;
-    type FailureStateful = Server<Listening>;
+impl AsyncTryTransitionable<AsyncListening, Closed> for Server<Closed> {
+    type SuccessStateful = Server<AsyncListening>;
+    type FailureStateful = Server<Closed>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let (stream, _) = try_recover!(self.state.listener.accept().await, self, Listening);
-        let stream = try_recover!(stream.into_std(), self, Listening);
+        let listener = try_recover_async!(tokio::net::TcpListener::bind(self.addr), self);
+        let local_addr = try_recover!(listener.local_addr(), self);
+
+        Ok(Server {
+            state: AsyncListening { listener },
+            addr: local_addr,
+        })
+    }
+}
+
+impl Transitionable<Closed> for Server<AsyncListening> {
+    type NextStateful = Server<Closed>;
+
+    fn transition(self) -> Self::NextStateful {
+        Server {
+            addr: self.addr,
+            state: Closed,
+        }
+    }
+}
+
+impl TryTransitionable<Accepted, Listening> for Server<Listening> {
+    type SuccessStateful = Server<Accepted>;
+    type FailureStateful = Server<Listening>;
+    type Error = anyhow::Error;
+
+    fn try_transition(
+        self,
+    ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
+        let (stream, _) = try_recover!(self.state.listener.accept(), self, Listening);
 
         // Disable Nagle's algorithm for lower latency
         try_recover!(stream.set_nodelay(true), self, Listening);
 
+        try_recover!(stream.set_nonblocking(false), self, Listening);
         Ok(Server {
             state: Accepted {
                 stream,
@@ -125,18 +150,19 @@ impl TryTransitionable<Accepted, Listening> for Server<Listening> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<AsyncAccepted, Listening> for Server<Accepted> {
+impl AsyncTryTransitionable<AsyncAccepted, AsyncListening> for Server<AsyncListening> {
     type SuccessStateful = Server<AsyncAccepted>;
-    type FailureStateful = Server<Listening>;
+    type FailureStateful = Server<AsyncListening>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let std = try_recover!(self.state.stream.try_clone(), self, Listening);
-        try_recover!(std.set_nonblocking(true), self);
-        let stream = try_recover!(tokio::net::TcpStream::from_std(std), self, Listening);
+        let (stream, _) = try_recover_async!(self.state.listener.accept(), self, AsyncListening);
+
+        // Disable Nagle's algorithm for lower latency
+        try_recover!(stream.set_nodelay(true), self, AsyncListening);
+
         Ok(Server {
             state: AsyncAccepted {
                 stream,
@@ -160,12 +186,12 @@ impl Transitionable<Listening> for Server<Accepted> {
     }
 }
 
-impl Transitionable<Listening> for Server<AsyncAccepted> {
-    type NextStateful = Server<Listening>;
+impl Transitionable<AsyncListening> for Server<AsyncAccepted> {
+    type NextStateful = Server<AsyncListening>;
 
     fn transition(self) -> Self::NextStateful {
         Server {
-            state: Listening {
+            state: AsyncListening {
                 listener: self.state.listener,
             },
             addr: self.addr,
@@ -245,13 +271,6 @@ impl Client<Closed> {
             addr: addr.into(),
         }
     }
-
-    pub fn new_blocking<A: Into<SocketAddr>>(addr: A) -> Self {
-        Client {
-            state: Closed,
-            addr: addr.into(),
-        }
-    }
 }
 
 impl Clone for Client<Connected> {
@@ -269,26 +288,20 @@ impl Clone for Client<Connected> {
     }
 }
 
-#[async_trait]
 impl TryTransitionable<Connected, Closed> for Client<Closed> {
     type SuccessStateful = Client<Connected>;
     type FailureStateful = Client<Closed>;
     type Error = anyhow::Error;
 
-    async fn try_transition(
+    fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let socket = match self.addr {
-            SocketAddr::V4(_) => try_recover!(tokio::net::TcpSocket::new_v4(), self),
-            SocketAddr::V6(_) => try_recover!(tokio::net::TcpSocket::new_v6(), self),
-        };
-
-        let stream = try_recover!(socket.connect(self.addr).await, self);
-        let stream = try_recover!(stream.into_std(), self);
+        let stream = try_recover!(std::net::TcpStream::connect(self.addr), self);
 
         // Disable Nagle's algorithm for lower latency
         try_recover!(stream.set_nodelay(true), self);
 
+        try_recover!(stream.set_nonblocking(false), self);
         Ok(Client {
             addr: self.addr,
             state: Connected { stream },
@@ -296,8 +309,7 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<AsyncConnected, Closed> for Client<Connected> {
+impl AsyncTryTransitionable<AsyncConnected, Closed> for Client<Closed> {
     type SuccessStateful = Client<AsyncConnected>;
     type FailureStateful = Client<Closed>;
     type Error = anyhow::Error;
@@ -305,13 +317,13 @@ impl TryTransitionable<AsyncConnected, Closed> for Client<Connected> {
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let std: std::net::TcpStream = try_recover!(self.state.stream.try_clone(), self);
-        try_recover!(std.set_nonblocking(true), self, Closed);
-        let stream = try_recover!(tokio::net::TcpStream::from_std(std), self);
+        let stream = try_recover_async!(tokio::net::TcpStream::connect(self.addr), self);
 
+        // Disable Nagle's algorithm for lower latency
+        try_recover!(stream.set_nodelay(true), self);
         Ok(Client {
-            state: AsyncConnected { stream },
             addr: self.addr,
+            state: AsyncConnected { stream },
         })
     }
 }

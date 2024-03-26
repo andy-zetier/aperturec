@@ -6,12 +6,9 @@ use anyhow::{anyhow, Result};
 use aperturec_channel::{AsyncReceiver, AsyncSender};
 use aperturec_protocol::common::*;
 use aperturec_protocol::media as mm;
-use aperturec_state_machine::{
-    Recovered, SelfTransitionable, State, Stateful, Transitionable, TryTransitionable,
-};
+use aperturec_state_machine::*;
 use aperturec_trace::log;
 use aperturec_trace::queue::{self, deq_group, enq_group, trace_queue_group};
-use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use euclid::{Point2D, Size2D, UnknownUnit};
 use flate2::{Compress, Compression, FlushCompress};
@@ -200,6 +197,7 @@ fn encode(
 #[state(S)]
 pub struct Encoder<S: State> {
     state: S,
+    ct: CancellationToken,
 }
 
 #[derive(State, Debug)]
@@ -215,22 +213,16 @@ where
     fb_rx: mpsc::UnboundedReceiver<Arc<FramebufferUpdate>>,
     missed_frame_rx: mpsc::UnboundedReceiver<u64>,
     acked_frame_rx: mpsc::Receiver<u64>,
-    ct: CancellationToken,
-}
-
-impl<AsyncDuplex> SelfTransitionable for Encoder<Created<AsyncDuplex>> where
-    AsyncDuplex: AsyncSender<Message = mm_s2c::Message> + AsyncReceiver<Message = mm_c2s::Message>
-{
 }
 
 #[derive(State, Debug)]
 pub struct Running {
     task: JoinHandle<anyhow::Result<()>>,
-    ct: CancellationToken,
 }
 
 #[derive(State, Debug)]
 pub struct Terminated {}
+impl SelfTransitionable for Encoder<Terminated> {}
 
 #[derive(Debug)]
 pub struct Channels {
@@ -249,7 +241,6 @@ where
         dimension: &Dimension,
         send_recv: AsyncDuplex,
         codec: Codec,
-        ct: CancellationToken,
     ) -> (Self, Channels) {
         let (fb_tx, fb_rx) = mpsc::unbounded_channel();
         let (missed_frame_tx, missed_frame_rx) = mpsc::unbounded_channel();
@@ -265,8 +256,8 @@ where
                 fb_rx,
                 missed_frame_rx,
                 acked_frame_rx,
-                ct: ct.clone(),
             },
+            ct: CancellationToken::new(),
         };
         (
             enc,
@@ -840,13 +831,15 @@ impl CachedFramebuffer {
     }
 }
 
-#[async_trait]
-impl<AsyncDuplex> TryTransitionable<Running, Created<AsyncDuplex>> for Encoder<Created<AsyncDuplex>>
+impl<AsyncDuplex> AsyncTryTransitionable<Running, Terminated> for Encoder<Created<AsyncDuplex>>
 where
-    AsyncDuplex: AsyncSender<Message = mm_s2c::Message> + AsyncReceiver<Message = mm_c2s::Message>,
+    AsyncDuplex: AsyncSender<Message = mm_s2c::Message>
+        + AsyncReceiver<Message = mm_c2s::Message>
+        + Send
+        + Sync,
 {
     type SuccessStateful = Encoder<Running>;
-    type FailureStateful = Encoder<Created<AsyncDuplex>>;
+    type FailureStateful = Encoder<Terminated>;
     type Error = anyhow::Error;
 
     async fn try_transition(
@@ -882,7 +875,7 @@ where
             let cached_fb = cached_fb.clone();
             let in_flight = in_flight.clone();
             let responsible_sequence_nos = responsible_sequence_nos.clone();
-            let ct = self.state.ct.clone();
+            let ct = self.ct.clone();
             let mut max_acked_so_far = 0;
             tokio::spawn(async move {
                 loop {
@@ -932,7 +925,7 @@ where
         let mut damage_subtask: JoinHandle<anyhow::Result<()>> = {
             let mut fb_stream = UnboundedReceiverStream::new(self.state.fb_rx).fuse();
             let cached_fb = cached_fb.clone();
-            let ct = self.state.ct.clone();
+            let ct = self.ct.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -961,7 +954,7 @@ where
 
             let mut sequence_no = 0_u64;
 
-            let ct = self.state.ct.clone();
+            let ct = self.ct.clone();
             tokio::spawn(async move {
                 let mut dispatch_stream = ReceiverStream::new(dispatch_rx).fuse();
 
@@ -1088,7 +1081,7 @@ where
         let mut encoding_subtask: JoinHandle<anyhow::Result<()>> = {
             let cached_fb = cached_fb.clone();
             let mut dirty_fb_watch = cached_fb.lock().dirty_watch();
-            let ct = self.state.ct.clone();
+            let ct = self.ct.clone();
 
             tokio::spawn(async move {
                 loop {
@@ -1129,7 +1122,7 @@ where
             })
         };
 
-        let ct = self.state.ct.clone();
+        let ct = self.ct.clone();
         let task = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -1183,26 +1176,23 @@ where
         });
 
         Ok(Encoder {
-            state: Running {
-                task,
-                ct: self.state.ct,
-            },
+            state: Running { task },
+            ct: self.ct,
         })
     }
 }
 
-impl Encoder<Running> {
+impl<S: State> Encoder<S> {
     pub fn stop(&self) {
-        self.state.ct.cancel();
+        self.ct.cancel();
     }
 
     pub fn cancellation_token(&self) -> &CancellationToken {
-        &self.state.ct
+        &self.ct
     }
 }
 
-#[async_trait]
-impl TryTransitionable<Terminated, Terminated> for Encoder<Running> {
+impl AsyncTryTransitionable<Terminated, Terminated> for Encoder<Running> {
     type SuccessStateful = Encoder<Terminated>;
     type FailureStateful = Encoder<Terminated>;
     type Error = anyhow::Error;
@@ -1213,6 +1203,7 @@ impl TryTransitionable<Terminated, Terminated> for Encoder<Running> {
         let res_res = self.state.task.await;
         let stateful = Encoder {
             state: Terminated {},
+            ct: self.ct,
         };
         match res_res {
             Ok(Ok(())) => {
@@ -1231,16 +1222,38 @@ impl TryTransitionable<Terminated, Terminated> for Encoder<Running> {
     }
 }
 
-impl Transitionable<Terminated> for Encoder<Running> {
+impl AsyncTransitionable<Terminated> for Encoder<Running> {
     type NextStateful = Encoder<Terminated>;
 
-    fn transition(self) -> Self::NextStateful {
+    async fn transition(self) -> Self::NextStateful {
+        self.ct.cancel();
+        if let Err(e) = self.state.task.await {
+            log::error!("Encoder exited with error: {}", e);
+        }
         Encoder {
             state: Terminated {},
+            ct: self.ct,
         }
     }
 }
 
+impl<AsyncDuplex> AsyncTransitionable<Terminated> for Encoder<Created<AsyncDuplex>>
+where
+    AsyncDuplex: AsyncSender<Message = mm_s2c::Message>
+        + AsyncReceiver<Message = mm_c2s::Message>
+        + Send
+        + Sync,
+{
+    type NextStateful = Encoder<Terminated>;
+
+    async fn transition(self) -> Self::NextStateful {
+        self.ct.cancel();
+        Encoder {
+            state: Terminated {},
+            ct: self.ct,
+        }
+    }
+}
 #[cfg(test)]
 mod test {
     use super::*;

@@ -4,12 +4,10 @@ use anyhow::Result;
 use aperturec_protocol::common::*;
 use aperturec_protocol::event as em;
 use aperturec_protocol::event::client_to_server as em_c2s;
-use async_trait::async_trait;
 use futures::stream::Stream;
 use ndarray::{s, Array2, ArrayView2};
 use std::error::Error;
 use std::fmt;
-use std::pin::Pin;
 
 pub mod x;
 pub use x::X;
@@ -37,8 +35,6 @@ impl FramebufferUpdate {
         }
     }
 }
-
-pub type DamageStream = Pin<Box<dyn Stream<Item = Rect> + Send>>;
 
 #[derive(Debug)]
 pub enum Event {
@@ -97,20 +93,29 @@ impl TryFrom<em_c2s::Message> for Event {
     }
 }
 
-#[async_trait]
-pub trait Backend: Sized + Send + Sync + fmt::Debug {
-    async fn initialize<N>(max_width: N, max_height: N) -> Result<Self>
-    where
-        N: Into<Option<usize>> + Send;
-    async fn notify_event(&mut self, event: Event) -> Result<()>;
-    async fn cursor_bitmaps(&self) -> Result<Vec<CursorBitmap>>;
-    async fn set_resolution(&mut self, resolution: &Size) -> Result<()>;
-    async fn resolution(&self) -> Result<Size>;
-    async fn damage_stream(&self) -> Result<DamageStream>;
-    async fn capture_area(&self, area: Rect) -> Result<FramebufferUpdate>;
-    async fn start_root_process<S>(&mut self, root_process: S, should_replace: bool) -> Result<()>
-    where
-        S: AsRef<str> + Send;
-    async fn wait_root_process(&mut self) -> Result<()>;
-    fn root_process_exited(&self) -> bool;
+mod backend_trait {
+    use super::*;
+
+    #[trait_variant::make(Backend: Send + Sync)]
+    pub trait LocalBackend: Sized + Send + Sync + fmt::Debug {
+        async fn initialize<N>(max_width: N, max_height: N) -> Result<Self>
+        where
+            N: Into<Option<usize>> + Send + Sync;
+        async fn notify_event(&mut self, event: Event) -> Result<()>;
+        async fn cursor_bitmaps(&self) -> Result<Vec<CursorBitmap>>;
+        async fn set_resolution(&mut self, resolution: &Size) -> Result<()>;
+        async fn resolution(&self) -> Result<Size>;
+        async fn damage_stream(&self) -> Result<impl Stream<Item = Rect> + Send + Unpin + 'static>;
+        async fn capture_area(&self, area: Rect) -> Result<FramebufferUpdate>;
+        async fn start_root_process<S>(
+            &mut self,
+            root_process: S,
+            should_replace: bool,
+        ) -> Result<()>
+        where
+            S: AsRef<str> + Send + Sync;
+        async fn wait_root_process(&mut self) -> Result<()>;
+        fn root_process_exited(&self) -> bool;
+    }
 }
+pub use backend_trait::Backend;

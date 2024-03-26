@@ -3,17 +3,12 @@ use crate::task::encoder::{self, Encoder};
 use crate::task::event_channel_handler::EVENT_QUEUE;
 
 use anyhow::{anyhow, Result};
-use aperturec_channel::unreliable::udp;
 use aperturec_channel::AsyncServerMediaChannel;
 use aperturec_protocol::common::*;
 use aperturec_protocol::control as cm;
-use aperturec_state_machine::{
-    try_recover, try_transition_inner_recover, Recovered, SelfTransitionable, State, Stateful,
-    Transitionable, TryTransitionable,
-};
+use aperturec_state_machine::*;
 use aperturec_trace::log;
 use aperturec_trace::queue::deq;
-use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use std::collections::BTreeMap;
@@ -31,7 +26,7 @@ pub struct Task<S: State> {
     state: S,
 }
 
-#[derive(State, Debug)]
+#[derive(State)]
 pub struct Created<B: Backend + 'static> {
     backend: B,
     event_rx: mpsc::UnboundedReceiver<Event>,
@@ -39,7 +34,7 @@ pub struct Created<B: Backend + 'static> {
     missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
     acked_seq_rx: mpsc::UnboundedReceiver<cm::DecoderSequencePair>,
     decoders: Vec<(Decoder, Location, Dimension)>,
-    mc_servers: Vec<udp::Server<udp::Connected>>,
+    mc_servers: Vec<AsyncServerMediaChannel>,
     codecs: BTreeMap<u16, Codec>,
     client_addr: SocketAddr,
 }
@@ -109,7 +104,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
     pub fn new<'d, I>(
         backend: B,
         decoders: I,
-        mc_servers: Vec<udp::Server<udp::Connected>>,
+        mc_servers: Vec<AsyncServerMediaChannel>,
         codecs: BTreeMap<u16, Codec>,
         client_addr: &SocketAddr,
         event_rx: mpsc::UnboundedReceiver<Event>,
@@ -139,8 +134,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
     }
 }
 
-#[async_trait]
-impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Created<B>> {
+impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Task<Created<B>> {
     type SuccessStateful = Task<Running<B>>;
     type FailureStateful = Task<Created<B>>;
     type Error = anyhow::Error;
@@ -148,9 +142,7 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
     async fn try_transition(
         mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let mut addr = self.state.client_addr;
-
-        let subtask_ct = CancellationToken::new();
+        let mut addr = self.state.client_addr.clone();
 
         let mut acked_frame_txs = BTreeMap::new();
         let mut fb_txs = BTreeMap::new();
@@ -158,24 +150,30 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
         let mut encoder_subtasks = BTreeMap::new();
         let mut encoder_subtask_cts = BTreeMap::new();
 
-        for ((decoder, location, dimension), mc_server) in
-            self.state.decoders.iter().zip(&self.state.mc_servers)
+        for ((decoder, location, dimension), mc) in
+            self.state.decoders.into_iter().zip(self.state.mc_servers)
         {
             let port = decoder.port as u16;
             addr.set_port(port);
-            let async_mc_server =
-                try_transition_inner_recover!(mc_server.clone(), udp::Closed, |_| self);
-            let mc = AsyncServerMediaChannel::new(async_mc_server);
             let codec = self.state.codecs.remove(&port).unwrap_or(Codec::Raw);
             let (encoder, encoder_channels) =
-                Encoder::new(decoder, location, dimension, mc, codec, subtask_ct.clone());
-            let running = try_transition_inner_recover!(
-                encoder,
-                encoder::Created<AsyncServerMediaChannel>,
-                |_| self
-            );
-            let ct = running.cancellation_token().clone();
-            let subtask = tokio::spawn(async move { running.try_transition().await });
+                Encoder::new(&decoder, &location, &dimension, mc, codec);
+            let ct = encoder.cancellation_token().clone();
+            let subtask: JoinHandle<Result<_, _>> = tokio::spawn(async move {
+                let encoder: Encoder<encoder::Running> =
+                    match try_transition_async!(encoder, encoder::Running) {
+                        Ok(enc) => enc,
+                        Err(recovered) => {
+                            return_recover!(
+                                recovered.stateful,
+                                "[Encoder {}] Failed to start: {}",
+                                port,
+                                recovered.error
+                            );
+                        }
+                    };
+                try_transition_async!(encoder, encoder::Terminated)
+            });
             encoder_subtasks.insert(port, subtask);
             encoder_subtask_cts.insert(port, ct);
             acked_frame_txs.insert(port, encoder_channels.acked_frame_tx);
@@ -183,7 +181,6 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
             missed_frame_txs.insert(port, encoder_channels.missed_frame_tx);
         }
 
-        let mut damage_stream = try_recover!(self.state.backend.damage_stream().await, self).fuse();
         let mut event_stream = UnboundedReceiverStream::new(self.state.event_rx).fuse();
         let mut fb_update_req_stream =
             UnboundedReceiverStream::new(self.state.fb_update_req_rx).fuse();
@@ -222,6 +219,13 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
         let backend_subtask_ct = CancellationToken::new();
         let ct = backend_subtask_ct.clone();
         let backend_subtask = tokio::spawn(async move {
+            let mut damage_stream = match self.state.backend.damage_stream().await {
+                Ok(damage_stream) => damage_stream,
+                Err(e) => {
+                    log::error!("Failed getting damage stream from backend: {}", e);
+                    return (self.state.backend, Err(e.into()));
+                }
+            };
             let loop_res = 'select: loop {
                 tokio::select! {
                     biased;
@@ -332,8 +336,9 @@ impl<B: Backend + 'static> TryTransitionable<Running<B>, Created<B>> for Task<Cr
     }
 }
 
-#[async_trait]
-impl<B: Backend + 'static> TryTransitionable<Terminated<B>, Terminated<B>> for Task<Running<B>> {
+impl<B: Backend + 'static> AsyncTryTransitionable<Terminated<B>, Terminated<B>>
+    for Task<Running<B>>
+{
     type SuccessStateful = Task<Terminated<B>>;
     type FailureStateful = Task<Terminated<B>>;
     type Error = anyhow::Error;
@@ -445,10 +450,10 @@ impl<B: Backend + 'static> TryTransitionable<Terminated<B>, Terminated<B>> for T
     }
 }
 
-impl<B: Backend + 'static> Transitionable<Terminated<B>> for Task<Running<B>> {
+impl<B: Backend + 'static> AsyncTransitionable<Terminated<B>> for Task<Running<B>> {
     type NextStateful = Task<Terminated<B>>;
 
-    fn transition(self) -> Self::NextStateful {
+    async fn transition(self) -> Self::NextStateful {
         self.stop();
         let backend =
             match Handle::current().block_on(async move { self.state.backend_subtask.await }) {

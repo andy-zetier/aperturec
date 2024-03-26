@@ -1,8 +1,7 @@
 use crate::unreliable::*;
 
 use aperturec_state_machine::*;
-use async_trait::async_trait;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 #[derive(Stateful, Debug)]
 #[state(S)]
@@ -27,13 +26,18 @@ impl SelfTransitionable for Client<Closed> {}
 #[derive(State, Debug)]
 pub struct Listening {
     socket: std::net::UdpSocket,
-    last_remote_addr: SocketAddr,
 }
+impl SelfTransitionable for Server<Listening> {}
+
+#[derive(State, Debug)]
+pub struct AsyncListening {
+    socket: tokio::net::UdpSocket,
+}
+impl SelfTransitionable for Server<AsyncListening> {}
 
 #[derive(State, Debug)]
 pub struct Connected {
     socket: std::net::UdpSocket,
-    remote_addr: SocketAddr,
 }
 
 #[derive(State, Debug)]
@@ -54,13 +58,6 @@ impl Server<Closed> {
             local_addr: local_addr.into(),
         }
     }
-
-    pub fn new_blocking<A: Into<SocketAddr>>(local_addr: A) -> Self {
-        Server {
-            state: Closed,
-            local_addr: local_addr.into(),
-        }
-    }
 }
 
 impl<T: State> Client<T> {
@@ -74,29 +71,13 @@ impl Client<Closed> {
         remote_addr: impl Into<SocketAddr>,
         local_addr: impl Into<Option<SocketAddr>>,
     ) -> Self {
+        let remote_addr: SocketAddr = remote_addr.into();
         Client {
             state: Closed,
-            local_addr: if let Some(addr) = local_addr.into() {
-                addr
-            } else {
-                "0.0.0.0:0".parse().unwrap()
-            },
-            remote_addr: remote_addr.into(),
-        }
-    }
-
-    pub fn new_blocking(
-        remote_addr: impl Into<SocketAddr>,
-        local_addr: impl Into<Option<SocketAddr>>,
-    ) -> Self {
-        Client {
-            state: Closed,
-            local_addr: if let Some(addr) = local_addr.into() {
-                addr
-            } else {
-                "0.0.0.0:0".parse().unwrap()
-            },
-            remote_addr: remote_addr.into(),
+            local_addr: local_addr
+                .into()
+                .unwrap_or_else(|| unspecified_peer_socket_addr(remote_addr)),
+            remote_addr,
         }
     }
 }
@@ -110,7 +91,6 @@ impl Clone for Client<Connected> {
                     .socket
                     .try_clone()
                     .expect("clone connected client"),
-                remote_addr: self.remote_addr,
             },
             local_addr: self.local_addr,
             remote_addr: self.remote_addr,
@@ -127,7 +107,6 @@ impl Clone for Server<Listening> {
                     .socket
                     .try_clone()
                     .expect("clone listening server"),
-                last_remote_addr: self.state.last_remote_addr,
             },
             local_addr: self.local_addr,
         }
@@ -143,66 +122,89 @@ impl Clone for Server<Connected> {
                     .socket
                     .try_clone()
                     .expect("clone connected server"),
-                remote_addr: self.state.remote_addr,
             },
             local_addr: self.local_addr,
         }
     }
 }
 
-async fn do_udp_bind<A>(addr: &A) -> anyhow::Result<std::net::UdpSocket>
+async fn do_udp_bind_async<A>(addr: &A) -> anyhow::Result<tokio::net::UdpSocket>
 where
-    A: std::net::ToSocketAddrs + tokio::net::ToSocketAddrs,
+    A: tokio::net::ToSocketAddrs,
 {
-    let tokio_socket = tokio::net::UdpSocket::bind(addr).await?;
-    Ok(tokio_socket.into_std()?)
+    Ok(tokio::net::UdpSocket::bind(addr).await?)
 }
 
-fn socket_sync_to_async(udp_socket: &std::net::UdpSocket) -> anyhow::Result<tokio::net::UdpSocket> {
-    let cpy = udp_socket.try_clone()?;
-    cpy.set_nonblocking(true)?;
-    Ok(tokio::net::UdpSocket::from_std(cpy)?)
+fn do_udp_bind<A>(addr: &A) -> anyhow::Result<std::net::UdpSocket>
+where
+    A: std::net::ToSocketAddrs,
+{
+    Ok(std::net::UdpSocket::bind(addr)?)
 }
 
-#[async_trait]
+fn unspecified_peer_socket_addr(sa: SocketAddr) -> SocketAddr {
+    let local_ip = sa.ip();
+    let remote_ip: IpAddr = match (local_ip, local_ip.is_loopback()) {
+        (IpAddr::V4(_), false) => Ipv4Addr::UNSPECIFIED.into(),
+        (IpAddr::V4(_), true) => Ipv4Addr::LOCALHOST.into(),
+        (IpAddr::V6(_), false) => Ipv6Addr::UNSPECIFIED.into(),
+        (IpAddr::V6(_), true) => Ipv6Addr::LOCALHOST.into(),
+    };
+    SocketAddr::from((remote_ip, 0))
+}
+
 impl TryTransitionable<Listening, Closed> for Server<Closed> {
     type SuccessStateful = Server<Listening>;
     type FailureStateful = Server<Closed>;
     type Error = anyhow::Error;
 
-    async fn try_transition(
+    fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let socket = try_recover!(do_udp_bind(&self.local_addr).await, self);
+        let socket = try_recover!(do_udp_bind(&self.local_addr), self);
         try_recover!(socket.set_nonblocking(false), self);
         try_recover!(socket.set_read_timeout(None), self);
         let local_addr = try_recover!(socket.local_addr(), self);
 
         Ok(Server {
-            state: Listening {
-                socket,
-                last_remote_addr: "0.0.0.0:0".parse().unwrap(),
-            },
+            state: Listening { socket },
             local_addr,
         })
     }
 }
 
-#[async_trait]
-impl TryTransitionable<Connected, Closed> for Server<Listening> {
-    type SuccessStateful = Server<Connected>;
+impl AsyncTryTransitionable<AsyncListening, Closed> for Server<Closed> {
+    type SuccessStateful = Server<AsyncListening>;
     type FailureStateful = Server<Closed>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        try_recover!(self.state.socket.connect(self.state.last_remote_addr), self);
+        let socket = try_recover_async!(do_udp_bind_async(&self.local_addr), self);
+        let local_addr = try_recover!(socket.local_addr(), self);
+
+        Ok(Server {
+            state: AsyncListening { socket },
+            local_addr,
+        })
+    }
+}
+
+impl TryTransitionable<Connected, Listening> for Server<Listening> {
+    type SuccessStateful = Server<Connected>;
+    type FailureStateful = Server<Listening>;
+    type Error = anyhow::Error;
+
+    fn try_transition(
+        self,
+    ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
+        let (_, remote_addr) = try_recover!(self.state.socket.peek_from(&mut []), self, Listening);
+        try_recover!(self.state.socket.connect(remote_addr), self, Listening);
 
         Ok(Server {
             state: Connected {
                 socket: self.state.socket,
-                remote_addr: self.state.last_remote_addr,
             },
             local_addr: self.local_addr,
         })
@@ -231,43 +233,65 @@ impl Transitionable<Closed> for Server<Connected> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<AsyncConnected, Closed> for Server<Connected> {
+impl AsyncTryTransitionable<AsyncConnected, AsyncListening> for Server<AsyncListening> {
     type SuccessStateful = Server<AsyncConnected>;
-    type FailureStateful = Server<Closed>;
+    type FailureStateful = Server<AsyncListening>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let socket = try_recover!(socket_sync_to_async(&self.state.socket), self);
+        let (_, remote_addr) =
+            try_recover_async!(self.state.socket.peek_from(&mut []), self, AsyncListening);
+        try_recover_async!(self.state.socket.connect(remote_addr), self, AsyncListening);
+
         Ok(Server {
-            state: AsyncConnected { socket },
+            state: AsyncConnected {
+                socket: self.state.socket,
+            },
             local_addr: self.local_addr,
         })
     }
 }
 
-#[async_trait]
+impl AsyncTransitionable<Closed> for Server<AsyncListening> {
+    type NextStateful = Server<Closed>;
+
+    async fn transition(self) -> Self::NextStateful {
+        Server {
+            state: Closed,
+            local_addr: self.local_addr,
+        }
+    }
+}
+
+impl AsyncTransitionable<Closed> for Server<AsyncConnected> {
+    type NextStateful = Server<Closed>;
+
+    async fn transition(self) -> Self::NextStateful {
+        Server {
+            state: Closed,
+            local_addr: self.local_addr,
+        }
+    }
+}
+
 impl TryTransitionable<Connected, Closed> for Client<Closed> {
     type SuccessStateful = Client<Connected>;
     type FailureStateful = Client<Closed>;
     type Error = anyhow::Error;
 
-    async fn try_transition(
+    fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let socket = try_recover!(do_udp_bind(&self.local_addr).await, self);
+        let socket = try_recover!(do_udp_bind(&self.local_addr), self);
         try_recover!(socket.set_nonblocking(false), self);
         try_recover!(socket.set_read_timeout(None), self);
         try_recover!(socket.connect(self.remote_addr), self);
 
         Ok(Client {
-            local_addr: socket.local_addr().unwrap(),
-            state: Connected {
-                socket,
-                remote_addr: self.remote_addr,
-            },
+            state: Connected { socket },
+            local_addr: self.local_addr,
             remote_addr: self.remote_addr,
         })
     }
@@ -285,8 +309,7 @@ impl Transitionable<Closed> for Client<Connected> {
     }
 }
 
-#[async_trait]
-impl TryTransitionable<AsyncConnected, Closed> for Client<Connected> {
+impl AsyncTryTransitionable<AsyncConnected, Closed> for Client<Closed> {
     type SuccessStateful = Client<AsyncConnected>;
     type FailureStateful = Client<Closed>;
     type Error = anyhow::Error;
@@ -294,7 +317,9 @@ impl TryTransitionable<AsyncConnected, Closed> for Client<Connected> {
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let socket = try_recover!(socket_sync_to_async(&self.state.socket), self);
+        let socket = try_recover_async!(do_udp_bind_async(&self.local_addr), self);
+        try_recover_async!(socket.connect(self.remote_addr), self);
+
         Ok(Client {
             state: AsyncConnected { socket },
             local_addr: self.local_addr,
@@ -303,26 +328,27 @@ impl TryTransitionable<AsyncConnected, Closed> for Client<Connected> {
     }
 }
 
-impl RawReceiver for Server<Listening> {
-    fn receive(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
-        let (recv_amt, src_addr) = self.state.socket.recv_from(buf)?;
-        self.state.last_remote_addr = src_addr;
-        Ok(recv_amt)
+impl AsyncTransitionable<Closed> for Client<AsyncConnected> {
+    type NextStateful = Client<Closed>;
+
+    async fn transition(self) -> Self::NextStateful {
+        Client {
+            state: Closed,
+            local_addr: self.local_addr,
+            remote_addr: self.remote_addr,
+        }
     }
 }
 
 impl RawReceiver for Server<Connected> {
     fn receive(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
-        let (recv_amt, src_addr) = self.state.socket.recv_from(buf)?;
-        assert_eq!(src_addr, self.state.remote_addr);
-        Ok(recv_amt)
+        Ok(self.state.socket.recv(buf)?)
     }
 }
 
 impl RawReceiver for Client<Connected> {
     fn receive(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
-        let (recv_amt, _) = self.state.socket.recv_from(buf)?;
-        Ok(recv_amt)
+        Ok(self.state.socket.recv(buf)?)
     }
 }
 
@@ -340,15 +366,13 @@ impl RawSender for Client<Connected> {
 
 impl AsyncRawReceiver for Server<AsyncConnected> {
     async fn receive(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
-        let (recv_amt, _) = self.state.socket.recv_from(buf).await?;
-        Ok(recv_amt)
+        Ok(self.state.socket.recv(buf).await?)
     }
 }
 
 impl AsyncRawReceiver for Client<AsyncConnected> {
     async fn receive(&mut self, buf: &mut [u8]) -> anyhow::Result<usize> {
-        let (recv_amt, _) = self.state.socket.recv_from(buf).await?;
-        Ok(recv_amt)
+        Ok(self.state.socket.recv(buf).await?)
     }
 }
 

@@ -11,7 +11,6 @@ aperturec-protocol = { path = "../protocol" }
 aperturec-state-machine = { path = "../state_machine" }
 aperturec-metrics = { path = "../metrics" }
 aperturec-trace = { path = "../trace", features = ["queue"] }
-async-trait = "0.1"
 bytes = "1.4"
 clap = { version = "4.3", features = ["derive", "env", "string"] }
 ctrlc = "3.4.1"
@@ -30,6 +29,7 @@ shlex = "1.2"
 tokio = { version = "1.29", features = ["full", "tracing"] }
 tokio-stream = { version = "0.1", features = ["sync", "fs"] }
 tokio-util = "0.7"
+trait-variant = "0.1"
 which = "6.0"
 xcb = { version = "1.2.2", features = ["damage", "randr", "xtest" ] }
 

@@ -19,7 +19,7 @@ use aperturec_protocol::media::{
     client_to_server as mm_c2s, server_to_client as mm_s2c, MediaKeepalive, Rectangle,
     RectangleUpdate,
 };
-use aperturec_state_machine::TryTransitionable;
+use aperturec_state_machine::{try_transition, TryTransitionable};
 use aperturec_trace::log;
 use crossbeam_channel::{select, unbounded};
 use derive_builder::Builder;
@@ -184,25 +184,13 @@ pub enum ControlMessage {
     SigintReceived,
 }
 
-//
-// Async utility functions
-//
-// The Client is currently synchronous mostly due to GTK's limitation on threads and is unable to
-// directly call async functions such as the Server and Client constructors from the
-// aperturec_channels crate. To get around this, we can wrap these async calls in a managed tokio
-// runtime (see `async_rt`) and return the results to synchrnous code.
-//
-async fn new_async_udp_client(
-    remote_addr: SocketAddr,
-    bind_addr: SocketAddr,
-) -> udp::Client<udp::Connected> {
-    udp::Client::new_blocking(remote_addr, Some(bind_addr))
+fn new_udp_client(remote_addr: SocketAddr, bind_addr: SocketAddr) -> udp::Client<udp::Connected> {
+    udp::Client::new(remote_addr, Some(bind_addr))
         .try_transition()
-        .await
         .expect("Failed to Connect")
 }
 
-async fn new_async_tcp_client_retry_from_host(
+fn new_tcp_client_retry_from_host(
     host: &str,
     port: u16,
     retry: Duration,
@@ -211,7 +199,7 @@ async fn new_async_tcp_client_retry_from_host(
     'retry: loop {
         'sa: for sa in (host, port).to_socket_addrs()? {
             log::info!("Connecting to {}", sa);
-            match tcp::Client::new_blocking(sa).try_transition().await {
+            match try_transition!(tcp::Client::new(sa)) {
                 Ok(client) => break 'retry Ok((sa, client)),
                 Err(recovered) => {
                     log::warn!("Failed to connect to {}: {}", sa, recovered.error);
@@ -225,16 +213,16 @@ async fn new_async_tcp_client_retry_from_host(
             port,
             retry
         );
-        tokio::time::sleep(retry).await;
+        thread::sleep(retry);
     }
 }
 
-async fn new_async_tcp_client_retry_from_addr(
+fn new_tcp_client_retry_from_addr(
     addr: SocketAddr,
     retry: Duration,
 ) -> tcp::Client<tcp::Connected> {
     loop {
-        let client = tcp::Client::new_blocking(addr).try_transition().await;
+        let client = tcp::Client::new(addr).try_transition();
         match client {
             Ok(client) => return client,
             Err(err) => log::warn!(
@@ -244,7 +232,7 @@ async fn new_async_tcp_client_retry_from_addr(
                 retry
             ),
         }
-        tokio::time::sleep(retry).await;
+        thread::sleep(retry);
     }
 }
 
@@ -293,7 +281,6 @@ impl ClientDecoder {
 
 pub struct Client {
     config: Configuration,
-    async_rt: tokio::runtime::Runtime,
     id: u64,
     server_name: Option<String>,
     tcp_retry_interval: Duration,
@@ -312,14 +299,9 @@ impl Client {
     fn new(config: &Configuration) -> Self {
         let decoders = BTreeMap::new();
         let id = config.id;
-        let async_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to build tokio Runtime");
 
         Self {
             config: config.clone(),
-            async_rt,
             id,
             server_name: None,
 
@@ -471,13 +453,10 @@ impl Client {
             let encoder_addr =
                 SocketAddr::from((self.server_addr.expect("server addr not set"), remote_port));
 
-            let udp_client = self
-                .async_rt
-                .block_on(self.async_rt.spawn(new_async_udp_client(
-                    encoder_addr,
-                    SocketAddr::new(self.bind_addr.expect("bind addr not set"), local_port),
-                )))
-                .expect("Failed to create UDP client");
+            let udp_client = new_udp_client(
+                encoder_addr,
+                SocketAddr::new(self.bind_addr.expect("bind addr not set"), local_port),
+            );
 
             let local_port = udp_client.local_addr().port();
 
@@ -771,10 +750,7 @@ impl Client {
 
         let retry_interval = self.tcp_retry_interval.clone();
         let (cc_socket_addr, tcp_client) =
-            self.async_rt.block_on(self.async_rt.spawn(async move {
-                new_async_tcp_client_retry_from_host(&server_host, server_cc_port, retry_interval)
-                    .await
-            }))??;
+            new_tcp_client_retry_from_host(&server_host, server_cc_port, retry_interval)?;
         let server_addr = cc_socket_addr.ip();
         self.server_addr = Some(server_addr);
         self.server_control_port = Some(cc_socket_addr.port());
@@ -1049,13 +1025,7 @@ impl Client {
             self.server_addr.expect("server addr not set"),
             self.server_event_port.expect("client addr not set"),
         ));
-        let tcp_client = self
-            .async_rt
-            .block_on(self.async_rt.spawn(new_async_tcp_client_retry_from_addr(
-                event_addr,
-                self.tcp_retry_interval,
-            )))
-            .expect("Failed to create event channel TCP connection");
+        let tcp_client = new_tcp_client_retry_from_addr(event_addr, self.tcp_retry_interval);
 
         let mut client_ec = ClientEventChannel::new(tcp_client);
 
@@ -1156,7 +1126,6 @@ mod test {
     use std::net::UdpSocket;
     use std::sync::Once;
     use std::time::Duration;
-    use tokio::runtime::Builder;
 
     static INIT: Once = Once::new();
 
@@ -1200,13 +1169,12 @@ mod test {
         }
     }
 
-    async fn new_async_tcp_server(addr: IpAddr, port: u16) -> tcp::Server<tcp::Accepted> {
-        tcp::Server::new_blocking(SocketAddr::from((addr, port)))
+    fn new_tcp_server<A: Into<SocketAddr>>(addr: A) -> tcp::Server<tcp::Accepted> {
+        let addr = addr.into();
+        tcp::Server::new(addr)
             .try_transition()
-            .await
             .expect("Failed to Listen")
             .try_transition()
-            .await
             .expect("Failed to Accept")
     }
 
@@ -1270,14 +1238,7 @@ mod test {
         // spawn fake server
         //
         std::thread::spawn(move || {
-            let async_rt = Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to build tokio Runtime");
-
-            let tcp_server = async_rt
-                .block_on(async_rt.spawn(new_async_tcp_server(server_sa.ip(), server_sa.port())))
-                .expect("Failed to create TCP server");
+            let tcp_server = new_tcp_server((server_sa.ip(), server_sa.port()));
             let mut server_cc = ServerControlChannel::new(tcp_server);
             let _ci = loop {
                 match server_cc.receive() {
@@ -1327,14 +1288,7 @@ mod test {
         // Spawn fake server
         //
         std::thread::spawn(move || {
-            let async_rt = Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to build tokio Runtime");
-
-            let tcp_server = async_rt
-                .block_on(async_rt.spawn(new_async_tcp_server(server_addr.clone(), event_port)))
-                .expect("Failed to create TCP server");
+            let tcp_server = new_tcp_server((server_addr, event_port));
             let mut server_cc = ServerEventChannel::new(tcp_server);
             let _event = loop {
                 match server_cc.receive() {
