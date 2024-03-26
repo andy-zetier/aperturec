@@ -1,4 +1,4 @@
-use crate::backend::Backend;
+use crate::backend::{Backend, SwapableBackend};
 use crate::task::{
     backend, control_channel_handler as cc_handler, encoder, event_channel_handler as ec_handler,
     heartbeat,
@@ -16,10 +16,12 @@ use aperturec_protocol::media::client_to_server as mm_c2s;
 use aperturec_state_machine::*;
 use aperturec_trace::log;
 use derive_builder::Builder;
+use futures::future::{self, TryFutureExt};
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::Duration;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -33,7 +35,8 @@ pub struct Configuration {
     max_width: usize,
     max_height: usize,
     #[builder(setter(strip_option), default)]
-    default_root_program: Option<String>,
+    root_process_cmdline: Option<String>,
+    allow_client_exec: bool,
 }
 
 #[derive(Stateful, Debug)]
@@ -44,7 +47,9 @@ pub struct Server<S: State> {
 }
 
 #[derive(State, Debug)]
-pub struct Created;
+pub struct Created {
+    root_process_cmd: Option<Command>,
+}
 impl SelfTransitionable for Server<Created> {}
 
 #[derive(State, Debug)]
@@ -70,7 +75,7 @@ pub struct ControlChannelAccepted<B: Backend + 'static> {
 
 #[derive(State)]
 pub struct AuthenticatedClient<B: Backend + 'static> {
-    backend: B,
+    backend: SwapableBackend<B>,
     cc: AsyncServerControlChannel,
     ec_server: tcp::Server<tcp::AsyncListening>,
     client_hb_interval: Duration,
@@ -82,7 +87,7 @@ pub struct AuthenticatedClient<B: Backend + 'static> {
 
 #[derive(State)]
 pub struct ChannelsAccepted<B: Backend + 'static> {
-    backend: B,
+    backend: SwapableBackend<B>,
     cc: AsyncServerControlChannel,
     ec: AsyncServerEventChannel,
     client_hb_interval: Duration,
@@ -104,24 +109,66 @@ pub struct Running<B: Backend + 'static> {
 
 #[derive(State)]
 pub struct SessionComplete<B: Backend + 'static> {
-    backend: B,
+    backend: SwapableBackend<B>,
     cc_server: tcp::Server<tcp::AsyncListening>,
     ec_server: tcp::Server<tcp::AsyncListening>,
 }
 
+fn parse_create_command(cmdline: &str) -> Result<Command> {
+    if let Some(tokens) = shlex::split(cmdline) {
+        let mut envs = vec![];
+        let mut args = vec![];
+        let mut prog = None;
+
+        for token in tokens {
+            if prog.is_none() && token.contains('=') {
+                envs.push(
+                    token
+                        .split_once('=')
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .unwrap(),
+                );
+            } else if prog.is_none() {
+                prog = Some(token);
+            } else {
+                args.push(token);
+            }
+        }
+
+        let prog = prog.ok_or(anyhow!(
+            "No program specified in root program \"{}\"",
+            cmdline
+        ))?;
+
+        if let Err(e) = which::which(&prog) {
+            anyhow::bail!(
+                "Cannot launch root program \"{}\" from command-line \"{}\": {}",
+                prog,
+                cmdline,
+                e
+            );
+        }
+
+        let mut cmd = Command::new(prog);
+        cmd.args(args);
+        cmd.envs(envs);
+        cmd.kill_on_drop(true);
+        Ok(cmd)
+    } else {
+        Err(anyhow!("Could not parse root program \"{}\"", cmdline))
+    }
+}
+
 impl Server<Created> {
     pub fn new(config: Configuration) -> Result<Self> {
-        if let Some(default_root_program) = &config.default_root_program {
-            which::which(default_root_program).map_err(|e| {
-                anyhow!(
-                    "Cannot launch server with default root program '{}': {}",
-                    default_root_program,
-                    e
-                )
-            })?;
-        }
+        let root_process_cmd = if let Some(ref rp) = config.root_process_cmdline {
+            Some(parse_create_command(rp)?)
+        } else {
+            None
+        };
+
         Ok(Server {
-            state: Created,
+            state: Created { root_process_cmd },
             config,
         })
     }
@@ -274,15 +321,19 @@ impl<B: Backend + 'static> AsyncTryTransitionable<BackendInitialized<B>, Created
     type Error = anyhow::Error;
 
     async fn try_transition(
-        self,
+        mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
+        let backend = try_recover!(
+            B::initialize(
+                self.config.max_width,
+                self.config.max_height,
+                self.state.root_process_cmd.as_mut(),
+            )
+            .await,
+            self
+        );
         Ok(Server {
-            state: BackendInitialized {
-                backend: try_recover!(
-                    B::initialize(self.config.max_width, self.config.max_height).await,
-                    self
-                ),
-            },
+            state: BackendInitialized { backend },
             config: self.config,
         })
     }
@@ -323,7 +374,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<ControlChannelAccepted<B>, Cha
     type Error = anyhow::Error;
 
     async fn try_transition(
-        self,
+        mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         macro_rules! recover_cc_server_constructor {
             () => {{
@@ -339,17 +390,32 @@ impl<B: Backend + 'static> AsyncTryTransitionable<ControlChannelAccepted<B>, Cha
                 }
             }};
         }
-        let cc: tcp::Server<tcp::AsyncAccepted> = try_transition_inner_recover_async!(
-            self.state.cc_server,
-            tcp::AsyncListening,
-            recover_cc_server_constructor!()
-        );
-        let cc = AsyncServerControlChannel::new(cc);
+
+        let cc_accepted = tokio::select! {
+            root_res = self.state.backend.wait_root_process() => {
+                // If the root process dies before we can even get a client connected, we are in a
+                // really bad state. Instead of trying to recover, let's just panic and let the
+                // user identify what may have gone wrong.
+                match root_res {
+                    Ok(es) => log::error!("Root process exited with status: {:?}", es),
+                    Err(e) => log::error!("Root process died unexpectedly with error: {}", e),
+                }
+                panic!("Root process exited!");
+            }
+            cc_accept_res = self.state.cc_server.try_transition() => {
+                match cc_accept_res {
+                    Ok(cc_accepted) => cc_accepted,
+                    Err(recovered) => {
+                        return_recover_async!(recover_cc_server_constructor!()(recovered.stateful).await, recovered.error);
+                    }
+                }
+            },
+        };
 
         Ok(Server {
             state: ControlChannelAccepted {
                 backend: self.state.backend,
-                cc,
+                cc: AsyncServerControlChannel::new(cc_accepted),
                 ec_server: self.state.ec_server,
             },
             config: self.config,
@@ -386,6 +452,19 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
     async fn try_transition(
         mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
+        macro_rules! recover_server_backend_moved {
+            ($backend:ident) => {{
+                Server {
+                    state: ChannelsListening {
+                        backend: $backend.into_root(),
+                        cc_server: transition!(self.state.cc.into_inner(), tcp::AsyncListening),
+                        ec_server: self.state.ec_server,
+                    },
+                    config: self.config,
+                }
+            }};
+        }
+
         let msg = try_recover_async!(self.state.cc.receive(), self);
         let client_init = match msg {
             cm_c2s::Message::ClientInit(client_init) => client_init,
@@ -402,21 +481,42 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
             try_recover_async!(self.state.cc.send(msg.into()), self);
             return_recover_async!(self, "client sent invalid decoder max");
         }
-
-        let (root_process, should_replace) = if client_init.root_program.is_empty() {
-            (self.config.default_root_program.as_ref(), false)
-        } else {
-            (Some(&client_init.root_program), true)
+        let client_resolution = match client_init.client_info.and_then(|ci| ci.display_size) {
+            Some(display_size) => display_size,
+            _ => return_recover!(self, "Client did not provide display size"),
         };
-        if let Some(root_process) = root_process {
-            try_recover_async!(
-                self.state
-                    .backend
-                    .start_root_process(root_process, should_replace),
-                (|| async move {
-                    log::error!("Failed to launch root process");
-                    let msg =
-                        cm::ServerGoodbye::from(cm::ServerGoodbyeReason::RootProcessLaunchFailed);
+
+        let mut backend = SwapableBackend::new(self.state.backend);
+        if !client_init.client_specified_program_cmdline.is_empty() {
+            let cmdline = client_init.client_specified_program_cmdline;
+
+            if !self.config.allow_client_exec {
+                let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::ClientExecDisallowed);
+                try_recover!(
+                    self.state.cc.send(msg.into()).await,
+                    recover_server_backend_moved!(backend)
+                );
+                return_recover!(
+                    recover_server_backend_moved!(backend),
+                    "Client attempted to exec '{}', but client exec is disallowed",
+                    cmdline
+                );
+            }
+
+            let client_backend = try_recover!(
+                future::ready(parse_create_command(&cmdline))
+                    .and_then(|mut cmd| async move {
+                        B::initialize(
+                            self.config.max_width,
+                            self.config.max_height,
+                            Some(&mut cmd),
+                        )
+                        .await
+                    })
+                    .await,
+                (|| async {
+                    log::error!("Failed to launch process");
+                    let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::ProcessLaunchFailed);
                     self.state
                         .cc
                         .send(msg.clone().into())
@@ -424,16 +524,12 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                         .unwrap_or_else(|e| {
                             log::error!("Failed to send server goodbye {:?}: {}", msg, e)
                         });
-                    self
+                    recover_server_backend_moved!(backend)
                 })()
                 .await
             );
+            backend.set_client_specified(client_backend);
         }
-
-        let client_resolution = match client_init.client_info.and_then(|ci| ci.display_size) {
-            Some(display_size) => display_size,
-            _ => return_recover_async!(self, "Client did not provide display size"),
-        };
 
         let (resolution, partitions) = partition(
             &client_resolution,
@@ -452,14 +548,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
             let mc_server = udp::Server::<udp::Closed>::new(local_mc_addr);
             let mc_server_listening =
                 try_transition_inner_recover_async!(mc_server, udp::Closed, |_| async {
-                    Server {
-                        state: ChannelsListening {
-                            backend: self.state.backend,
-                            cc_server: transition!(self.state.cc.into_inner()),
-                            ec_server: self.state.ec_server,
-                        },
-                        config: self.config,
-                    }
+                    recover_server_backend_moved!(backend)
                 });
 
             decoders.push((
@@ -485,9 +574,15 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
             .iter()
             .map(|(decoder, _, _)| (decoder.port as u16, preferred_codec))
             .collect();
-        try_recover_async!(self.state.backend.set_resolution(&resolution), self);
+        try_recover_async!(
+            backend.set_resolution(&resolution),
+            recover_server_backend_moved!(backend)
+        );
         log::trace!("Resolution set to {:?}", resolution);
-        let cursor_bitmaps = try_recover_async!(self.state.backend.cursor_bitmaps(), self);
+        let cursor_bitmaps = try_recover_async!(
+            backend.cursor_bitmaps(),
+            recover_server_backend_moved!(backend)
+        );
 
         let decoder_areas: Vec<_> = decoders
             .iter()
@@ -510,11 +605,14 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                     resolution.height as u64,
                 ))
                 .build(),
-            self
+            recover_server_backend_moved!(backend)
         );
         log::trace!("Server init: {:#?}", server_init);
 
-        try_recover_async!(self.state.cc.send(server_init.into()), self);
+        try_recover_async!(
+            self.state.cc.send(server_init.into()),
+            recover_server_backend_moved!(backend)
+        );
 
         let client_hb_interval = try_recover!(
             client_init
@@ -523,7 +621,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                     Duration::from_secs(d.seconds as u64) + Duration::from_nanos(d.nanos as u64)
                 })
                 .ok_or(anyhow!("No client HB interval")),
-            self
+            recover_server_backend_moved!(backend)
         );
         let client_hb_response_interval = try_recover!(
             client_init
@@ -532,11 +630,11 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                     Duration::from_secs(d.seconds as u64) + Duration::from_nanos(d.nanos as u64)
                 })
                 .ok_or(anyhow!("No client HB response interval")),
-            self
+            recover_server_backend_moved!(backend)
         );
         Ok(Server {
             state: AuthenticatedClient {
-                backend: self.state.backend,
+                backend,
                 cc: self.state.cc,
                 ec_server: self.state.ec_server,
                 client_hb_interval,
@@ -557,7 +655,7 @@ impl<B: Backend + 'static> Transitionable<ChannelsListening<B>> for Server<Authe
         let cc_server = transition!(self.state.cc.into_inner(), tcp::AsyncListening);
         Server {
             state: ChannelsListening {
-                backend: self.state.backend,
+                backend: self.state.backend.into_root(),
                 cc_server,
                 ec_server: self.state.ec_server,
             },
@@ -582,7 +680,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<ChannelsAccepted<B>, ChannelsL
             |recovered_ec_server| async {
                 Server {
                     state: ChannelsListening {
-                        backend: self.state.backend,
+                        backend: self.state.backend.into_root(),
                         cc_server: transition_async!(
                             self.state.cc.into_inner(),
                             tcp::AsyncListening
@@ -599,7 +697,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<ChannelsAccepted<B>, ChannelsL
             () => {{
                 Server {
                     state: ChannelsListening {
-                        backend: self.state.backend,
+                        backend: self.state.backend.into_root(),
                         cc_server: transition_async!(
                             self.state.cc.into_inner(),
                             tcp::AsyncListening
@@ -690,7 +788,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
             try_transition_inner_recover_async!(heartbeat_task, heartbeat::Created, |_| async {
                 Server {
                     state: ChannelsListening {
-                        backend: backend_task.into_backend(),
+                        backend: backend_task.into_backend().into_root(),
                         cc_server: cc_handler_task.into_control_channel_server().await,
                         ec_server: ec_handler_task.into_event_channel_server().await,
                     },
@@ -703,7 +801,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
             |recovered: cc_handler::Task<cc_handler::Created>| async {
                 Server {
                     state: ChannelsListening {
-                        backend: backend_task.into_backend(),
+                        backend: backend_task.into_backend().into_root(),
                         cc_server: recovered.into_control_channel_server().await,
                         ec_server: ec_handler_task.into_event_channel_server().await,
                     },
@@ -717,7 +815,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
             |recovered: ec_handler::Task<ec_handler::Created>| async {
                 Server {
                     state: ChannelsListening {
-                        backend: backend_task.into_backend(),
+                        backend: backend_task.into_backend().into_root(),
                         cc_server: transition_async!(cc_handler_task, cc_handler::Terminated)
                             .into_control_channel_server(),
                         ec_server: recovered.into_event_channel_server().await,
@@ -732,7 +830,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
             |recovered: backend::Task<backend::Created<B>>| async {
                 Server {
                     state: ChannelsListening {
-                        backend: recovered.into_backend(),
+                        backend: recovered.into_backend().into_root(),
                         cc_server: transition_async!(cc_handler_task, cc_handler::Terminated)
                             .into_control_channel_server(),
                         ec_server: transition_async!(ec_handler_task, ec_handler::Terminated)
@@ -763,7 +861,7 @@ impl<B: Backend + 'static> Transitionable<ChannelsListening<B>> for Server<Chann
     fn transition(self) -> Self::NextStateful {
         Server {
             state: ChannelsListening {
-                backend: self.state.backend,
+                backend: self.state.backend.into_root(),
                 cc_server: transition!(self.state.cc.into_inner(), tcp::AsyncListening),
                 ec_server: transition!(self.state.ec.into_inner(), tcp::AsyncListening),
             },
@@ -782,6 +880,10 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
+        let mut top_level_cleanup_executed = false;
+        let mut has_sent_gb = false;
+        let mut server_gb_reason: Option<cm::ServerGoodbyeReason> = None;
+
         let mut backend_terminated = None;
         let mut heartbeat_terminated = None;
         let mut cc_handler_terminated = None;
@@ -791,6 +893,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         let backend_ct = self.state.backend_task.cancellation_token().clone();
         let cc_handler_ct = self.state.cc_handler_task.cancellation_token().clone();
         let ec_handler_ct = self.state.ec_handler_task.cancellation_token().clone();
+        let client_process_ct = CancellationToken::new();
 
         let mut backend_task =
             tokio::spawn(async move { self.state.backend_task.try_transition().await });
@@ -801,9 +904,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         let mut ec_handler_task =
             tokio::spawn(async move { self.state.ec_handler_task.try_transition().await });
 
-        let mut top_level_cleanup_executed = false;
-        let mut has_sent_gb = false;
-        let mut server_gb_reason: Option<cm::ServerGoodbyeReason> = None;
         loop {
             tokio::select! {
                 biased;
@@ -813,6 +913,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                     heartbeat_ct.cancel();
                     backend_ct.cancel();
                     ec_handler_ct.cancel();
+                    client_process_ct.cancel();
                 }
                 _ = self.state.ct.cancelled(), if server_gb_reason.is_some() && !has_sent_gb => {
                     if let Some(reason) = server_gb_reason {
@@ -838,7 +939,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                         server_gb_reason = match &be_term {
                             Ok(Err(_)) | Err(_) => Some(cm::ServerGoodbyeReason::InternalError),
                             Ok(Ok(be_task_terminated)) => if be_task_terminated.root_process_exited() {
-                                Some(cm::ServerGoodbyeReason::RootExited)
+                                Some(cm::ServerGoodbyeReason::ProcessExited)
                             } else {
                                 None
                             }
@@ -985,7 +1086,7 @@ impl<B: Backend + 'static> Transitionable<ChannelsListening<B>> for Server<Sessi
     fn transition(self) -> Self::NextStateful {
         Server {
             state: ChannelsListening {
-                backend: self.state.backend,
+                backend: self.state.backend.into_root(),
                 cc_server: self.state.cc_server,
                 ec_server: self.state.ec_server,
             },
@@ -1046,7 +1147,6 @@ mod test {
                 Duration::from_millis(1000_u64).try_into().unwrap(),
             )
             .max_decoder_count(3_u32)
-            .root_program("glxgears")
             .build()
             .expect("ClientInit build")
             .into()
@@ -1066,6 +1166,7 @@ mod test {
             .temp_client_id(client_id)
             .max_width(1920)
             .max_height(1080)
+            .allow_client_exec(false)
             .build()
             .expect("Configuration build");
         let server: Server<ChannelsListening<X>> = Server::new(server_config.clone())

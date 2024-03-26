@@ -9,10 +9,9 @@ use aperturec_trace::queue::{self, deq, enq, trace_queue};
 use futures::{future, stream, Stream, StreamExt};
 use ndarray::{Array2, ShapeBuilder};
 use rand::distributions::{Alphanumeric, DistString};
-use shlex::Shlex;
 use std::fmt::{self, Debug, Formatter};
 use std::iter::Iterator;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -44,9 +43,18 @@ pub struct X {
     max_height: usize,
     connection: XConnection,
     root_drawable: Drawable,
-    root_process: Option<(String, Child)>,
+    root_process: Option<Child>,
     root_process_exited: bool,
     _xvfb_proc: Child,
+}
+
+async fn do_exec_command(display_name: &str, command: &mut Command) -> Result<Child> {
+    command.env("DISPLAY", display_name);
+    command.env("XDG_SESSION_TYPE", "x11");
+    log::debug!("Starting command `{:?}`", command);
+    let process = command.spawn()?;
+    log::debug!("Launched {:?}", process);
+    Ok(process)
 }
 
 impl Backend for X {
@@ -54,72 +62,28 @@ impl Backend for X {
         self.root_process_exited
     }
 
-    async fn wait_root_process(&mut self) -> Result<()> {
-        if self.root_process.is_none() {
-            return std::future::pending().await;
-        }
-
-        let (root_process_cmdline, ref mut root_process) = self.root_process.as_mut().unwrap();
-
-        let es = root_process.wait().await?;
-        log::debug!(
-            "Root program '{}' exited with result {}",
-            root_process_cmdline,
-            es
-        );
-
-        self.root_process_exited = true;
-        self.root_process = None;
-        Ok(())
-    }
-
-    async fn start_root_process<S>(&mut self, root_process: S, should_replace: bool) -> Result<()>
-    where
-        S: AsRef<str> + Send + Sync,
-    {
-        if let Some((curr_root_process_cmdline, ref mut curr_root_process)) =
-            self.root_process.as_mut()
-        {
-            if should_replace {
-                log::warn!(
-                    "Replacing current root program '{}' with '{}'",
-                    curr_root_process_cmdline,
-                    root_process.as_ref()
-                );
-
-                curr_root_process.start_kill()?;
-                curr_root_process.wait().await?;
-            } else {
-                log::debug!(
-                    "Not replacing current program '{}'",
-                    curr_root_process_cmdline
-                );
-                return Ok(());
+    async fn wait_root_process(&mut self) -> Result<ExitStatus> {
+        match self.root_process {
+            None => future::pending().await,
+            Some(ref mut rp) => {
+                let es = rp.wait().await?;
+                self.root_process_exited = true;
+                log::debug!("Root program exited with result {}", es);
+                Ok(es)
             }
         }
-        self.root_process = None;
+    }
 
-        let mut root_process_args = Shlex::new(root_process.as_ref());
-        let root_process_exe = root_process_args
-            .next()
-            .ok_or(anyhow!("Empty initial program provided"))?;
-        let mut root_process_cmd = Command::new::<&str>(root_process_exe.as_ref());
-        root_process_cmd
-            .args(root_process_args)
-            .env("DISPLAY", &self.display_name)
-            .env("XDG_SESSION_TYPE", "x11")
-            .kill_on_drop(true);
-        log::debug!(
-            "Starting {} with command `{:?}`",
-            root_process.as_ref(),
-            root_process_cmd
-        );
-        let root_process_proc = root_process_cmd.spawn()?;
-        log::debug!("Launched {}", root_process.as_ref());
-        self.root_process = Some((String::from(root_process.as_ref()), root_process_proc));
-        self.root_process_exited = false;
+    fn start_kill_root_process(&mut self) -> Result<()> {
+        if let Some(root_process) = self.root_process.as_mut() {
+            Ok(root_process.start_kill()?)
+        } else {
+            anyhow::bail!("No root process to kill");
+        }
+    }
 
-        Ok(())
+    async fn exec_command(&mut self, command: &mut Command) -> Result<Child> {
+        do_exec_command(&self.display_name, command).await
     }
 
     async fn capture_area(&self, area: Rect) -> Result<FramebufferUpdate> {
@@ -176,9 +140,13 @@ impl Backend for X {
         ))
     }
 
-    async fn initialize<N>(max_width: N, max_height: N) -> Result<Self>
+    async fn initialize<N>(
+        max_width: N,
+        max_height: N,
+        root_process_cmd: Option<&mut Command>,
+    ) -> Result<Self>
     where
-        N: Into<Option<usize>> + Send,
+        N: Into<Option<usize>> + Send + Sync,
     {
         let max_width = max_width.into().unwrap_or(Self::DEFAULT_MAX_WIDTH);
         let max_height = max_height.into().unwrap_or(Self::DEFAULT_MAX_HEIGHT);
@@ -223,6 +191,11 @@ impl Backend for X {
         log::trace!("Setting up xtest extension");
         X::setup_xtest_extension(&connection).await?;
 
+        let root_process = match root_process_cmd {
+            None => None,
+            Some(cmd) => Some(do_exec_command(&display_name, cmd).await?),
+        };
+
         log::trace!("X initialized");
         Ok(X {
             display_name,
@@ -230,7 +203,7 @@ impl Backend for X {
             max_height,
             connection,
             root_drawable,
-            root_process: None,
+            root_process,
             root_process_exited: false,
             _xvfb_proc: xvfb_proc,
         })
@@ -673,10 +646,9 @@ mod test {
     #[serial]
     async fn retrieve_damage_from_stream() {
         const NUM_UPDATES: usize = 20;
-        let mut x = X::initialize(1920, 1080).await.expect("x initialize");
-        x.start_root_process("glxgears", false)
+        let x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))
             .await
-            .expect("launch glxgears");
+            .expect("x initialize");
         let damage_stream = x.damage_stream().await.expect("damage stream");
         let mut first = damage_stream.take(NUM_UPDATES);
         let mut count: usize = 0;
@@ -692,10 +664,9 @@ mod test {
     #[serial]
     async fn get_resolution() {
         setup();
-        let mut x = X::initialize(1920, 1080).await.expect("x initialize");
-        x.start_root_process("glxgears", false)
+        let x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))
             .await
-            .expect("launch glxgears");
+            .expect("x initialize");
         let res = x.resolution().await.expect("resolution");
         assert_eq!(res.width, 1920);
         assert_eq!(res.height, 1080);
@@ -704,10 +675,9 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn set_resolution() {
-        let mut x = X::initialize(1920, 1080).await.expect("x initialize");
-        x.start_root_process("glxgears", false)
+        let mut x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))
             .await
-            .expect("launch glxgears");
+            .expect("x initialize");
         let new = Size::new(1024, 768);
         x.set_resolution(&new).await.expect("set resolution");
         assert_eq!(new, x.resolution().await.expect("get resolution"));

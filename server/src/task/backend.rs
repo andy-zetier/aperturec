@@ -1,4 +1,4 @@
-use crate::backend::{Backend, Event};
+use crate::backend::{Backend, Event, SwapableBackend};
 use crate::task::encoder::{self, Encoder};
 use crate::task::event_channel_handler::EVENT_QUEUE;
 
@@ -28,7 +28,7 @@ pub struct Task<S: State> {
 
 #[derive(State)]
 pub struct Created<B: Backend + 'static> {
-    backend: B,
+    backend: SwapableBackend<B>,
     event_rx: mpsc::UnboundedReceiver<Event>,
     fb_update_req_rx: mpsc::UnboundedReceiver<cm::FramebufferUpdateRequest>,
     missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
@@ -40,7 +40,7 @@ pub struct Created<B: Backend + 'static> {
 }
 
 impl<B: Backend + 'static> Task<Created<B>> {
-    pub fn into_backend(self) -> B {
+    pub fn into_backend(self) -> SwapableBackend<B> {
         self.state.backend
     }
 }
@@ -49,7 +49,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
 pub struct Running<B: Backend + 'static> {
     acked_seq_subtask: JoinHandle<Result<()>>,
     acked_seq_subtask_ct: CancellationToken,
-    backend_subtask: JoinHandle<(B, Result<()>)>,
+    backend_subtask: JoinHandle<(SwapableBackend<B>, Result<()>)>,
     backend_subtask_ct: CancellationToken,
     missed_frame_subtask: JoinHandle<Result<()>>,
     missed_frame_subtask_ct: CancellationToken,
@@ -83,11 +83,11 @@ impl<B: Backend + 'static> Task<Running<B>> {
 
 #[derive(State, Debug)]
 pub struct Terminated<B: Backend + 'static> {
-    backend: B,
+    backend: SwapableBackend<B>,
 }
 
 impl<B: Backend + 'static> Task<Terminated<B>> {
-    pub fn into_backend(self) -> B {
+    pub fn into_backend(self) -> SwapableBackend<B> {
         self.state.backend
     }
 
@@ -102,7 +102,7 @@ pub struct Channels {
 
 impl<B: Backend + 'static> Task<Created<B>> {
     pub fn new<'d, I>(
-        backend: B,
+        backend: SwapableBackend<B>,
         decoders: I,
         mc_servers: Vec<AsyncServerMediaChannel>,
         codecs: BTreeMap<u16, Codec>,

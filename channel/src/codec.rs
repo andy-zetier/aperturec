@@ -1036,7 +1036,7 @@ mod tcp_test {
                     Duration::from_millis(1000_u64).try_into().unwrap(),
                 )
                 .max_decoder_count(1_u32)
-                .root_program("glxgears")
+                .client_specified_program_cmdline("glxgears")
                 .build()
                 .expect("ClientInit build")
         }};

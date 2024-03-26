@@ -250,7 +250,8 @@ pub struct Configuration {
     pub keepalive_timeout: Duration,
     pub win_width: u64,
     pub win_height: u64,
-    pub root_program: Option<String>,
+    #[builder(setter(strip_option), default)]
+    pub program_cmdline: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -428,7 +429,12 @@ impl Client {
                     .expect("Failed to convert Duration"),
             )
             .max_decoder_count::<u32>(self.config.decoder_max.into())
-            .root_program(self.config.root_program.clone().unwrap_or(String::from("")))
+            .client_specified_program_cmdline(
+                self.config
+                    .program_cmdline
+                    .clone()
+                    .unwrap_or(String::from("")),
+            )
             .build()
             .expect("Failed to generate ClientInit!")
     }
@@ -1152,7 +1158,6 @@ mod test {
             .id(1234)
             .max_fps(Duration::from_secs((1 / 30u16).into()))
             .keepalive_timeout(Duration::from_secs(1))
-            .root_program(Some("glxgears".into()))
             .decoder_port_start(decoder_port_start)
             .build()
             .expect("Failed to build Configuration!")

@@ -10,10 +10,10 @@ use std::path::PathBuf;
 
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false)]
-pub struct DefaultRootProgramGroup {
-    /// Default root program to launch if client does not specify (likely a desktop environment)
-    #[arg(short, long)]
-    root_program: Option<String>,
+pub struct RootProgramGroup {
+    /// Command-line invocation for root program to launch (likely a desktop environment)
+    #[arg(index = 1)]
+    root_program_cmdline: Option<String>,
 
     /// Allow no root program to be set. This will result in clients connecting to an
     /// empty screen unless a root program is launched out of band
@@ -21,10 +21,10 @@ pub struct DefaultRootProgramGroup {
     no_root_program: bool,
 }
 
-impl From<DefaultRootProgramGroup> for Option<String> {
-    fn from(g: DefaultRootProgramGroup) -> Option<String> {
-        match (g.root_program, g.no_root_program) {
-            (Some(root_program), false) => Some(root_program),
+impl From<RootProgramGroup> for Option<String> {
+    fn from(g: RootProgramGroup) -> Option<String> {
+        match (g.root_program_cmdline, g.no_root_program) {
+            (Some(root_program_cmdline), false) => Some(root_program_cmdline),
             (None, true) => None,
             _ => unreachable!("root-program and no-root-program in invalid state"),
         }
@@ -35,7 +35,12 @@ impl From<DefaultRootProgramGroup> for Option<String> {
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[clap(flatten)]
-    default_root_program: DefaultRootProgramGroup,
+    root_program_cmdline: RootProgramGroup,
+
+    /// Allow clients to specify programs to execute at connection time. See the client's
+    /// `program` argument for details
+    #[arg(short, long, action = clap::ArgAction::SetTrue, default_value = "false")]
+    allow_client_exec: bool,
 
     /// External IP address for the server to listen on
     #[arg(short, long, default_value = "0.0.0.0")]
@@ -144,9 +149,10 @@ async fn main() -> Result<()> {
         .name(args.name)
         .temp_client_id(args.temp_client_id)
         .max_width(dims[0])
-        .max_height(dims[1]);
-    if let Some(default_root_program) = args.default_root_program.into() {
-        config_builder.default_root_program(default_root_program);
+        .max_height(dims[1])
+        .allow_client_exec(args.allow_client_exec);
+    if let Some(root_program_cmdline) = args.root_program_cmdline.into() {
+        config_builder.root_process_cmdline(root_program_cmdline);
     }
     let config = config_builder.build()?;
 

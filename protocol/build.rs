@@ -21,7 +21,7 @@ impl VisitMut for DeriveBuilder {
         node.attrs
             .push(parse_quote! { #[derive(derive_builder::Builder)] });
         node.attrs
-            .push(parse_quote! { #[builder(setter(into, strip_option))] });
+            .push(parse_quote! { #[builder(default, setter(into, strip_option))] });
     }
 }
 

@@ -8,9 +8,59 @@ use futures::stream::Stream;
 use ndarray::{s, Array2, ArrayView2};
 use std::error::Error;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::process::ExitStatus;
+use tokio::process::{Child, Command};
 
 pub mod x;
 pub use x::X;
+
+#[derive(Debug)]
+pub struct SwapableBackend<B: Backend> {
+    root: B,
+    client_specified: Option<B>,
+}
+
+impl<B: Backend> Deref for SwapableBackend<B> {
+    type Target = B;
+
+    fn deref(&self) -> &Self::Target {
+        match &self.client_specified {
+            Some(client_specified_backend) => client_specified_backend,
+            None => &self.root,
+        }
+    }
+}
+
+impl<B: Backend> DerefMut for SwapableBackend<B> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match &mut self.client_specified {
+            Some(client_specified_backend) => client_specified_backend,
+            None => &mut self.root,
+        }
+    }
+}
+
+impl<B: Backend> SwapableBackend<B> {
+    pub fn new(root: B) -> Self {
+        SwapableBackend {
+            root,
+            client_specified: None,
+        }
+    }
+
+    pub fn set_client_specified(&mut self, client_specified: B) -> Option<B> {
+        self.client_specified.replace(client_specified)
+    }
+
+    pub fn into_inner(self) -> (B, Option<B>) {
+        (self.root, self.client_specified)
+    }
+
+    pub fn into_root(self) -> B {
+        self.into_inner().0
+    }
+}
 
 #[derive(Debug)]
 pub struct FramebufferUpdate {
@@ -98,7 +148,11 @@ mod backend_trait {
 
     #[trait_variant::make(Backend: Send + Sync)]
     pub trait LocalBackend: Sized + Send + Sync + fmt::Debug {
-        async fn initialize<N>(max_width: N, max_height: N) -> Result<Self>
+        async fn initialize<N>(
+            max_width: N,
+            max_height: N,
+            root_process_cmd: Option<&mut Command>,
+        ) -> Result<Self>
         where
             N: Into<Option<usize>> + Send + Sync;
         async fn notify_event(&mut self, event: Event) -> Result<()>;
@@ -107,14 +161,9 @@ mod backend_trait {
         async fn resolution(&self) -> Result<Size>;
         async fn damage_stream(&self) -> Result<impl Stream<Item = Rect> + Send + Unpin + 'static>;
         async fn capture_area(&self, area: Rect) -> Result<FramebufferUpdate>;
-        async fn start_root_process<S>(
-            &mut self,
-            root_process: S,
-            should_replace: bool,
-        ) -> Result<()>
-        where
-            S: AsRef<str> + Send + Sync;
-        async fn wait_root_process(&mut self) -> Result<()>;
+        async fn exec_command(&mut self, command: &mut Command) -> Result<Child>;
+        async fn wait_root_process(&mut self) -> Result<ExitStatus>;
+        fn start_kill_root_process(&mut self) -> Result<()>;
         fn root_process_exited(&self) -> bool;
     }
 }

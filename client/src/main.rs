@@ -8,8 +8,54 @@ use gethostname::gethostname;
 use std::time::Duration;
 use sysinfo::{CpuRefreshKind, RefreshKind, SystemExt};
 
+const DEFAULT_RESOLUTION: (u64, u64) = (800, 600);
+
+#[derive(Debug, clap::Args)]
+#[group(required = false, multiple = false)]
+pub struct ResolutionGroup {
+    /// Display size specified as WIDTHxHEIGHT [default 800x600].
+    #[arg(short, long)]
+    resolution: Option<String>,
+
+    /// Set resolution to your primary display's current size and startup in fullscreen mode.
+    /// Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
+    #[arg(short, long, action = clap::ArgAction::SetTrue)]
+    fullscreen: bool,
+}
+
+impl From<ResolutionGroup> for (u64, u64) {
+    fn from(g: ResolutionGroup) -> (u64, u64) {
+        match (g.resolution, g.fullscreen) {
+            (Some(resolution), false) => {
+                let dims: Vec<u64> = resolution
+                    .to_lowercase()
+                    .split('x')
+                    .map(|d| {
+                        d.parse().unwrap_or_else(|e| {
+                            panic!("Failed to parse resolution '{}': {}", resolution, e)
+                        })
+                    })
+                    .collect();
+                if dims.len() != 2 {
+                    panic!("Invalid resolution: {}", resolution);
+                }
+                (dims[0], dims[1])
+            }
+            (None, true) => {
+                let full = gtk3::get_fullscreen_dims();
+                (full.0 as u64, full.1 as u64)
+            }
+            (None, false) => DEFAULT_RESOLUTION,
+            (Some(_), true) => unreachable!("screen-size and fullscreen are both set"),
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 struct Args {
+    #[clap(flatten)]
+    resolution: ResolutionGroup,
+
     /// Maximum number of decoders to use. Each decoder will consume one thread and one UDP port. A
     /// value of 0 uses the number of CPU cores available.
     #[arg(short, long, default_value_t = 0)]
@@ -23,11 +69,6 @@ struct Args {
     /// Maximum frames per second.
     #[arg(long = "fps", default_value_t = 30)]
     fps_max: u16,
-
-    /// Set SCREEN_SIZE to your primary display's current size and startup in fullscreen mode.
-    /// Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
-    #[arg(short, long, action = clap::ArgAction::SetTrue)]
-    fullscreen: bool,
 
     /// Duration in seconds between subsequent keepalive attempts. This value may need to be
     /// tweaked depending on your NAT configuration.
@@ -46,13 +87,15 @@ struct Args {
     #[arg(long, default_value = None)]
     metrics_pushgateway: Option<String>,
 
-    /// Display size specified as WIDTHxHEIGHT.
-    #[arg(index = 3, default_value = "800x600")]
-    screen_size: String,
-
-    /// Root program to launch on connection. E.g. `gnome-shell`
+    /// Program to launch and display on connection.
+    ///
+    /// If left unspecified, the client will open the server-specified root program, resuming any
+    /// previous state. If specified, the client will force the server to launch a new instance of
+    /// the specified program, which will be killed on client disconnect.
+    ///
+    /// Specifying this argument requires the server to have set `--allow-client-exec`.
     #[arg(index = 2)]
-    root_program: Option<String>,
+    program_cmdline: Option<String>,
 
     /// Hostname or IP address of the server, optionally including a control port. Eg. mybox.com,
     /// 10.10.10.10:46454, myotherbox.io:12345, [::1]
@@ -92,38 +135,23 @@ fn main() -> Result<()> {
         sys.cpus().len().try_into().unwrap()
     };
 
-    let mut dims: Vec<u64> = args
-        .screen_size
-        .to_lowercase()
-        .split('x')
-        .map(|d| {
-            d.parse()
-                .unwrap_or_else(|_| panic!("Failed to parse resolution '{}'", d))
-        })
-        .collect();
+    let (width, height) = args.resolution.into();
 
-    if dims.len() != 2 {
-        panic!("Invalid resolution");
-    }
-
-    if args.fullscreen {
-        let full = gtk3::get_fullscreen_dims();
-        dims[0] = full.0 as u64;
-        dims[1] = full.1 as u64;
-    }
-
-    let config = client::ConfigurationBuilder::default()
+    let mut config_builder = client::ConfigurationBuilder::default();
+    config_builder
         .decoder_max(decoder_max)
         .name(gethostname().into_string().unwrap())
         .server_addr(args.server_address)
         .decoder_port_start(args.decoder_port_start)
-        .win_height(dims[1])
-        .win_width(dims[0])
+        .win_height(height)
+        .win_width(width)
         .id(args.temp_client_id)
         .max_fps(Duration::from_secs_f32(1.0 / (args.fps_max as f32)))
-        .keepalive_timeout(Duration::from_secs(args.keepalive_timeout))
-        .root_program(args.root_program)
-        .build()?;
+        .keepalive_timeout(Duration::from_secs(args.keepalive_timeout));
+    if let Some(program_cmdline) = args.program_cmdline {
+        config_builder.program_cmdline(program_cmdline);
+    }
+    let config = config_builder.build()?;
 
     log::debug!("{:#?}", config);
 

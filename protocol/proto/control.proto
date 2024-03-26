@@ -63,7 +63,7 @@ message ClientInit {
   google.protobuf.Duration client_heartbeat_interval = 4;
   google.protobuf.Duration client_heartbeat_response_interval = 5;
   uint32 max_decoder_count = 6;
-  string root_program = 7;
+  string client_specified_program_cmdline = 7;
 }
 
 enum ClientGoodbyeReason {
@@ -116,11 +116,12 @@ enum ServerGoodbyeReason {
   SERVER_GOODBYE_UNSPECIFIED = 0;
   SERVER_GOODBYE_REASON_SHUTTING_DOWN = 1;
   SERVER_GOODBYE_REASON_NETWORK_ERROR = 2;
-  SERVER_GOODBYE_REASON_ROOT_EXITED = 3;
+  SERVER_GOODBYE_REASON_PROCESS_EXITED = 3;
   SERVER_GOODBYE_REASON_INTERNAL_ERROR = 4;
   SERVER_GOODBYE_REASON_AUTHENTICATION_FAILURE = 5;
   SERVER_GOODBYE_REASON_INVALID_CONFIGURATION = 6;
-  SERVER_GOODBYE_REASON_ROOT_PROCESS_LAUNCH_FAILED = 7;
+  SERVER_GOODBYE_REASON_PROCESS_LAUNCH_FAILED = 7;
+  SERVER_GOODBYE_REASON_CLIENT_EXEC_DISALLOWED = 8;
 }
 
 message ServerGoodbye { ServerGoodbyeReason reason = 1; }
