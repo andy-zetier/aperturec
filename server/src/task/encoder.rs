@@ -1,6 +1,8 @@
 use crate::backend::FramebufferUpdate;
-use crate::metrics::CompressionRatio;
 use crate::metrics::TrackingBufferDamageRatio;
+use crate::metrics::{
+    CompressionRatio, FramebufferUpdatesSent, PixelsCompressed, TimeInCompression,
+};
 
 use anyhow::{anyhow, Result};
 use aperturec_channel::{AsyncReceiver, AsyncSender};
@@ -22,6 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tokio_util::sync::CancellationToken;
 
@@ -129,7 +132,11 @@ fn encode_zlib(
         .reversed_axes(); // nd-array has x/y reversed
 
     let mut enc_data = BytesMut::zeroed(max_bytes_per_msg);
-    let mut compressor = Compress::new_with_window_bits(Compression::new(1), false, 9);
+    let mut compressor = Compress::new_with_window_bits(
+        Compression::new(1),
+        false,
+        ((max_bytes_per_msg as f64).log2()).ceil() as u8,
+    );
     let mut nbytes_consumed = 0;
     let mut nbytes_produced = 0;
     let mut row_idx = 0;
@@ -182,11 +189,15 @@ fn encode(
 
     std::iter::repeat_with(move || {
         let encoded_loc = curr_loc;
+        let start = Instant::now();
         let (bytes, encoded_dim) = match codec {
             Codec::Raw => encode_raw(max_bytes_per_msg, &mut curr_loc, raw_data),
             Codec::Zlib => encode_zlib(max_bytes_per_msg, &mut curr_loc, raw_data),
             Codec::Unspecified => panic!("Unspecified codec"),
         };
+        let finish = Instant::now();
+        TimeInCompression::inc_by(finish.duration_since(start).as_secs_f64());
+        PixelsCompressed::inc_by((encoded_dim.width * encoded_dim.height) as f64);
         (bytes, encoded_loc, encoded_dim)
     })
     .take_while(|(bytes, ..)| !bytes.is_empty())
@@ -1059,6 +1070,7 @@ where
                                 } else {
                                     // Each RectangleUpdate is one "packet sent"
                                     aperturec_metrics::builtins::packet_sent(rus_count);
+                                    FramebufferUpdatesSent::inc();
                                     deq_group!(DISPATCH_QUEUE, id: decoder.port, rus_count);
                                     const TAIL_FBU_RTT: Duration = Duration::from_millis(100);
                                     tail_fbu_timeout = tokio::spawn(async move {
