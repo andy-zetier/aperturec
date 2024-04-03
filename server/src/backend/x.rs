@@ -12,14 +12,14 @@ use rand::distributions::{Alphanumeric, DistString};
 use std::fmt::{self, Debug, Formatter};
 use std::iter::Iterator;
 use std::process::{ExitStatus, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use xcb::damage::{self, Damage};
 use xcb::x::{self, Drawable, GetImage, ImageFormat, ScreenBuf};
 use xcb::{randr, xtest, BaseEvent, Connection, Extension};
@@ -123,7 +123,7 @@ impl Backend for X {
         };
         Ok(stream::iter([rect]).chain(
             self.connection
-                .event_stream()?
+                .event_stream()
                 .filter_map(|event| match &event.0 {
                     xcb::Event::Damage(damage::Event::Notify(notify_event)) => {
                         future::ready(Some(notify_event.area()))
@@ -511,13 +511,68 @@ impl X {
     }
 }
 
+struct XEventStreamMux {
+    txs: Arc<Mutex<Vec<mpsc::UnboundedSender<Arc<XEvent>>>>>,
+    _event_task: JoinHandle<Result<()>>,
+    _tx_task: JoinHandle<Result<()>>,
+}
+
+impl XEventStreamMux {
+    fn new(conn: Arc<xcb::Connection>) -> XEventStreamMux {
+        let (event_task_tx, mut event_task_rx) = mpsc::unbounded_channel();
+
+        let conn = conn.clone();
+        let txs: Arc<Mutex<_>> = Arc::default();
+        let tx_task_txs = txs.clone();
+
+        XEventStreamMux {
+            txs,
+            _event_task: tokio::task::spawn_blocking(move || loop {
+                let event = conn.wait_for_event()?;
+                event_task_tx.send(XEvent(event))?;
+                enq!(X_DAMAGE_QUEUE);
+            }),
+            _tx_task: tokio::task::spawn(async move {
+                loop {
+                    match event_task_rx.recv().await {
+                        Some(event) => {
+                            let arcd = Arc::new(event);
+                            let mut txs_to_prune = vec![];
+
+                            let mut txs = tx_task_txs.lock().expect("lock X mux txs");
+                            for (idx, tx) in txs.iter().enumerate() {
+                                if tx.send(arcd.clone()).is_err() {
+                                    txs_to_prune.push(idx)
+                                }
+                            }
+
+                            for idx in txs_to_prune {
+                                txs.remove(idx);
+                            }
+                        }
+                        None => {
+                            bail!("No more X events");
+                        }
+                    }
+                }
+            }),
+        }
+    }
+
+    fn get_stream(&self) -> impl Stream<Item = Arc<XEvent>> + Send + Sync + Unpin {
+        let mut txs = self.txs.lock().expect("lock X mux txs");
+        let (tx, rx) = mpsc::unbounded_channel();
+        txs.push(tx);
+        UnboundedReceiverStream::new(rx)
+    }
+}
+
 struct XConnection {
     inner: Arc<Connection>,
     preferred_screen: ScreenBuf,
     min_keycode: x::Keycode,
     max_keycode: x::Keycode,
-    _event_task: JoinHandle<Result<()>>,
-    event_broadcast_rx: broadcast::Receiver<Arc<XEvent>>,
+    event_stream_mux: XEventStreamMux,
 }
 
 impl Debug for XConnection {
@@ -532,18 +587,8 @@ impl Debug for XConnection {
 }
 
 impl XConnection {
-    fn event_stream(&self) -> Result<impl Stream<Item = Arc<XEvent>> + Send + Sync + Unpin> {
-        Ok(
-            BroadcastStream::new(self.event_broadcast_rx.resubscribe()).filter_map(
-                |res| match res {
-                    Ok(event) => future::ready(Some(event)),
-                    Err(bcast_err) => {
-                        log::warn!("event bcast error: {}", bcast_err);
-                        future::ready(None)
-                    }
-                },
-            ),
-        )
+    fn event_stream(&self) -> impl Stream<Item = Arc<XEvent>> + Send + Sync + Unpin {
+        self.event_stream_mux.get_stream()
     }
 
     async fn checked_request_with_reply<R>(
@@ -598,20 +643,13 @@ impl XConnection {
             .to_owned();
         let min_keycode = conn_arc.get_setup().min_keycode();
         let max_keycode = conn_arc.get_setup().max_keycode();
-        let (event_broadcast_tx, event_broadcast_rx) = broadcast::channel(256);
-        let event_task_inner = conn_arc.clone();
 
         Ok(XConnection {
-            inner: conn_arc,
+            inner: conn_arc.clone(),
             preferred_screen,
             min_keycode,
             max_keycode,
-            _event_task: tokio::task::spawn_blocking(move || loop {
-                let event = event_task_inner.wait_for_event()?;
-                event_broadcast_tx.send(Arc::new(XEvent(event)))?;
-                enq!(X_DAMAGE_QUEUE);
-            }),
-            event_broadcast_rx,
+            event_stream_mux: XEventStreamMux::new(conn_arc),
         })
     }
 }
