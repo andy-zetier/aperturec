@@ -290,8 +290,8 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
         try_recover!(socket.connect(self.remote_addr), self);
 
         Ok(Client {
+            local_addr: try_recover!(socket.local_addr(), self),
             state: Connected { socket },
-            local_addr: self.local_addr,
             remote_addr: self.remote_addr,
         })
     }
@@ -321,8 +321,8 @@ impl AsyncTryTransitionable<AsyncConnected, Closed> for Client<Closed> {
         try_recover_async!(socket.connect(self.remote_addr), self);
 
         Ok(Client {
+            local_addr: try_recover!(socket.local_addr(), self),
             state: AsyncConnected { socket },
-            local_addr: self.local_addr,
             remote_addr: self.remote_addr,
         })
     }
