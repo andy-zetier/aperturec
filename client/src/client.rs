@@ -721,7 +721,10 @@ impl Client {
                             local_port,
                             missing_seq
                         );
-                        aperturec_metrics::builtins::packet_lost(missing_seq.len());
+
+                        let missing_count = missing_seq.len();
+                        aperturec_metrics::builtins::packet_sent(missing_count);
+                        aperturec_metrics::builtins::packet_lost(missing_count);
                     }
                     //
                     // Notify Control thread of last SequenceId and missing SequenceIds
