@@ -1,6 +1,7 @@
 #! /bin/bash
 
-PG_URL=""
+PG_URL="${PG_URL:-}"
+
 function pg.display_time()
 {
 	local T=$1
