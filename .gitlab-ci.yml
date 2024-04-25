@@ -18,11 +18,13 @@ stages:
 .images:debian:
   - ubuntu:20.04
   - ubuntu:22.04
+  - ubuntu:24.04
 .images:fedora:
   - fedora:rawhide
 .images:all:
   - ubuntu:20.04
   - ubuntu:22.04
+  - ubuntu:24.04
   - fedora:rawhide
 
 .runner-arch:independent:
