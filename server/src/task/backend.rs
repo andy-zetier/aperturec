@@ -1,6 +1,7 @@
 use crate::backend::{Backend, Event, SwapableBackend};
 use crate::task::encoder::{self, Encoder};
 use crate::task::event_channel_handler::EVENT_QUEUE;
+use crate::task::flow_control;
 
 use anyhow::{anyhow, Result};
 use aperturec_channel::AsyncServerMediaChannel;
@@ -37,6 +38,7 @@ pub struct Created<B: Backend + 'static> {
     mc_servers: Vec<AsyncServerMediaChannel>,
     codecs: BTreeMap<u16, Codec>,
     client_addr: SocketAddr,
+    fc_handle: flow_control::FlowControlHandle,
 }
 
 impl<B: Backend + 'static> Task<Created<B>> {
@@ -110,6 +112,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
         event_rx: mpsc::UnboundedReceiver<Event>,
         fb_update_req_rx: mpsc::UnboundedReceiver<cm::FramebufferUpdateRequest>,
         missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
+        fc_handle: flow_control::FlowControlHandle,
     ) -> (Task<Created<B>>, Channels)
     where
         I: IntoIterator<Item = &'d (Decoder, Location, Dimension)>,
@@ -127,6 +130,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
                 mc_servers,
                 codecs,
                 client_addr: *client_addr,
+                fc_handle,
             },
         };
 
@@ -156,8 +160,14 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
             let port = decoder.port as u16;
             addr.set_port(port);
             let codec = self.state.codecs.remove(&port).unwrap_or(Codec::Raw);
-            let (encoder, encoder_channels) =
-                Encoder::new(&decoder, &location, &dimension, mc, codec);
+            let (encoder, encoder_channels) = Encoder::new(
+                &decoder,
+                &location,
+                &dimension,
+                mc,
+                codec,
+                self.state.fc_handle.clone(),
+            );
             let ct = encoder.cancellation_token().clone();
             let subtask: JoinHandle<Result<_, _>> = tokio::spawn(async move {
                 let encoder: Encoder<encoder::Running> =

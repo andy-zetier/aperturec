@@ -71,6 +71,10 @@ struct Args {
     #[arg(short, long, default_value = "1234")]
     temp_client_id: u64,
 
+    /// Maximum data transmit rate in whole megabits per second (Mbps)
+    #[arg(long, default_value = "25")]
+    mbps_max: u16,
+
     /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
     /// verbosity. The maximum is 3. Overwrites the behavior set via AC_TRACE_FILTER environment
     /// variable and --trace-filter argument
@@ -150,6 +154,7 @@ async fn main() -> Result<()> {
         .temp_client_id(args.temp_client_id)
         .max_width(dims[0])
         .max_height(dims[1])
+        .mbps_max(args.mbps_max)
         .allow_client_exec(args.allow_client_exec);
     if let Some(root_program_cmdline) = args.root_program_cmdline.into() {
         config_builder.root_process_cmdline(root_program_cmdline);

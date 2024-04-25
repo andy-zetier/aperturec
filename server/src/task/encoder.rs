@@ -3,6 +3,7 @@ use crate::metrics::TrackingBufferDamageRatio;
 use crate::metrics::{
     CompressionRatio, FramebufferUpdatesSent, PixelsCompressed, TimeInCompression,
 };
+use crate::task::flow_control;
 
 use anyhow::{anyhow, Result};
 use aperturec_channel::{AsyncReceiver, AsyncSender};
@@ -224,6 +225,7 @@ where
     fb_rx: mpsc::UnboundedReceiver<Arc<FramebufferUpdate>>,
     missed_frame_rx: mpsc::UnboundedReceiver<u64>,
     acked_frame_rx: mpsc::Receiver<u64>,
+    fc_handle: flow_control::FlowControlHandle,
 }
 
 #[derive(State, Debug)]
@@ -252,6 +254,7 @@ where
         dimension: &Dimension,
         send_recv: AsyncDuplex,
         codec: Codec,
+        fc_handle: flow_control::FlowControlHandle,
     ) -> (Self, Channels) {
         let (fb_tx, fb_rx) = mpsc::unbounded_channel();
         let (missed_frame_tx, missed_frame_rx) = mpsc::unbounded_channel();
@@ -267,6 +270,7 @@ where
                 fb_rx,
                 missed_frame_rx,
                 acked_frame_rx,
+                fc_handle,
             },
             ct: CancellationToken::new(),
         };
@@ -966,6 +970,7 @@ where
             let mut sequence_no = 0_u64;
 
             let ct = self.ct.clone();
+            let fc_handle = self.state.fc_handle;
             tokio::spawn(async move {
                 let mut dispatch_stream = ReceiverStream::new(dispatch_rx).fuse();
 
@@ -1053,6 +1058,10 @@ where
                                 MutexGuard::unlock_fair(in_flight_locked);
                                 let rus_count = rus.len();
                                 let message: mm_s2c::Message = mm::FramebufferUpdate::new(rus).into();
+
+                                if let Err(e) = fc_handle.request_to_send(message.encoded_len()).await {
+                                    break 'select Err(e);
+                                }
 
                                 if let Err(e) = send_recv.send(message).await {
                                     if let Some(io_err) = e.downcast_ref::<std::io::Error>() {

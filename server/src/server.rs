@@ -1,7 +1,7 @@
 use crate::backend::{Backend, SwapableBackend};
 use crate::task::{
     backend, control_channel_handler as cc_handler, encoder, event_channel_handler as ec_handler,
-    heartbeat,
+    flow_control, heartbeat,
 };
 
 use anyhow::{anyhow, Result};
@@ -37,6 +37,7 @@ pub struct Configuration {
     #[builder(setter(strip_option), default)]
     root_process_cmdline: Option<String>,
     allow_client_exec: bool,
+    mbps_max: u16,
 }
 
 #[derive(Stateful, Debug)]
@@ -105,6 +106,7 @@ pub struct Running<B: Backend + 'static> {
     heartbeat_task: heartbeat::Task<heartbeat::Running>,
     cc_handler_task: cc_handler::Task<cc_handler::Running>,
     ec_handler_task: ec_handler::Task<ec_handler::Running>,
+    flow_control_task: flow_control::Task<flow_control::Running>,
 }
 
 #[derive(State)]
@@ -765,6 +767,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
 
         let (cc_handler_task, cc_handler_channels) = cc_handler::Task::new(self.state.cc);
         let (ec_handler_task, ec_handler_channels) = ec_handler::Task::new(self.state.ec);
+        let (flow_control_task, fc_handle) = flow_control::Task::new(self.config.mbps_max.into());
 
         let (backend_task, backend_channels) = backend::Task::<backend::Created<B>>::new(
             self.state.backend,
@@ -775,6 +778,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
             ec_handler_channels.event_rx,
             cc_handler_channels.fb_update_req_rx,
             cc_handler_channels.missed_frame_rx,
+            fc_handle,
         );
         let heartbeat_task = heartbeat::Task::<heartbeat::Created>::new(
             self.state.client_hb_interval,
@@ -795,6 +799,21 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
                     config: self.config,
                 }
             });
+
+        let flow_control_task = try_transition_inner_recover_async!(
+            flow_control_task,
+            flow_control::Created,
+            |_| async {
+                Server {
+                    state: ChannelsListening {
+                        backend: backend_task.into_backend().into_root(),
+                        cc_server: cc_handler_task.into_control_channel_server().await,
+                        ec_server: ec_handler_task.into_event_channel_server().await,
+                    },
+                    config: self.config,
+                }
+            }
+        );
         let cc_handler_task = try_transition_inner_recover_async!(
             cc_handler_task,
             cc_handler::Created,
@@ -824,6 +843,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
                 }
             }
         );
+
         let backend_task: backend::Task<backend::Running<B>> = try_transition_inner_recover_async!(
             backend_task,
             backend::Created<B>,
@@ -849,6 +869,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
                 heartbeat_task,
                 cc_handler_task,
                 ec_handler_task,
+                flow_control_task,
             },
             config: self.config,
         })
@@ -888,11 +909,13 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         let mut heartbeat_terminated = None;
         let mut cc_handler_terminated = None;
         let mut ec_handler_terminated = None;
+        let mut flow_control_terminated = None;
 
         let heartbeat_ct = self.state.heartbeat_task.cancellation_token().clone();
         let backend_ct = self.state.backend_task.cancellation_token().clone();
         let cc_handler_ct = self.state.cc_handler_task.cancellation_token().clone();
         let ec_handler_ct = self.state.ec_handler_task.cancellation_token().clone();
+        let flow_control_ct = self.state.flow_control_task.cancellation_token().clone();
         let client_process_ct = CancellationToken::new();
 
         let mut backend_task =
@@ -903,6 +926,8 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
             tokio::spawn(async move { self.state.cc_handler_task.try_transition().await });
         let mut ec_handler_task =
             tokio::spawn(async move { self.state.ec_handler_task.try_transition().await });
+        let mut flow_control_task =
+            tokio::spawn(async move { self.state.flow_control_task.try_transition().await });
 
         loop {
             tokio::select! {
@@ -913,6 +938,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                     heartbeat_ct.cancel();
                     backend_ct.cancel();
                     ec_handler_ct.cancel();
+                    flow_control_ct.cancel();
                     client_process_ct.cancel();
                 }
                 _ = self.state.ct.cancelled(), if server_gb_reason.is_some() && !has_sent_gb => {
@@ -964,6 +990,14 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                     cc_handler_terminated = Some(cc_term);
                     self.state.ct.cancel();
                 }
+                fc_term = &mut flow_control_task, if flow_control_terminated.is_none() => {
+                    log::debug!("Flow Control subtask completed");
+                    if server_gb_reason.is_none() && fc_term.is_err() {
+                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
+                    }
+                    flow_control_terminated = Some(fc_term);
+                    self.state.ct.cancel();
+                }
                 else => break
             }
         }
@@ -971,6 +1005,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         let heartbeat_terminated = heartbeat_terminated.expect("heartbeat terminated");
         let cc_handler_terminated = cc_handler_terminated.expect("cc handler terminated");
         let ec_handler_terminated = ec_handler_terminated.expect("ec handler terminated");
+        let flow_control_terminated = flow_control_terminated.expect("flow control terminated");
 
         let mut errors = vec![];
         let backend = match backend_terminated {
@@ -1032,6 +1067,18 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
             }
         }
         .into_event_channel_server();
+
+        match flow_control_terminated {
+            Ok(Ok(_)) => (),
+            Ok(Err(Recovered { error, .. })) => {
+                log::error!("Flow Control terminated with error: {}", error);
+                errors.push(error);
+            }
+            Err(join_error) => {
+                log::error!("Flow Control task panicked: {}", join_error);
+                errors.push(join_error.into());
+            }
+        }
 
         let stateful = Server {
             state: SessionComplete {
@@ -1167,6 +1214,7 @@ mod test {
             .max_width(1920)
             .max_height(1080)
             .allow_client_exec(false)
+            .mbps_max(500)
             .build()
             .expect("Configuration build");
         let server: Server<ChannelsListening<X>> = Server::new(server_config.clone())
