@@ -844,10 +844,10 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
             }
         );
 
-        let backend_task: backend::Task<backend::Running<B>> = try_transition_inner_recover_async!(
-            backend_task,
-            backend::Created<B>,
-            |recovered: backend::Task<backend::Created<B>>| async {
+        let backend_task: backend::Task<backend::Running<B>> =
+            try_transition_inner_recover_async!(backend_task, |recovered: backend::Task<
+                backend::Created<B>,
+            >| async {
                 Server {
                     state: ChannelsListening {
                         backend: recovered.into_backend().into_root(),
@@ -858,8 +858,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
                     },
                     config: self.config,
                 }
-            }
-        );
+            });
 
         Ok(Server {
             state: Running {

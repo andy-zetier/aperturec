@@ -238,7 +238,13 @@ macro_rules! try_transition_inner_recover {
 /// The `$recover_constructor` must return a future (e.g. `|_| async { .. }`)
 #[macro_export]
 macro_rules! try_transition_inner_recover_async {
+    ($inner:expr, $recover_constructor:expr) => {{
+        try_transition_inner_recover_async!($inner, _, _, $recover_constructor)
+    }};
     ($inner:expr, $inner_recovered_state:ty, $recover_constructor:expr) => {{
+        try_transition_inner_recover_async!($inner, _, $inner_recovered_state, $recover_constructor)
+    }};
+    ($inner:expr, $inner_target_state: ty, $inner_recovered_state:ty, $recover_constructor:expr) => {{
         match <_ as AsyncTryTransitionable<_, $inner_recovered_state>>::try_transition($inner).await
         {
             Ok(ok) => ok,
