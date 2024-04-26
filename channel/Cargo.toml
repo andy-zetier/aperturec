@@ -9,10 +9,16 @@ aperturec-state-machine = { path = "../state_machine" }
 aperturec-metrics = { path = "../metrics" }
 aperturec-trace = { path = "../trace" }
 anyhow = "1.0"
+once_cell = { version = "1.19", optional = true }
+openssl = "0.10"
 prost = "0.12"
 futures = "0.3"
 tokio = { version = "1.29", features = ["full"] }
 trait-variant = "0.1"
 
 [dev-dependencies]
+aperturec-channel = { path = ".", features = ["test-tls-material"] }
 prost-types = "0.12"
+
+[features]
+test-tls-material = ["once_cell"]
