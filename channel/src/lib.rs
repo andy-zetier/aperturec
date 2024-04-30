@@ -22,7 +22,12 @@ pub type AsyncClientMediaChannel = codec::unreliable::AsyncClientMediaChannel;
 
 pub trait Receiver {
     type Message;
-    fn receive(&mut self) -> anyhow::Result<Self::Message>;
+    fn receive(&mut self) -> anyhow::Result<Self::Message> {
+        let (msg, _) = self.receive_with_len()?;
+        Ok(msg)
+    }
+
+    fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)>;
 }
 
 pub trait Sender {
@@ -33,13 +38,18 @@ pub trait Sender {
 mod async_variants {
     use futures::sink::{self, Sink};
     use futures::stream::{self, Stream};
+    use futures::{Future, FutureExt};
 
     #[trait_variant::make(Receiver: Send)]
     pub trait LocalReceiver: Send + Sized + 'static {
         type Message: Send;
 
+        fn receive(&mut self) -> impl Future<Output = anyhow::Result<Self::Message>> {
+            self.receive_with_len().map(|res| res.map(|tup| tup.0))
+        }
+
         #[allow(async_fn_in_trait)]
-        async fn receive(&mut self) -> anyhow::Result<Self::Message>;
+        async fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)>;
 
         fn stream(self) -> impl Stream<Item = anyhow::Result<Self::Message>> {
             stream::unfold(self, |mut receiver| async move {

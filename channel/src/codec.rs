@@ -12,7 +12,7 @@ pub mod reliable {
     fn do_receive<R: Read, RM: Message + Default>(
         reader: &mut std::io::BufReader<R>,
         buf: &mut Vec<u8>,
-    ) -> anyhow::Result<RM> {
+    ) -> anyhow::Result<(RM, usize)> {
         if buf.is_empty() {
             buf.resize(1, 0);
             reader.read_exact(&mut buf[0..])?;
@@ -43,7 +43,7 @@ pub mod reliable {
         };
 
         buf.clear();
-        Ok(msg)
+        Ok((msg, msg_len))
     }
 
     fn do_send<W: Write, SM: Message>(
@@ -95,7 +95,7 @@ pub mod reliable {
     async fn do_receive_async<R: AsyncRead + Unpin, RM: Message + Default>(
         reader: &mut tokio::io::BufReader<R>,
         buf: &mut Vec<u8>,
-    ) -> anyhow::Result<RM> {
+    ) -> anyhow::Result<(RM, usize)> {
         if buf.is_empty() {
             read_and_extend(1, reader, buf).await?;
         }
@@ -116,7 +116,7 @@ pub mod reliable {
         };
 
         buf.clear();
-        Ok(msg)
+        Ok((msg, msg_len))
     }
 
     async fn do_send_async<W: AsyncWrite + Unpin, SM: Message>(
@@ -182,8 +182,9 @@ pub mod reliable {
     {
         type Message = ApiRm;
 
-        fn receive(&mut self) -> anyhow::Result<Self::Message> {
-            Ok(do_receive::<R, WireRm>(&mut self.reader, &mut self.receive_buf)?.try_into()?)
+        fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)> {
+            let (msg, len) = do_receive::<R, WireRm>(&mut self.reader, &mut self.receive_buf)?;
+            Ok((msg.try_into()?, len))
         }
     }
 
@@ -230,12 +231,10 @@ pub mod reliable {
     {
         type Message = ApiRm;
 
-        async fn receive(&mut self) -> anyhow::Result<Self::Message> {
-            Ok(
-                do_receive_async::<R, WireRm>(&mut self.reader, &mut self.receive_buf)
-                    .await?
-                    .try_into()?,
-            )
+        async fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)> {
+            let (msg, len) =
+                do_receive_async::<R, WireRm>(&mut self.reader, &mut self.receive_buf).await?;
+            Ok((msg.try_into()?, len))
         }
     }
 
@@ -415,8 +414,9 @@ pub mod reliable {
         <ApiRm as TryFrom<WireRm>>::Error: Send + Sync + Error + 'static,
     {
         type Message = ApiRm;
-        fn receive(&mut self) -> anyhow::Result<ApiRm> {
-            Ok(do_receive::<C, WireRm>(&mut self.common_rw, &mut self.receive_buf)?.try_into()?)
+        fn receive_with_len(&mut self) -> anyhow::Result<(ApiRm, usize)> {
+            let (msg, len) = do_receive::<C, WireRm>(&mut self.common_rw, &mut self.receive_buf)?;
+            Ok((msg.try_into()?, len))
         }
     }
 
@@ -517,12 +517,11 @@ pub mod reliable {
         WireSm: Send + 'static,
     {
         type Message = ApiRm;
-        async fn receive(&mut self) -> anyhow::Result<ApiRm> {
-            Ok(
-                do_receive_async::<C, WireRm>(&mut self.common_rw, &mut self.receive_buf)
-                    .await?
-                    .try_into()?,
-            )
+
+        async fn receive_with_len(&mut self) -> anyhow::Result<(ApiRm, usize)> {
+            let (msg, len) =
+                do_receive_async::<C, WireRm>(&mut self.common_rw, &mut self.receive_buf).await?;
+            Ok((msg.try_into()?, len))
         }
     }
 
@@ -657,11 +656,12 @@ pub mod unreliable {
         <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
     {
         type Message = ApiRm;
-        fn receive(&mut self) -> anyhow::Result<Self::Message> {
+
+        fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)> {
             let nbytes_recvd = self.receiver.receive(&mut self.buf)?;
             aperturec_metrics::builtins::rx_bytes(nbytes_recvd);
             let slice = &self.buf[0..nbytes_recvd];
-            Ok(WireRm::decode(slice)?.try_into()?)
+            Ok((WireRm::decode(slice)?.try_into()?, nbytes_recvd))
         }
     }
 
@@ -697,10 +697,15 @@ pub mod unreliable {
         type Message = ApiRm;
 
         async fn receive(&mut self) -> anyhow::Result<Self::Message> {
+            let (msg, _) = self.receive_with_len().await?;
+            Ok(msg)
+        }
+
+        async fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)> {
             let nbytes_recvd = self.receiver.receive(&mut self.buf).await?;
             aperturec_metrics::builtins::rx_bytes(nbytes_recvd);
             let slice = &self.buf[0..nbytes_recvd];
-            Ok(WireRm::decode(slice)?.try_into()?)
+            Ok((WireRm::decode(slice)?.try_into()?, nbytes_recvd))
         }
     }
 
@@ -840,11 +845,12 @@ pub mod unreliable {
         <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
     {
         type Message = ApiRm;
-        fn receive(&mut self) -> anyhow::Result<Self::Message> {
+
+        fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)> {
             let nbytes_recvd = self.common_rs.receive(&mut self.buf)?;
             aperturec_metrics::builtins::rx_bytes(nbytes_recvd);
             let slice = &self.buf[0..nbytes_recvd];
-            Ok(WireRm::decode(slice)?.try_into()?)
+            Ok((WireRm::decode(slice)?.try_into()?, nbytes_recvd))
         }
     }
 
@@ -903,11 +909,11 @@ pub mod unreliable {
     {
         type Message = ApiRm;
 
-        async fn receive(&mut self) -> anyhow::Result<Self::Message> {
+        async fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)> {
             let nbytes_recvd = self.common_rs.receive(&mut self.buf).await?;
             aperturec_metrics::builtins::rx_bytes(nbytes_recvd);
             let slice = &self.buf[0..nbytes_recvd];
-            Ok(WireRm::decode(slice)?.try_into()?)
+            Ok((WireRm::decode(slice)?.try_into()?, nbytes_recvd))
         }
     }
 
@@ -1148,9 +1154,10 @@ mod tcp_test {
 
         let msg: event::client_to_server::Message = event::KeyEvent { down: true, key: 1 }.into();
         client_ec.send(msg.clone()).expect("event channel send");
-        let rx = server_ec.receive().expect("event channel receive");
+        let (rx, len) = server_ec.receive_with_len().expect("event channel receive");
 
         assert_eq!(msg, rx);
+        assert_eq!(msg.encoded_len(), len);
     }
 
     #[tokio::test]
@@ -1164,9 +1171,13 @@ mod tcp_test {
             .send(msg.clone())
             .await
             .expect("event channel send");
-        let rx = server_ec.receive().await.expect("event channel receive");
+        let (rx, len) = server_ec
+            .receive_with_len()
+            .await
+            .expect("event channel receive");
 
         assert_eq!(msg, rx);
+        assert_eq!(msg.encoded_len(), len);
     }
 }
 
@@ -1260,10 +1271,11 @@ mod udp_test {
         client_mc
             .send(keepalive.clone())
             .expect("failed to send media keepalive 2");
-        let recvd = server_mc
-            .receive()
+        let (recvd, len) = server_mc
+            .receive_with_len()
             .expect("failed to receive media keepalive 2");
         assert_eq!(keepalive, recvd);
+        assert_eq!(keepalive.encoded_len(), len);
 
         let _sync_client = server_mc.into_inner();
         let _sync_server = client_mc.into_inner();
@@ -1313,11 +1325,12 @@ mod udp_test {
             .send(keepalive.clone())
             .await
             .expect("failed to send async media keepalive 2");
-        let recvd = server_mc
-            .receive()
+        let (recvd, len) = server_mc
+            .receive_with_len()
             .await
             .expect("failed to receive async media keepalive 2");
         assert_eq!(keepalive, recvd);
+        assert_eq!(keepalive.encoded_len(), len);
 
         let _async_client = server_mc.into_inner();
         let _async_server = client_mc.into_inner();
