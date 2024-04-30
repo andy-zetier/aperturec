@@ -80,6 +80,19 @@ pub fn packet_sent(count: usize) {
 }
 
 ///
+/// Measure the number of packets received. This is an alias for
+/// [`packet_sent()`](crate::builtins::packet_sent). Both measure the number of packets
+/// transmitted.
+///
+/// Calling this function has no effect if [`PacketLoss`](BuiltinMetric::PacketLoss) has not been
+/// selected for tracking during [`MetricsInitializer::init()`](crate::MetricsInitializer::init)
+///
+pub fn packet_received(count: usize) {
+    // If the packet was successfully received, it must also have been sent
+    update(PacketLossUpdate::Sent(count));
+}
+
+///
 /// Measure the number of packets known to be lost
 ///
 /// Calling this function has no effect if [`PacketLoss`](BuiltinMetric::PacketLoss) has not been

@@ -589,7 +589,7 @@ impl Client {
                         fbu.rectangle_updates.last().unwrap().sequence_id.0
                     );*/
 
-                    aperturec_metrics::builtins::packet_sent(fbu.rectangle_updates.len());
+                    aperturec_metrics::builtins::packet_received(fbu.rectangle_updates.len());
 
                     let mut missing_seq: BTreeSet<u64> = BTreeSet::new();
                     for ru in fbu.rectangle_updates {
@@ -723,8 +723,10 @@ impl Client {
                         );
 
                         let missing_count = missing_seq.len();
-                        aperturec_metrics::builtins::packet_sent(missing_count);
                         aperturec_metrics::builtins::packet_lost(missing_count);
+
+                        // If these packets were lost, they must have been sent
+                        aperturec_metrics::builtins::packet_sent(missing_count);
                     }
                     //
                     // Notify Control thread of last SequenceId and missing SequenceIds
