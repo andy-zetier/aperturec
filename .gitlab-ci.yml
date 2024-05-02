@@ -12,6 +12,7 @@ stages:
   - client
   - server
 .crates:no-extra-dependencies: "channel,metrics,protocol,state_machine,trace"
+.crates:fips-dependencies: "quic-channel"
 .crates:server-dependencies: "server"
 .crates:client-dependencies: "client"
 
@@ -20,12 +21,12 @@ stages:
   - ubuntu:22.04
   - ubuntu:24.04
 .images:fedora:
-  - fedora:rawhide
+  - fedora:40
 .images:all:
   - ubuntu:20.04
   - ubuntu:22.04
   - ubuntu:24.04
-  - fedora:rawhide
+  - fedora:40
 
 .runner-arch:independent:
   tags:
@@ -39,6 +40,7 @@ stages:
 
 .targets:all:
   - rust-image
+  - fips-capable-image
   - client-image
   - server-image
 
@@ -94,7 +96,7 @@ create-images:build:
         ARCHITECTURE: !reference [.architectures:all]
         IMAGE_TARGET: !reference [.targets:all]
       - OS_VARIANT: fedora
-        IMAGE_BASE: fedora:rawhide
+        IMAGE_BASE: fedora:40
         ARCHITECTURE: amd64
         IMAGE_TARGET: client-image-windows
 
@@ -128,7 +130,7 @@ create-images:deploy-manifest:
         IMAGE_BASE: !reference [.images:fedora]
         IMAGE_TARGET: !reference [.targets:all]
       - OS_VARIANT: fedora
-        IMAGE_BASE: fedora:rawhide
+        IMAGE_BASE: fedora:40
         ARCHITECTURE: amd64
         IMAGE_TARGET: client-image-windows
         PLATFORMS: linux/amd64
@@ -185,6 +187,10 @@ cargo:check-build-test:
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: rust-image
         ARCHITECTURE: !reference [.architectures:all]
+      - CRATES: !reference [.crates:fips-dependencies]
+        IMAGE_BASE: !reference [.images:all]
+        IMAGE_TARGET: fips-capable-image
+        ARCHITECTURE: !reference [.architectures:all]
       - CRATES: !reference [.crates:server-dependencies]
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: server-image
@@ -214,7 +220,7 @@ cargo:check-build-windows-client:
     - git diff-index --quiet HEAD
   variables:
     CRATES: client
-    IMAGE_BASE: fedora:rawhide
+    IMAGE_BASE: fedora:40
     IMAGE_TARGET: client-image-windows
     ARCHITECTURE: amd64
   needs:
@@ -253,7 +259,7 @@ package:windows-client:
     - $CI_PROJECT_DIR/ci/scripts/create-windows-package.sh
   variables:
     CRATES: client
-    IMAGE_BASE: fedora:rawhide
+    IMAGE_BASE: fedora:40
     IMAGE_TARGET: client-image-windows
     ARCHITECTURE: amd64
   needs:

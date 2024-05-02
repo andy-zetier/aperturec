@@ -1,3 +1,4 @@
+//! TLS utilities for QUIC
 use anyhow::Result;
 use openssl::asn1::Asn1Time;
 use openssl::ec::{EcGroup, EcKey};
@@ -9,16 +10,19 @@ use std::fs;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
+/// TLS material stored in DER form
 pub struct DerMaterial {
     pub certificate: Vec<u8>,
     pub pkey: Vec<u8>,
 }
 
+/// TLS material stored in PEM form
 pub struct PemMaterial {
     pub certificate: String,
     pub pkey: String,
 }
 
+/// TLS material, both the certificate and the public/private key pair
 #[derive(Debug, Clone)]
 pub struct Material {
     pub certificate: X509,
@@ -46,6 +50,7 @@ impl TryFrom<Material> for DerMaterial {
 }
 
 impl Material {
+    /// Load [`Material`] from PEM-formated files
     pub fn from_pem_files(certificate: &Path, private_key: &Path) -> Result<Self> {
         let certificate = X509::from_pem(&fs::read(certificate)?)?;
         let pkey = PKey::private_key_from_pem(&fs::read(private_key)?)?;
@@ -53,6 +58,9 @@ impl Material {
         Ok(Material { certificate, pkey })
     }
 
+    /// Generate a self-signed certificate & corresponding eliptic-curve public/private key pair
+    ///
+    /// The certificate is valid for localhost, and any provided domains and IP addresses
     pub fn ec_self_signed<I: IntoIterator<Item = S>, S: AsRef<str>>(
         domains: I,
         ips: I,
@@ -66,8 +74,8 @@ impl Material {
         builder.set_version(2)?;
         builder.set_pubkey(&pkey)?;
 
-        builder.set_not_before(&Asn1Time::from_unix(0)?.as_ref())?;
-        builder.set_not_after(&Asn1Time::days_from_now(65536)?.as_ref())?;
+        builder.set_not_before(Asn1Time::from_unix(0)?.as_ref())?;
+        builder.set_not_after(Asn1Time::days_from_now(65536)?.as_ref())?;
 
         let mut name_builder = X509NameBuilder::new()?;
         name_builder.append_entry_by_text("C", "AC")?;
@@ -84,7 +92,6 @@ impl Material {
         for ip in ips {
             san_builder.ip(ip.as_ref());
         }
-        // Always allow localhost
         san_builder
             .dns("localhost")
             .ip(&Ipv4Addr::LOCALHOST.to_string())

@@ -27,6 +27,18 @@ FROM --platform=${ARCHITECTURE} base-rust-image as rust-image-fedora
 
 FROM --platform=${ARCHITECTURE} rust-image-${OS_VARIANT} as rust-image
 
+FROM --platform=${ARCHITECTURE} rust-image as fips-capable-image-debian
+RUN $APT_UPDATE && $APT_INSTALL clang && $APT_CLEAN
+
+FROM --platform=${ARCHITECTURE} rust-image as fips-capable-image-fedora
+RUN $DNF_INSTALL clang && $DNF_CLEAN
+
+FROM --platform=${ARCHITECTURE} fips-capable-image-${OS_VARIANT} as fips-capable-image
+ARG ARCHITECTURE
+ENV CC="clang"
+RUN curl -sSf https://dl.google.com/go/go1.22.2.linux-${ARCHITECTURE}.tar.gz | tar -xz -C /usr/local
+ENV PATH="$PATH:/usr/local/go/bin"
+
 FROM --platform=${ARCHITECTURE} rust-image as client-image-debian
 ENV TZ=Etc/UTC
 RUN $APT_UPDATE && $APT_INSTALL tzdata libgtk-3-dev lsb-release && $APT_CLEAN

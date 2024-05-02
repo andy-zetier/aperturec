@@ -1,0 +1,38 @@
+[package]
+name = "aperturec-quic-channel"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+aperturec-protocol = { path = "../protocol" }
+aperturec-state-machine = { path = "../state_machine" }
+aperturec-metrics = { path = "../metrics" }
+aperturec-trace = { path = "../trace" }
+anyhow = "1.0"
+bytes = "1.6"
+futures = "0.3"
+once_cell = { version = "1.19", optional = true }
+openssl = { version = "0.10" }
+pin-project = "1.1"
+prost = "0.12"
+rustls-native-certs = "0.7"
+tokio = { version = "1.37", features = ["full"] }
+trait-variant = "0.1"
+
+[dependencies.s2n-quic]
+version = "1.37"
+default_features = false
+features = ["provider-address-token-default", "provider-tls-rustls", "unstable-provider-datagram"]
+
+[dependencies.rustls]
+version = "0.23"
+default_features = false
+features = ["fips", "std"]
+
+[dev-dependencies]
+aperturec-quic-channel = { path = ".", features = ["test-tls-material"] }
+prost-types = "0.12"
+rand = "0.8"
+
+[features]
+test-tls-material = ["once_cell"]

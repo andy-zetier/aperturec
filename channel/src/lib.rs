@@ -1,6 +1,5 @@
 pub mod codec;
 pub mod reliable;
-pub mod tls;
 pub mod unreliable;
 
 pub type ServerControlChannel = codec::reliable::ServerControlChannel;

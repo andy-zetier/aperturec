@@ -1,5 +1,5 @@
 [workspace]
-members = ["channel", "client", "metrics", "protocol", "server", "state_machine", "trace"]
+members = ["channel", "client", "metrics", "protocol", "quic_channel", "server", "state_machine", "trace"]
 resolver = "2"
 
 [workspace.package]
