@@ -40,6 +40,7 @@ where
 ///
 /// If you do not care if your code is executed within the provided runtime, and only care if your
 /// future is awaited in the provided runtime, consider the more ergonomic [`Syncify`] trait.
+#[allow(dead_code)]
 pub(crate) trait SyncifyLazy {
     /// Output type of the async callable
     type Output;

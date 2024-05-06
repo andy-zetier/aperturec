@@ -72,6 +72,7 @@ mod async_transitionable {
 
     /// Async variant of [`Transitionable`]
     #[trait_variant::make(AsyncTransitionable: Send + Sync)]
+    #[allow(dead_code)]
     pub trait LocalAsyncTransitionable<N>: Stateful
     where
         N: State,
@@ -184,6 +185,7 @@ mod async_try_transitionable {
 
     /// Async variant of [`TryTransitionable`]
     #[trait_variant::make(AsyncTryTransitionable: Send + Sync)]
+    #[allow(dead_code)]
     pub trait LocalAsyncTryTransitionable<N, R>: AsyncTransitionable<R>
     where
         N: State,

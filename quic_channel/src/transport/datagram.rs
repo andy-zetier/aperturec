@@ -62,6 +62,7 @@ mod async_variants {
 
     /// Async variant of [`Receive`](super::Receive)
     #[trait_variant::make(Receive: Send + Sync)]
+    #[allow(dead_code)]
     pub trait LocalReceive {
         async fn receive(&mut self) -> anyhow::Result<Bytes>;
     }

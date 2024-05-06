@@ -127,6 +127,7 @@ mod async_variants {
     use futures::{Future, FutureExt};
 
     #[trait_variant::make(Gate: Send + Sync)]
+    #[allow(dead_code)]
     /// Async variant of [`super::Gate`]
     pub trait LocalGate {
         async fn wait_for_permission<T: Into<usize> + Send + Sync>(
@@ -136,6 +137,7 @@ mod async_variants {
     }
 
     #[trait_variant::make(Receiver: Send)]
+    #[allow(dead_code)]
     /// Async variant of [`super::Receiver`]
     pub trait LocalReceiver: Send + Sized {
         type Message: Send;
@@ -154,6 +156,7 @@ mod async_variants {
     }
 
     #[trait_variant::make(Sender: Send)]
+    #[allow(dead_code)]
     /// Async variant of [`super::Sender`]
     pub trait LocalSender: Send + Sized {
         type Message: Send;
@@ -169,11 +172,13 @@ mod async_variants {
     }
 
     #[trait_variant::make(Duplex: Send)]
+    #[allow(dead_code)]
     /// Async variant of [`super::Duplex`]
     pub trait LocalDuplex: Sender + Receiver {}
     impl<T: Sender + Receiver> Duplex for T {}
 
     #[trait_variant::make(UnifiedClient: Send)]
+    #[allow(dead_code)]
     /// Async variant of [`super::UnifiedClient`]
     pub trait LocalUnifiedClient {
         type Control: Duplex
@@ -187,6 +192,7 @@ mod async_variants {
     }
 
     #[trait_variant::make(UnifiedServer: Send)]
+    #[allow(dead_code)]
     /// Async variant of [`super::UnifiedServer`]
     pub trait LocalUnifiedServer {
         type Control: Duplex

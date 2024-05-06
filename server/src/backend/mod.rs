@@ -147,6 +147,7 @@ mod backend_trait {
     use super::*;
 
     #[trait_variant::make(Backend: Send + Sync)]
+    #[allow(dead_code)]
     pub trait LocalBackend: Sized + Send + Sync + fmt::Debug {
         async fn initialize<N>(
             max_width: N,
