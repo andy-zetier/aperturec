@@ -55,5 +55,3 @@ message CursorBitmap {
   Cursor cursor = 1;
   bytes data = 2;
 }
-
-message Decoder { uint32 port = 1; }
