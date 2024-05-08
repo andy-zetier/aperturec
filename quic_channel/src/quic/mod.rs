@@ -14,8 +14,6 @@ pub const SSLKEYLOGFILE_VAR: &str = "SSLKEYLOGFILE";
 pub use client::Client;
 pub use server::Server;
 
-const DATAGRAM_CAPACITY: usize = 65535;
-
 #[cfg(test)]
 pub mod test {
     use super::*;

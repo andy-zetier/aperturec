@@ -213,7 +213,7 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
         let make_client = |tls, io, async_rt: &TokioRuntime| {
             let _guard = async_rt.enter();
             let dg = DatagramProvider::builder()
-                .with_recv_capacity(DATAGRAM_CAPACITY)?
+                .with_recv_capacity(datagram::RECV_QUEUE_SIZE)?
                 .build()?;
             Ok::<_, anyhow::Error>(
                 s2n_quic::Client::builder()
@@ -369,7 +369,7 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
 
         let make_client = |tls, io| {
             let dg = DatagramProvider::builder()
-                .with_recv_capacity(DATAGRAM_CAPACITY)?
+                .with_recv_capacity(datagram::RECV_QUEUE_SIZE)?
                 .build()?;
             Ok::<_, anyhow::Error>(
                 s2n_quic::Client::builder()

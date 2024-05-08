@@ -133,13 +133,14 @@ impl Builder {
             }
         }
 
-        let datagram = DatagramEndpoint::builder()
-            .with_send_capacity(DATAGRAM_CAPACITY)?
+        let datagram_endpoint = DatagramEndpoint::builder()
+            .with_send_capacity(transport::datagram::SEND_QUEUE_SIZE)?
             .build()?;
         let quic_server_builder = s2n_quic::Server::builder()
             .with_io((bind_addr, bind_port))?
             .with_tls(tls_builder.build().map_err(|e| anyhow!(e))?)?
-            .with_datagram(datagram)?;
+            .with_datagram(datagram_endpoint)?
+            .with_event(datagram::MtuEventSubscriber)?;
 
         let mut rt = None;
         let quic_server = if tokio::runtime::Handle::try_current().is_err() {

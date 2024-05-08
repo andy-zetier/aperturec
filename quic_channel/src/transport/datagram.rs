@@ -6,9 +6,51 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use futures::future;
 use s2n_quic::provider::datagram::default::{Receiver as QuicReceiver, Sender as QuicTransmitter};
-use std::sync::Arc;
+use s2n_quic::provider::event;
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 use std::task::Poll;
 use tokio::runtime::Runtime as TokioRuntime;
+
+pub(crate) const SEND_QUEUE_SIZE: usize = 1;
+pub(crate) const RECV_QUEUE_SIZE: usize = 2_usize.pow(16);
+
+const DEFAULT_MTU: usize = 1000;
+static MAX_MTU: RwLock<usize> = RwLock::new(DEFAULT_MTU);
+
+pub fn max_mtu() -> usize {
+    *MAX_MTU.read().expect("read")
+}
+
+pub(crate) struct MtuEventSubscriber;
+
+#[derive(Default)]
+pub(crate) struct MtuEventContext {
+    path_mtus: BTreeMap<u64, u16>,
+}
+
+impl event::Subscriber for MtuEventSubscriber {
+    type ConnectionContext = MtuEventContext;
+
+    fn create_connection_context(
+        &mut self,
+        _: &event::ConnectionMeta,
+        _: &event::ConnectionInfo,
+    ) -> Self::ConnectionContext {
+        MtuEventContext::default()
+    }
+
+    fn on_mtu_updated(
+        &mut self,
+        ctx: &mut Self::ConnectionContext,
+        _: &event::ConnectionMeta,
+        event: &event::events::MtuUpdated,
+    ) {
+        ctx.path_mtus.entry(event.path_id).or_insert(event.mtu);
+        let min = ctx.path_mtus.values().min().expect("no tracked MTUs");
+        *MAX_MTU.write().expect("write") = *min as usize;
+    }
+}
 
 /// A trait for types which can receive bytes
 ///
