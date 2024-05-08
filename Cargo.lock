@@ -241,6 +241,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "aperturec-quic-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "derive-new",
+ "derive_builder 0.13.1",
+ "derive_more",
+ "glob",
+ "prettyplease",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "syn 2.0.60",
+]
+
+[[package]]
 name = "aperturec-server"
 version = "0.1.0"
 dependencies = [

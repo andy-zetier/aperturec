@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+package control;
+import "common.proto";
+import "google/protobuf/duration.proto";
+
+enum Os {
+  OS_UNSPECIFIED = 0;
+  OS_LINUX = 1;
+  OS_WINDOWS = 2;
+  OS_MAC = 3;
+}
+
+enum Bitness {
+  BITNESS_UNSPECIFIED = 0;
+  BITNESS_B32 = 1;
+  BITNESS_B64 = 2;
+}
+
+enum Endianness {
+  ENDIANNESS_UNSPECIFIED = 0;
+  ENDIANNESS_BIG = 1;
+  ENDIANNESS_LITTLE = 2;
+}
+
+enum Architecture {
+  ARCHITECTURE_UNSPECIFIED = 0;
+  ARCHITECTURE_X86 = 1;
+  ARCHITECTURE_ARM = 2;
+}
+
+message DecoderSequencePair {
+  common.Decoder decoder = 1;
+  uint64 sequence_id = 2;
+}
+
+message DecoderArea {
+  common.Decoder decoder = 1;
+  common.Location location = 2;
+  common.Dimension Dimension = 3;
+}
+
+message ClientInfo {
+  common.SemVer version = 1;
+  string build_id = 2;
+  Os os = 3;
+  string os_version = 4;
+  string ssl_library = 5;
+  string ssl_version = 6;
+  Bitness bitness = 7;
+  Endianness endianness = 8;
+  Architecture architecture = 9;
+  string cpu_id = 10;
+  uint64 number_of_cores = 11;
+  string amount_of_ram = 12;
+  common.Dimension display_size = 13;
+}
+
+message ClientInit {
+  uint64 temp_id = 1;
+  ClientInfo client_info = 2;
+  common.ClientCaps client_caps = 3;
+  google.protobuf.Duration client_heartbeat_interval = 4;
+  google.protobuf.Duration client_heartbeat_response_interval = 5;
+  uint32 max_decoder_count = 6;
+  string client_specified_program_cmdline = 7;
+}
+
+enum ClientGoodbyeReason {
+  CLIENT_GOODBYE_UNSPECIFIED = 0;
+  CLIENT_GOODBYE_REASON_USER_REQUESTED = 1;
+  CLIENT_GOODBYE_REASON_NETWORK_ERROR = 2;
+  CLIENT_GOODBYE_REASON_TERMINATING = 3;
+}
+
+message ClientGoodbye {
+  uint64 client_id = 1;
+  ClientGoodbyeReason reason = 2;
+}
+
+message HeartbeatResponse {
+  uint64 heartbeat_id = 1;
+  repeated DecoderSequencePair last_sequence_ids = 2;
+}
+
+message FramebufferUpdateRequest {
+  common.Location location = 1;
+  common.Dimension dimension = 2;
+}
+
+message MissedFrameReport {
+  common.Decoder decoder = 1;
+  repeated uint64 frame_sequence_ids = 2;
+}
+
+message ClientToServer {
+  oneof message {
+    ClientInit client_init = 1;
+    ClientGoodbye client_goodbye = 2;
+    HeartbeatResponse heartbeat_response = 3;
+    FramebufferUpdateRequest framebuffer_update_request = 4;
+    MissedFrameReport missed_frame_report = 5;
+  }
+}
+
+message ServerInit {
+  uint64 client_id = 1;
+  string server_name = 2;
+  uint32 event_port = 3;
+  common.Dimension display_size = 4;
+  repeated common.CursorBitmap cursor_bitmaps = 5;
+  repeated DecoderArea decoder_areas = 6;
+}
+
+enum ServerGoodbyeReason {
+  SERVER_GOODBYE_UNSPECIFIED = 0;
+  SERVER_GOODBYE_REASON_SHUTTING_DOWN = 1;
+  SERVER_GOODBYE_REASON_NETWORK_ERROR = 2;
+  SERVER_GOODBYE_REASON_PROCESS_EXITED = 3;
+  SERVER_GOODBYE_REASON_INTERNAL_ERROR = 4;
+  SERVER_GOODBYE_REASON_AUTHENTICATION_FAILURE = 5;
+  SERVER_GOODBYE_REASON_INVALID_CONFIGURATION = 6;
+  SERVER_GOODBYE_REASON_PROCESS_LAUNCH_FAILED = 7;
+  SERVER_GOODBYE_REASON_CLIENT_EXEC_DISALLOWED = 8;
+}
+
+message ServerGoodbye { ServerGoodbyeReason reason = 1; }
+
+message HeartbeatRequest { uint64 request_id = 1; }
+
+message ServerToClient {
+  oneof message {
+    ServerInit server_init = 1;
+    ServerGoodbye server_goodbye = 2;
+    HeartbeatRequest heartbeat_request = 3;
+  }
+}

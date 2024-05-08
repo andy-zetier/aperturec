@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package event;
+import "common.proto";
+
+enum MappedButton {
+  MAPPED_BUTTON_UNSPECIFIED = 0;
+  MAPPED_BUTTON_LEFT = 1;
+  MAPPED_BUTTON_MIDDLE = 2;
+  MAPPED_BUTTON_RIGHT = 3;
+  MAPPED_BUTTON_WHEEL_SCROLL_UP = 4;
+  MAPPED_BUTTON_WHEEL_SCROLL_DOWN = 5;
+  MAPPED_BUTTON_WHEEL_SCROLL_LEFT = 6;
+  MAPPED_BUTTON_WHEEL_SCROLL_RIGHT = 7;
+  MAPPED_BUTTON_BACK = 8;
+  MAPPED_BUTTON_FORWARD = 9;
+}
+
+message Button {
+  oneof kind {
+    MappedButton mapped_button = 1;
+    uint32 unmapped_button = 2;
+  }
+}
+
+message ButtonState {
+  Button button = 1;
+  bool is_depressed = 2;
+}
+
+message KeyEvent {
+  bool down = 1;
+  uint32 key = 2;
+}
+
+message PointerEvent {
+  repeated ButtonState button_states = 1;
+  common.Location location = 2;
+  common.Cursor cursor = 3;
+}
+
+message DisplayEvent { common.Dimension display_size = 1; }
+
+message ClientToServer {
+  oneof message {
+    KeyEvent key_event = 1;
+    PointerEvent pointer_event = 2;
+    DisplayEvent display_event = 3;
+  }
+}
