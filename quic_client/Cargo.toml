@@ -1,0 +1,33 @@
+[package]
+name = "aperturec-client"
+description = "ApertureC Client"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1.0.75"
+aperturec-channel = { path = "../channel" }
+aperturec-protocol = { path = "../protocol" }
+aperturec-state-machine = { path = "../state_machine" }
+aperturec-metrics = { path = "../metrics" }
+aperturec-trace = { path = "../trace", features = [] }
+build_id = "0.2.1"
+clap = { version = "4.3.22", features = ["derive"] }
+ctrlc = "3.4.1"
+crossbeam-channel = "0.5.8"
+derive_builder = "0.12.0"
+flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
+gethostname = "0.4.3"
+gtk = "0.17.1"
+keycode = "0.4.0"
+prost-types = "0.12"
+rand = "0.8.5"
+sysinfo = "0.29.10"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.54", features=["Win32_UI_Input_KeyboardAndMouse"]}
+
+[package.metadata.deb]
+copyright = "2024, Zetier Inc."
+maintainer = "ApertureC Team <aperturec@zetier.com>"
+section = "x11"
