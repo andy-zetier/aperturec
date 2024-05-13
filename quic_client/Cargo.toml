@@ -1,15 +1,15 @@
 [package]
-name = "aperturec-client"
+name = "aperturec-quic-client"
 description = "ApertureC Client"
 edition.workspace = true
 version.workspace = true
 
 [dependencies]
 anyhow = "1.0.75"
-aperturec-channel = { path = "../channel" }
-aperturec-protocol = { path = "../protocol" }
+aperturec-channel = { package = "aperturec-quic-channel", path = "../quic_channel" }
+aperturec-protocol = { package = "aperturec-quic-protocol", path = "../quic_protocol" }
 aperturec-state-machine = { path = "../state_machine" }
-aperturec-metrics = { path = "../metrics" }
+aperturec-metrics = { package = "aperturec-quic-metrics", path = "../quic_metrics" }
 aperturec-trace = { path = "../trace", features = [] }
 build_id = "0.2.1"
 clap = { version = "4.3.22", features = ["derive"] }
@@ -23,6 +23,7 @@ keycode = "0.4.0"
 prost-types = "0.12"
 rand = "0.8.5"
 sysinfo = "0.29.10"
+openssl = "0.10.64"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features=["Win32_UI_Input_KeyboardAndMouse"]}

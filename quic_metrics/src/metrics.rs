@@ -109,6 +109,7 @@ pub fn stop() {
 ///
 /// Example:
 /// ```
+/// # extern crate aperturec_quic_metrics as aperturec_metrics;
 /// # use aperturec_trace::Level;
 /// use aperturec_metrics::MetricsInitializer;
 /// use aperturec_metrics::builtins;

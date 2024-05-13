@@ -39,11 +39,11 @@ ENV CC="clang"
 RUN curl -sSf https://dl.google.com/go/go1.22.2.linux-${ARCHITECTURE}.tar.gz | tar -xz -C /usr/local
 ENV PATH="$PATH:/usr/local/go/bin"
 
-FROM --platform=${ARCHITECTURE} rust-image as client-image-debian
+FROM --platform=${ARCHITECTURE} fips-capable-image as client-image-debian
 ENV TZ=Etc/UTC
 RUN $APT_UPDATE && $APT_INSTALL tzdata libgtk-3-dev lsb-release && $APT_CLEAN
 
-FROM --platform=${ARCHITECTURE} rust-image as client-image-fedora
+FROM --platform=${ARCHITECTURE} fips-capable-image as client-image-fedora
 RUN $DNF_INSTALL tzdata gtk3-devel && $DNF_CLEAN
 
 FROM --platform=${ARCHITECTURE} base-image-fedora as pe-util-build-windows
@@ -56,7 +56,7 @@ WORKDIR build
 RUN cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-static" -DCMAKE_FIND_LIBRARY_SUFFIXES=".a"
 RUN make
 
-FROM --platform=${ARCHITECTURE} rust-image as client-image-windows
+FROM --platform=${ARCHITECTURE} fips-capable-image as client-image-windows
 COPY --from=pe-util-build-windows /root/pe-util/build/peldd /usr/bin/peldd
 RUN $DNF_INSTALL mingw64-gcc mingw64-freetype mingw64-cairo mingw64-harfbuzz mingw64-pango mingw64-poppler mingw64-gtk3 mingw64-winpthreads-static mingw64-glib2-static mingw64-openssl boost zip jq && $DNF_CLEAN
 ENV PKG_CONFIG_ALLOW_CROSS=1

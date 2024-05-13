@@ -11,10 +11,10 @@ stages:
 .crates:package:
   - client
   - server
-.crates:no-extra-dependencies: "channel,metrics,protocol,state_machine,trace"
-.crates:fips-dependencies: "quic-channel"
+.crates:no-extra-dependencies: "channel,metrics,protocol,state_machine,trace,quic_metrics,quic_protocol"
+.crates:fips-dependencies: "quic_channel"
 .crates:server-dependencies: "server"
-.crates:client-dependencies: "client"
+.crates:client-dependencies: "client,quic_client"
 
 .images:debian:
   - ubuntu:20.04
@@ -191,11 +191,15 @@ cargo:check-build-test:
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: fips-capable-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: !reference [.crates:server-dependencies]
+      - CRATES: server
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: !reference [.crates:client-dependencies]
+      - CRATES: client
+        IMAGE_BASE: !reference [.images:all]
+        IMAGE_TARGET: client-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - CRATES: quic_client 
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]

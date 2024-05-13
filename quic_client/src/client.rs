@@ -1,9 +1,7 @@
 use crate::gtk3::{GtkUi, ItcChannels};
-use anyhow::Result;
-use aperturec_channel::reliable::tcp;
-use aperturec_channel::unreliable::udp;
+use anyhow::{bail, Result};
 use aperturec_channel::{
-    ClientControlChannel, ClientEventChannel, ClientMediaChannel, Receiver, Sender,
+    self as channel, client::states as channel_states, Receiver, Sender, UnifiedClient,
 };
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
@@ -15,18 +13,15 @@ use aperturec_protocol::event::{
     button, client_to_server as em_c2s, Button, ButtonStateBuilder, KeyEvent, MappedButton,
     PointerEvent, PointerEventBuilder,
 };
-use aperturec_protocol::media::{
-    client_to_server as mm_c2s, server_to_client as mm_s2c, MediaKeepalive, Rectangle,
-    RectangleUpdate,
-};
-use aperturec_state_machine::{try_transition, TryTransitionable};
+use aperturec_protocol::media::{self, server_to_client as mm_s2c};
+use aperturec_state_machine::*;
 use aperturec_trace::log;
 use crossbeam_channel::{select, unbounded};
 use derive_builder::Builder;
+use openssl::x509::X509;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::ErrorKind;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,8 +31,6 @@ use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
 const VERSION_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
 const VERSION_MINOR: &str = env!("CARGO_PKG_VERSION_MINOR");
 const VERSION_PATCH: &str = env!("CARGO_PKG_VERSION_PATCH");
-
-const DEFAULT_SERVER_CC_PORT: u16 = 46452;
 
 //
 // Internal position representation
@@ -178,62 +171,14 @@ pub enum UiMessage {
 }
 
 pub enum ControlMessage {
-    UpdateReceivedMessage(u16, u64, Vec<u64>),
+    UpdateReceivedMessage {
+        decoder_id: u32,
+        sequence: u64,
+        missing_sequences: BTreeSet<u64>,
+    },
     UiClosed(GoodbyeMessage),
     EventChannelDied(GoodbyeMessage),
     SigintReceived,
-}
-
-fn new_udp_client(remote_addr: SocketAddr, bind_addr: SocketAddr) -> udp::Client<udp::Connected> {
-    udp::Client::new(remote_addr, Some(bind_addr))
-        .try_transition()
-        .expect("Failed to Connect")
-}
-
-fn new_tcp_client_retry_from_host(
-    host: &str,
-    port: u16,
-    retry: Duration,
-) -> Result<(SocketAddr, tcp::Client<tcp::Connected>)> {
-    log::info!("Attempting to connect to {}:{}", host, port);
-    'retry: loop {
-        'sa: for sa in (host, port).to_socket_addrs()? {
-            log::info!("Connecting to {}", sa);
-            match try_transition!(tcp::Client::new(sa)) {
-                Ok(client) => break 'retry Ok((sa, client)),
-                Err(recovered) => {
-                    log::warn!("Failed to connect to {}: {}", sa, recovered.error);
-                    continue 'sa;
-                }
-            };
-        }
-        log::error!(
-            "Failed to connect to {}:{}, retrying in {:?}...",
-            host,
-            port,
-            retry
-        );
-        thread::sleep(retry);
-    }
-}
-
-fn new_tcp_client_retry_from_addr(
-    addr: SocketAddr,
-    retry: Duration,
-) -> tcp::Client<tcp::Connected> {
-    loop {
-        let client = tcp::Client::new(addr).try_transition();
-        match client {
-            Ok(client) => return client,
-            Err(err) => log::warn!(
-                "Failed to connect to {}: {:?}, retrying in {:?}...",
-                addr,
-                err.error,
-                retry
-            ),
-        }
-        thread::sleep(retry);
-    }
 }
 
 //
@@ -241,29 +186,42 @@ fn new_tcp_client_retry_from_addr(
 //
 #[derive(Builder, Clone, Debug, PartialEq)]
 pub struct Configuration {
-    pub decoder_max: u16,
     pub name: String,
+    pub temp_id: u64,
+    pub decoder_max: u16,
     pub server_addr: String,
-    pub decoder_port_start: u16,
-    pub id: u64,
     pub max_fps: Duration,
     pub keepalive_timeout: Duration,
     pub win_width: u64,
     pub win_height: u64,
     #[builder(setter(strip_option), default)]
     pub program_cmdline: Option<String>,
+    #[builder(setter(name = "additional_tls_certificate", custom), default)]
+    pub additional_tls_certificates: Vec<X509>,
+}
+
+impl ConfigurationBuilder {
+    pub fn additional_tls_certificate(&mut self, additional_tls_cert: X509) {
+        if self.additional_tls_certificates.is_none() {
+            self.additional_tls_certificates = Some(vec![]);
+        }
+        self.additional_tls_certificates
+            .as_mut()
+            .unwrap()
+            .push(additional_tls_cert);
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ClientDecoder {
-    pub id: u16,
+    pub id: u32,
     pub origin: Point,
     pub width: u32,
     pub height: u32,
 }
 
 impl ClientDecoder {
-    fn new(id: u16) -> Self {
+    fn new(id: u32) -> Self {
         Self {
             id,
             ..Default::default()
@@ -282,34 +240,21 @@ impl ClientDecoder {
 
 pub struct Client {
     config: Configuration,
-    id: u64,
+    id: Option<u64>,
     server_name: Option<String>,
-    tcp_retry_interval: Duration,
     heartbeat_interval: Duration,
     heartbeat_response_interval: Duration,
     control_jh: Option<thread::JoinHandle<()>>,
     should_stop: Arc<AtomicBool>,
-    server_addr: Option<IpAddr>,
-    server_control_port: Option<u16>,
-    server_event_port: Option<u16>,
-    bind_addr: Option<IpAddr>,
-    decoders: BTreeMap<u16, ClientDecoder>,
+    decoders: Vec<ClientDecoder>,
 }
 
 impl Client {
     fn new(config: &Configuration) -> Self {
-        let decoders = BTreeMap::new();
-        let id = config.id;
-
+        const HEARTBEAT_RESPONSE_INTERVAL: Duration = Duration::from_secs(10);
         Self {
             config: config.clone(),
-            id,
-            server_name: None,
-
-            //
-            // How often to retry if we can't establish the initial connection with the server
-            //
-            tcp_retry_interval: Duration::from_millis(5 * 1000),
+            should_stop: Arc::new(AtomicBool::new(false)),
 
             //
             // TODO: I'm undecided on initial hearbeat resonse (HBR) timing. Basing HBR interval on
@@ -324,24 +269,22 @@ impl Client {
             // up with something better.
             //
             heartbeat_interval: config.max_fps * 10,
-            heartbeat_response_interval: Duration::from_millis(10 * 1000),
+            heartbeat_response_interval: HEARTBEAT_RESPONSE_INTERVAL,
 
+            id: None,
+            server_name: None,
             control_jh: None,
-            should_stop: Arc::new(AtomicBool::new(false)),
-            server_addr: None,
-            server_control_port: None,
-            server_event_port: None,
-            bind_addr: None,
-            decoders,
+            decoders: vec![],
         }
     }
 
     pub fn startup(config: &Configuration, itc: &ItcChannels) -> Result<Self> {
         let mut this = Client::new(config);
 
-        this.setup_control_channel(itc)?;
-        this.setup_decoders(itc)?;
-        this.setup_event_channel(itc)?;
+        let (cc, ec, mc) = this.setup_unified_channel()?;
+        this.setup_control_channel(cc, itc)?;
+        this.setup_event_channel(ec, itc)?;
+        this.setup_media_channel(mc, itc)?;
 
         Ok(this)
     }
@@ -415,7 +358,7 @@ impl Client {
 
     fn generate_client_init(&self) -> ClientInit {
         ClientInitBuilder::default()
-            .temp_id(self.id)
+            .temp_id(self.config.temp_id)
             .client_info(self.generate_client_info())
             .client_caps(self.generate_client_caps())
             .client_heartbeat_interval::<prost_types::Duration>(
@@ -439,7 +382,11 @@ impl Client {
             .expect("Failed to generate ClientInit!")
     }
 
-    fn setup_decoders(&mut self, itc: &ItcChannels) -> Result<()> {
+    fn setup_media_channel(
+        &mut self,
+        mut mc: channel::ClientMedia,
+        itc: &ItcChannels,
+    ) -> Result<()> {
         assert!(
             itc.img_to_decoder_rxs.len() == self.config.decoder_max.into(),
             "img_to_decoder_rxs.len() != decoder_max ({} != {})",
@@ -447,66 +394,41 @@ impl Client {
             self.config.decoder_max
         );
 
-        for (rem_port, decoder) in &self.decoders {
-            let decoder_id = decoder.id;
-            let remote_port = *rem_port;
-            let local_port = if self.config.decoder_port_start == 0 {
-                0
-            } else {
-                self.config.decoder_port_start + decoder_id
-            };
-
-            let encoder_addr =
-                SocketAddr::from((self.server_addr.expect("server addr not set"), remote_port));
-
-            let udp_client = new_udp_client(
-                encoder_addr,
-                SocketAddr::new(self.bind_addr.expect("bind addr not set"), local_port),
+        let mut decoder_channels_tx = BTreeMap::new();
+        let mut decoder_channels_rx = BTreeMap::new();
+        for decoder in &self.decoders {
+            let (tx, rx) = unbounded();
+            decoder_channels_tx.insert(decoder.id, tx);
+            decoder_channels_rx.insert(decoder.id, rx);
+        }
+        thread::spawn::<_, Result<()>>(move || loop {
+            let mm_s2c::Message::FramebufferUpdate(fbu) = mc.receive()?;
+            aperturec_metrics::builtins::packet_sent(1);
+            log::debug!(
+                "[decoder {}] received sequence {}",
+                fbu.decoder_id,
+                fbu.sequence
             );
 
-            let local_port = udp_client.local_addr().port();
+            match decoder_channels_tx.get_mut(&fbu.decoder_id) {
+                Some(channel) => channel.send(fbu)?,
+                None => log::warn!(
+                    "Received media message for decoder ID {} which does not exist",
+                    fbu.decoder_id
+                ),
+            }
+        });
 
-            log::debug!("[decoder {}] {:?}", local_port, &udp_client);
-
-            let (mut client_mc_rx, mut client_mc_tx) = ClientMediaChannel::new(udp_client).split();
-            let is_data_recv: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-            let should_stop_ka = self.should_stop.clone();
-            let is_data_recv_ka = is_data_recv.clone();
-            let keepalive_timeout = self.config.keepalive_timeout;
-
-            thread::spawn(move || {
-                let keepalive: mm_c2s::Message =
-                    MediaKeepalive::new(Decoder::new(remote_port as u32).into()).into();
-
-                loop {
-                    log::trace!("[decoder {}] Sending {:?}", local_port, &keepalive);
-                    if let Err(err) = client_mc_tx.send(keepalive.clone()) {
-                        if is_data_recv_ka.load(Ordering::Relaxed) {
-                            log::warn!(
-                                "[decoder {}] Failed to send keepalive to {}: {}",
-                                local_port,
-                                encoder_addr,
-                                err
-                            );
-                        }
-                    }
-
-                    if should_stop_ka.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    if is_data_recv_ka.load(Ordering::Relaxed) {
-                        thread::sleep(keepalive_timeout);
-                    } else {
-                        thread::sleep(Duration::from_millis(250));
-                    }
-                }
-            });
-
+        for decoder in &self.decoders {
             let img_tx = itc.img_from_decoder_tx.clone();
-            let img_rx = itc.img_to_decoder_rxs[decoder_id as usize].take().unwrap();
+            let img_rx = itc.img_to_decoder_rxs[decoder.id as usize].take().unwrap();
             let control_tx = itc.notify_control_tx.clone();
             let should_stop = self.should_stop.clone();
+            let decoder_id = decoder.id;
+
+            let fbu_rx = decoder_channels_rx
+                .remove(&decoder.id)
+                .expect("decoder channel");
 
             thread::spawn(move || {
                 let mut current_seq_id = None;
@@ -517,9 +439,9 @@ impl Client {
                 let mut image = match img_rx.recv() {
                     Ok(img) => {
                         assert!(
-                            img.decoder_id == decoder_id.into(),
+                            img.decoder_id == decoder_id as usize,
                             "[decoder {}] Image decoder_id != decoder_id ({} != {})",
-                            local_port,
+                            decoder_id,
                             img.decoder_id,
                             decoder_id
                         );
@@ -528,166 +450,152 @@ impl Client {
                     Err(err) => {
                         log::error!(
                             "[decoder {}] Fatal error receiving Image from UI: {}",
-                            local_port,
+                            decoder_id,
                             err
                         );
-                        log::debug!("[decoder {}] exiting", local_port);
-                        return;
+                        log::debug!("[decoder {}] exiting", decoder_id);
+                        bail!(err);
                     }
                 };
 
-                log::debug!("[decoder {}] Media channel started", local_port);
-                loop {
+                let loop_res = loop {
                     //
                     // Listen for FramebufferUpdates from the server
                     //
-                    let fbu = match client_mc_rx.receive() {
-                        Ok(mm_s2c::Message::FramebufferUpdate(fbu)) => fbu,
-                        Err(err) => match err.downcast::<std::io::Error>() {
-                            Ok(ioe) => match ioe.kind() {
-                                ErrorKind::WouldBlock => {
-                                    // receive() should be blocking
-                                    log::warn!("[decoder {}] EAGAIN", local_port);
-                                    continue;
-                                }
-                                _ => {
-                                    log::warn!("[decoder {}] IO Error: {:?}", local_port, ioe);
-                                    continue;
-                                }
-                            },
-                            Err(other) => {
-                                log::warn!(
-                                    "[decoder {}] Failed to process media channel message: {}",
-                                    local_port,
-                                    other
-                                );
-                                continue;
-                            }
-                        },
-                    };
+                    let fbu = fbu_rx.recv()?;
 
                     if should_stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    is_data_recv.swap(true, Ordering::Relaxed);
-
-                    if fbu.rectangle_updates.is_empty() {
-                        log::warn!(
-                            "[decoder {}] Ignoring FramebufferUpdate with {} rectangle updates",
-                            local_port,
-                            fbu.rectangle_updates.len()
-                        );
-                        continue;
+                        break Ok::<_, anyhow::Error>(());
                     }
 
                     // FramebufferUpdate logging is *very* noisy
-                    /*log::trace!(
-                        "[decoder {}] FramebufferUpdate [{}..{}]",
-                        local_port,
-                        fbu.rectangle_updates.first().unwrap().sequence_id.0,
-                        fbu.rectangle_updates.last().unwrap().sequence_id.0
-                    );*/
+                    // log::trace!(
+                    //     "[decoder {}] FramebufferUpdate [{}]",
+                    //     decoder_id,
+                    //     fbu.sequence
+                    // );
 
-                    aperturec_metrics::builtins::packet_received(fbu.rectangle_updates.len());
+                    aperturec_metrics::builtins::packet_received(1);
 
-                    let mut missing_seq: BTreeSet<u64> = BTreeSet::new();
-                    for ru in fbu.rectangle_updates {
-                        //
-                        // Handle out-of-sequence RectangleUpdates
-                        //
-                        // TODO: I'm not sure we should simply drop out of order sequence numbers.
-                        // Its possible out-of-sequence updates represent completely different
-                        // decoder areas, in which case they should not be dropped. However, if
-                        // they contain stale data, we don't want to include it and should drop
-                        // them. Perhaps the safe thing to do here is drop them and add them to
-                        // missing_seq so the latest data is re-sent? In any case, this doesn't
-                        // seem to happen very often in my ad-hoc testing, so I'll leave them
-                        // dropped for now with a warning.
-                        //
-                        if current_seq_id.map_or(false, |csi: u64| csi >= ru.sequence_id) {
-                            log::warn!(
-                                "[decoder {}] Dropping Rectangle {}, already received {}",
-                                local_port,
-                                ru.sequence_id,
-                                current_seq_id.unwrap()
-                            );
+                    let mut missing_sequences: BTreeSet<u64> = BTreeSet::new();
 
-                            continue;
-                        } else if current_seq_id.is_none() && ru.sequence_id != 0 {
-                            missing_seq.extend(0..ru.sequence_id)
-                        } else if let Some(current_seq_id) = current_seq_id {
-                            if current_seq_id < ru.sequence_id {
-                                missing_seq.extend(current_seq_id + 1..ru.sequence_id);
-                            }
+                    //
+                    // Handle out-of-sequence RectangleUpdates
+                    //
+                    // TODO: I'm not sure we should simply drop out of order sequence numbers.
+                    // Its possible out-of-sequence updates represent completely different
+                    // decoder areas, in which case they should not be dropped. However, if
+                    // they contain stale data, we don't want to include it and should drop
+                    // them. Perhaps the safe thing to do here is drop them and add them to
+                    // missing_sequences so the latest data is re-sent? In any case, this doesn't
+                    // seem to happen very often in my ad-hoc testing, so I'll leave them
+                    // dropped for now with a warning.
+                    //
+                    if current_seq_id.map_or(false, |csi: u64| csi >= fbu.sequence) {
+                        log::warn!(
+                            "[decoder {}] Dropping Rectangle {}, already received {}",
+                            decoder_id,
+                            fbu.sequence,
+                            current_seq_id.unwrap()
+                        );
+
+                        continue;
+                    } else if current_seq_id.is_none() && fbu.sequence != 0 {
+                        missing_sequences.extend(0..fbu.sequence)
+                    } else if let Some(current_seq_id) = current_seq_id {
+                        if current_seq_id < fbu.sequence {
+                            missing_sequences.extend(current_seq_id + 1..fbu.sequence);
                         }
+                    }
 
-                        current_seq_id = Some(ru.sequence_id);
+                    current_seq_id = Some(fbu.sequence);
 
-                        //
-                        // Write rectangle data to the Image with the appropriate Codec
-                        //
-                        if let RectangleUpdate {
-                            location: Some(location),
-                            rectangle:
-                                Some(Rectangle {
-                                    codec,
-                                    data,
-                                    dimension: Some(dimension),
-                                }),
-                            ..
-                        } = &ru
-                        {
-                            match Codec::try_from(*codec) {
-                                Ok(Codec::Raw) => match image.draw_raw(
-                                    data,
-                                    location.x_position.into(),
-                                    location.y_position.into(),
-                                    dimension.width,
-                                    dimension.height,
-                                ) {
-                                    Ok(_) => (),
-                                    Err(err) => {
-                                        log::warn!(
-                                            "[decoder {}] Codec::Raw failed: {}",
-                                            local_port,
-                                            err
-                                        );
-                                        log::debug!("[decoder {}] {:#?}", local_port, &ru);
-                                    }
-                                },
-                                Ok(Codec::Zlib) => match image.draw_raw_zlib(
-                                    data,
-                                    location.x_position.into(),
-                                    location.y_position.into(),
-                                    dimension.width,
-                                    dimension.height,
-                                ) {
-                                    Ok(_) => (),
-                                    Err(err) => {
-                                        log::warn!(
-                                            "[decoder {}] Codec::Zlib failed: {}",
-                                            local_port,
-                                            err
-                                        );
-                                        log::debug!("[decoder {}] {:#?}", local_port, &ru);
-                                    }
-                                },
-                                _ => {
+                    if !missing_sequences.is_empty() {
+                        let missing_count = missing_sequences.len();
+                        aperturec_metrics::builtins::packet_lost(missing_count);
+
+                        // If these packets were lost, they must have been sent
+                        aperturec_metrics::builtins::packet_sent(missing_count);
+                    }
+                    //
+                    // Notify Control thread of last SequenceId and missing SequenceIds
+                    //
+                    match control_tx.send(ControlMessage::UpdateReceivedMessage {
+                        decoder_id,
+                        sequence: fbu.sequence,
+                        missing_sequences,
+                    }) {
+                        Ok(_) => (),
+                        Err(err) => {
+                            if !should_stop.load(Ordering::Relaxed) {
+                                log::error!("[decoder {}] Fatal error sending UpdateReceivedMessage to control thread: {}", decoder_id, err);
+                            }
+                            break Err(err.into());
+                        }
+                    };
+
+                    //
+                    // Write rectangle data to the Image with the appropriate Codec
+                    //
+                    if let media::FramebufferUpdate {
+                        codec,
+                        location: Some(location),
+                        dimension: Some(dimension),
+                        data,
+                        ..
+                    } = &fbu
+                    {
+                        match Codec::try_from(*codec) {
+                            Ok(Codec::Raw) => match image.draw_raw(
+                                data,
+                                location.x_position.into(),
+                                location.y_position.into(),
+                                dimension.width,
+                                dimension.height,
+                            ) {
+                                Ok(_) => (),
+                                Err(err) => {
                                     log::warn!(
-                                        "[decoder {}] Dropping Rectangle {}, unsupported codec",
-                                        local_port,
-                                        current_seq_id.unwrap()
+                                        "[decoder {}] Codec::Raw failed: {}",
+                                        decoder_id,
+                                        err
                                     );
+                                    log::debug!("[decoder {}] {:#?}", decoder_id, &fbu);
                                 }
+                            },
+                            Ok(Codec::Zlib) => match image.draw_raw_zlib(
+                                data,
+                                location.x_position.into(),
+                                location.y_position.into(),
+                                dimension.width,
+                                dimension.height,
+                            ) {
+                                Ok(_) => (),
+                                Err(err) => {
+                                    log::warn!(
+                                        "[decoder {}] Codec::Zlib failed: {}",
+                                        decoder_id,
+                                        err
+                                    );
+                                    log::debug!("[decoder {}] {:#?}", decoder_id, &fbu);
+                                }
+                            },
+                            _ => {
+                                log::warn!(
+                                    "[decoder {}] Dropping Rectangle {}, unsupported codec",
+                                    decoder_id,
+                                    current_seq_id.unwrap()
+                                );
+                                continue;
                             }
-                        } else {
-                            log::warn!(
-                                "[decoder {}] Dropping rectangle {}, malformed",
-                                local_port,
-                                current_seq_id.unwrap()
-                            );
                         }
+                    } else {
+                        log::warn!(
+                            "[decoder {}] Dropping rectangle {}, malformed",
+                            decoder_id,
+                            current_seq_id.unwrap()
+                        );
+                        continue;
                     }
 
                     //
@@ -699,81 +607,37 @@ impl Client {
                             Err(err) => {
                                 log::error!(
                                     "[decoder {}] Fatal error receiving Image from UI: {}",
-                                    local_port,
+                                    decoder_id,
                                     err
                                 );
-                                break;
+                                break Err(err.into());
                             }
                         },
                         Err(err) => {
                             log::error!(
                                 "[decoder {}] Fatal error sending Image to UI: {}",
-                                local_port,
+                                decoder_id,
                                 err
                             );
-                            break;
+                            break Err(err.into());
                         }
                     };
+                }; // loop
 
-                    if !missing_seq.is_empty() {
-                        log::debug!(
-                            "[decoder {}] MFRs generated for {:?}",
-                            local_port,
-                            missing_seq
-                        );
-
-                        let missing_count = missing_seq.len();
-                        aperturec_metrics::builtins::packet_lost(missing_count);
-
-                        // If these packets were lost, they must have been sent
-                        aperturec_metrics::builtins::packet_sent(missing_count);
-                    }
-                    //
-                    // Notify Control thread of last SequenceId and missing SequenceIds
-                    //
-                    match control_tx.send(ControlMessage::UpdateReceivedMessage(
-                        remote_port,
-                        current_seq_id.unwrap(),
-                        missing_seq.into_iter().collect(),
-                    )) {
-                        Ok(_) => (),
-                        Err(err) => {
-                            if !should_stop.load(Ordering::Relaxed) {
-                                log::error!("[decoder {}] Fatal error sending UpdateReceivedMessage to control thread: {}", local_port, err);
-                            }
-                            break;
-                        }
-                    };
-                } // loop receive FramebufferUpdate
-
-                log::debug!("[decoder {}] Media channel exiting", local_port);
+                log::debug!("[decoder {}] Media channel exiting", decoder_id);
+                loop_res
             }); // thread::spawn
         } // for self.decoder
 
         Ok(())
     }
 
-    fn setup_control_channel(&mut self, itc: &ItcChannels) -> Result<()> {
-        let (server_host, server_cc_port) = match self.config.server_addr.rsplit_once(":") {
-            Some((host, port)) => (host.to_string(), port.parse::<u16>()?),
-            None => (self.config.server_addr.clone(), DEFAULT_SERVER_CC_PORT),
-        };
-
-        let retry_interval = self.tcp_retry_interval.clone();
-        let (cc_socket_addr, tcp_client) =
-            new_tcp_client_retry_from_host(&server_host, server_cc_port, retry_interval)?;
-        let server_addr = cc_socket_addr.ip();
-        self.server_addr = Some(server_addr);
-        self.server_control_port = Some(cc_socket_addr.port());
-        self.bind_addr = Some(match (server_addr.is_loopback(), server_addr.is_ipv4()) {
-            (true, true) => Ipv4Addr::LOCALHOST.into(),
-            (true, false) => Ipv6Addr::LOCALHOST.into(),
-            (false, true) => Ipv4Addr::UNSPECIFIED.into(),
-            (false, false) => Ipv6Addr::UNSPECIFIED.into(),
-        });
-
+    fn setup_control_channel(
+        &mut self,
+        client_cc: channel::ClientControl,
+        itc: &ItcChannels,
+    ) -> Result<()> {
         let control_to_ui_tx = itc.control_to_ui_tx.clone();
-        let client_cc = ClientControlChannel::new(tcp_client);
 
         let ci = self.generate_client_init();
         log::debug!("{:#?}", &ci);
@@ -794,28 +658,23 @@ impl Client {
         //
         // Update client config with info from Server
         //
-        self.id = si.client_id;
+        self.id = Some(si.client_id);
         self.server_name = Some(si.server_name);
-        self.server_event_port = Some(si.event_port.try_into().expect("Invalid event port"));
         let display_size = si.display_size.expect("No display size provided");
         self.config.win_height = display_size.height;
         self.config.win_width = display_size.width;
 
-        for (decoder_id, decoder_area) in si.decoder_areas.into_iter().enumerate() {
+        for decoder_area in si.decoder_areas.into_iter() {
             if let DecoderArea {
-                decoder: Some(decoder),
+                decoder_id,
                 location: Some(location),
                 dimension: Some(dimension),
             } = decoder_area
             {
-                if let Ok(port) = decoder.port.try_into() {
-                    let mut d = ClientDecoder::new(decoder_id.try_into().unwrap());
-                    d.set_origin(location);
-                    d.set_dims(dimension);
-                    self.decoders.insert(port, d);
-                } else {
-                    panic!("Invalid port received from server {}", decoder.port);
-                }
+                let mut d = ClientDecoder::new(decoder_id);
+                d.set_origin(location);
+                d.set_dims(dimension);
+                self.decoders.push(d);
             } else {
                 panic!("Invalid decoder area: {:?}", decoder_area);
             }
@@ -832,15 +691,15 @@ impl Client {
             "Connected to server @ {} ({}) as client {}!",
             &self.config.server_addr,
             &self.server_name.as_ref().unwrap(),
-            &self.id
+            &self.id.unwrap()
         );
 
         //
         // Setup Control Channel TX/RX threads
         //
-        // The TCP tx/rx threads read/write network control channel messages from/to appropriate
+        // The QUIC tx/rx threads read/write network control channel messages from/to appropriate
         // ITC channels. This allows the core Control Channel thread to select!() on unbounded ITC
-        // channels to drive execution and avoid mixing TCP and ITC reads.
+        // channels to drive execution and avoid mixing network and ITC reads.
         //
         let (control_tx_tx, control_tx_rx) = unbounded();
         let (control_rx_tx, control_rx_rx) = unbounded();
@@ -866,6 +725,19 @@ impl Client {
 
         thread::spawn(move || {
             while let Ok(cm_c2s) = control_tx_rx.recv() {
+                if let aperturec_protocol::control::client_to_server::Message::MissedFrameReport(
+                    aperturec_protocol::control::MissedFrameReport {
+                        decoder_id,
+                        frame_sequence_ids,
+                    },
+                ) = &cm_c2s
+                {
+                    log::debug!(
+                        "[decoder {}] Sending MFR {:?}",
+                        decoder_id,
+                        frame_sequence_ids
+                    );
+                }
                 if let Err(err) = client_cc_write.send(cm_c2s) {
                     log::error!("Failed to send: {}", err);
                     break;
@@ -889,7 +761,7 @@ impl Client {
         //
         // Setup core Control Channel thread
         //
-        let client_id = self.id;
+        let client_id = self.id.unwrap();
         let should_stop = self.should_stop.clone();
         let control_rx = itc.notify_control_rx.take().unwrap();
 
@@ -908,12 +780,7 @@ impl Client {
                                 .last_sequence_ids(
                                     decoder_seq
                                     .iter()
-                                    .map(|(d, s)| {
-                                        DecoderSequencePair::new(
-                                            Decoder::new(*d).into(),
-                                            *s,
-                                            )
-                                    })
+                                    .map(|(d, s)| DecoderSequencePair::new(*d, *s))
                                     .collect::<Vec<_>>(),
                                     )
                                 .build()
@@ -968,26 +835,19 @@ impl Client {
                         }
                     },
                     recv(control_rx) -> msg => match msg {
-                        Ok(ControlMessage::UpdateReceivedMessage(dec, seq, missing)) => {
-                            decoder_seq.insert(dec.into(), seq);
+                        Ok(ControlMessage::UpdateReceivedMessage { decoder_id, sequence, missing_sequences }) => {
+                            decoder_seq.insert(decoder_id, sequence);
 
-                            let num_frames = missing.len();
-                            if !missing.is_empty() {
+                            if !missing_sequences.is_empty() {
                                 let mfr = MissedFrameReportBuilder::default()
-                                    .decoder(dec)
-                                    .frame_sequence_ids(missing)
+                                    .decoder_id(decoder_id)
+                                    .frame_sequence_ids(missing_sequences.into_iter().collect::<Vec<_>>())
                                     .build()
                                     .expect("Failed to build MissedFrameReport!");
 
-                                match control_tx_tx.send(mfr.into()) {
-                                    Err(err) => log::warn!("Failed to send MissedFrameReport: {}", err),
-                                    _ => {
-                                        log::trace!(
-                                            "Sent MissedFrameReport for Decoder {}, missed {}",
-                                            dec,
-                                            num_frames);
-                                    }
-                                };
+                                if let Err(err) = control_tx_tx.send(mfr.into()) {
+                                    log::warn!("Failed to send MissedFrameReport: {}", err);
+                                }
                             }
 
                         },
@@ -1030,17 +890,12 @@ impl Client {
         Ok(())
     }
 
-    fn setup_event_channel(&self, itc: &ItcChannels) -> Result<()> {
+    fn setup_event_channel(
+        &mut self,
+        mut client_ec: channel::ClientEvent,
+        itc: &ItcChannels,
+    ) -> Result<()> {
         let event_rx = itc.event_from_ui_rx.take().unwrap();
-        let event_addr = SocketAddr::from((
-            self.server_addr.expect("server addr not set"),
-            self.server_event_port.expect("client addr not set"),
-        ));
-        let tcp_client = new_tcp_client_retry_from_addr(event_addr, self.tcp_retry_interval);
-
-        let mut client_ec = ClientEventChannel::new(tcp_client);
-
-        log::info!("Connected event channel @ {}", &event_addr);
 
         let control_tx = itc.notify_control_tx.clone();
         let should_stop = self.should_stop.clone();
@@ -1077,6 +932,33 @@ impl Client {
         Ok(())
     }
 
+    fn setup_unified_channel(
+        &mut self,
+    ) -> Result<(
+        channel::ClientControl,
+        channel::ClientEvent,
+        channel::ClientMedia,
+    )> {
+        let (server_addr, server_port) = match self.config.server_addr.rsplit_once(":") {
+            Some((addr, port)) => (addr, Some(port.parse()?)),
+            None => (&*self.config.server_addr, None),
+        };
+
+        let mut channel_builder = channel::client::Builder::default().server_addr(server_addr);
+        if let Some(port) = server_port {
+            channel_builder = channel_builder.server_port(port);
+        }
+        for cert in &self.config.additional_tls_certificates {
+            log::debug!("Adding cert: {:?}", cert);
+            channel_builder = channel_builder.additional_tls_certificate(&cert.to_der()?);
+        }
+        let channel = channel_builder.build_sync()?;
+        let channel = try_transition!(channel, channel_states::Connected).map_err(|r| r.error)?;
+        let channel = try_transition!(channel, channel_states::Ready).map_err(|r| r.error)?;
+        let (cc, ec, mc, _) = channel.split();
+        Ok((cc, ec, mc))
+    }
+
     pub fn get_height(&self) -> i32 {
         self.config.win_height.try_into().unwrap()
     }
@@ -1087,12 +969,6 @@ impl Client {
 
     pub fn get_fps(&self) -> Duration {
         self.config.max_fps
-    }
-
-    pub fn get_decoders_as_vec(&self) -> Vec<ClientDecoder> {
-        let mut dec_vec: Vec<ClientDecoder> = self.decoders.clone().into_values().collect();
-        dec_vec.sort_by_key(|d| d.id);
-        dec_vec
     }
 }
 
@@ -1115,7 +991,7 @@ pub fn run_client(config: Configuration) -> Result<()> {
         client.get_width(),
         client.get_height(),
         client.get_fps(),
-        client.get_decoders_as_vec().as_slice(),
+        &client.decoders,
     );
 
     client.shutdown();
@@ -1126,21 +1002,11 @@ pub fn run_client(config: Configuration) -> Result<()> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::client::{Client, Configuration, ConfigurationBuilder};
-    use crate::gtk3::ItcChannels;
-    use aperturec_channel::reliable::tcp;
-    use aperturec_channel::{Receiver, Sender, ServerControlChannel, ServerEventChannel};
-    use aperturec_protocol::control::client_to_server as cm_c2s;
-    use aperturec_protocol::control::*;
-    use aperturec_state_machine::TryTransitionable;
-    use std::net::SocketAddr;
-    use std::net::UdpSocket;
-    use std::sync::Once;
-    use std::time::Duration;
 
-    static INIT: Once = Once::new();
+    use std::sync::Once;
 
     fn setup() {
+        static INIT: Once = Once::new();
         INIT.call_once(|| {
             aperturec_trace::Configuration::new("test")
                 .initialize()
@@ -1149,43 +1015,27 @@ mod test {
     }
 
     fn generate_configuration(
+        temp_id: u64,
         dec_max: u16,
         width: u64,
         height: u64,
-        decoder_port_start: u16,
+        server_port: u16,
     ) -> Configuration {
         ConfigurationBuilder::default()
+            .temp_id(temp_id)
             .decoder_max(dec_max)
             .name(String::from("test_client"))
-            .server_addr(String::from("127.0.0.1:8765"))
+            .server_addr(format!("127.0.0.1:{}", server_port))
             .win_width(width)
             .win_height(height)
-            .id(1234)
             .max_fps(Duration::from_secs((1 / 30u16).into()))
             .keepalive_timeout(Duration::from_secs(1))
-            .decoder_port_start(decoder_port_start)
             .build()
             .expect("Failed to build Configuration!")
     }
 
     fn generate_default_configuration() -> Configuration {
-        generate_configuration(4, 800, 600, 46454)
-    }
-
-    fn is_udp_port_open(port: u16) -> bool {
-        match UdpSocket::bind(("127.0.0.1", port)) {
-            Ok(_) => true,
-            Err(_) => false,
-        }
-    }
-
-    fn new_tcp_server<A: Into<SocketAddr>>(addr: A) -> tcp::Server<tcp::Accepted> {
-        let addr = addr.into();
-        tcp::Server::new(addr)
-            .try_transition()
-            .expect("Failed to Listen")
-            .try_transition()
-            .expect("Failed to Accept")
+        generate_configuration(1234, 4, 800, 600, 8765)
     }
 
     #[test]
@@ -1198,120 +1048,35 @@ mod test {
     }
 
     #[test]
-    fn setup_decoders() {
+    fn startup() {
         setup();
-        let begin_port = 8653;
-        let config = generate_configuration(4, 800, 600, begin_port);
-        let itc = ItcChannels::new(&config);
-        let mut client = Client::new(&config);
+        let material =
+            channel::tls::Material::ec_self_signed::<_, &str>([], []).expect("tls material");
+        let der_material: channel::tls::DerMaterial =
+            material.clone().try_into().expect("convert to DER");
+        let qserver = channel::server::Builder::default()
+            .bind_addr("0.0.0.0:0")
+            .tls_certificate(&der_material.certificate)
+            .tls_private_key(&der_material.pkey)
+            .build_sync()
+            .expect("Create qserver");
 
-        for i in 0..config.decoder_max {
-            client.decoders.insert(1234 + i, ClientDecoder::new(i));
-        }
-
-        let localhost: IpAddr = "127.0.0.1".parse().expect("localhost IP");
-        client.server_addr = Some(localhost);
-        client.bind_addr = Some(localhost);
-
-        client
-            .setup_decoders(&itc)
-            .expect("Failed to setup decoders");
-
-        for (i, _remote_port) in client.decoders.keys().into_iter().enumerate() {
-            let local_port = begin_port + i as u16;
-            assert_eq!(
-                is_udp_port_open(local_port),
-                false,
-                "Port {} is open!",
-                local_port
-            );
-        }
-    }
-
-    #[test]
-    fn setup_control_channel() {
-        setup();
-        let config = generate_default_configuration();
-        let itc = ItcChannels::new(&config);
-        let mut client = Client::new(&config);
-
-        // Use a short retry interval for the test
-        client.tcp_retry_interval = std::time::Duration::from_millis(100);
-
-        let server_sa: SocketAddr = client
-            .config
-            .server_addr
-            .parse()
-            .expect("Parse server addr");
-
-        //
-        // spawn fake server
-        //
-        std::thread::spawn(move || {
-            let tcp_server = new_tcp_server((server_sa.ip(), server_sa.port()));
-            let mut server_cc = ServerControlChannel::new(tcp_server);
-            let _ci = loop {
-                match server_cc.receive() {
-                    Ok(cm_c2s::Message::ClientInit(ci)) => break ci,
-                    Ok(_) => panic!("Unexpected client message!"),
-                    Err(err) => panic!("{}", err),
-                }
-            };
-
-            server_cc
-                .send(
-                    ServerInitBuilder::default()
-                        .client_id(7890_u64)
-                        .server_name(String::from("test_server"))
-                        .event_port(1234_u32)
-                        .display_size(Dimension::new(800, 600))
-                        .decoder_areas(vec![])
-                        .cursor_bitmaps(vec![])
-                        .build()
-                        .unwrap()
-                        .into(),
-                )
-                .unwrap();
+        let mut config = generate_configuration(
+            1234,
+            8,
+            1920,
+            1080,
+            qserver.local_addr().expect("local addr").port(),
+        );
+        config
+            .additional_tls_certificates
+            .push(material.certificate);
+        let sthread = thread::spawn(move || {
+            let qserver = try_transition!(qserver).expect("server listen");
+            try_transition!(qserver).expect("server ready");
         });
 
-        client
-            .setup_control_channel(&itc)
-            .expect("Failed to startup Control Channel");
-        assert_eq!(client.server_name, Some(String::from("test_server")));
-        assert_eq!(client.server_event_port, Some(1234));
-    }
-
-    #[test]
-    fn setup_event_channel() {
-        setup();
-        let config = generate_default_configuration();
         let itc = ItcChannels::new(&config);
-        let mut client = Client::new(&config);
-
-        // Use a short retry interval for the test
-        client.tcp_retry_interval = std::time::Duration::from_millis(100);
-
-        let server_addr: IpAddr = "127.0.0.1".parse().expect("server IP");
-        let event_port = 8764;
-
-        //
-        // Spawn fake server
-        //
-        std::thread::spawn(move || {
-            let tcp_server = new_tcp_server((server_addr, event_port));
-            let mut server_cc = ServerEventChannel::new(tcp_server);
-            let _event = loop {
-                match server_cc.receive() {
-                    Ok(_) => break,
-                    Err(err) => panic!("{}", err),
-                }
-            };
-        });
-
-        client.server_addr = Some(server_addr);
-        client.server_event_port = Some(event_port);
-        client
-            .setup_event_channel(&itc)
-            .expect("Failed to setup Event Channel");
+        let client = Client::startup(&config, &itc);
     }
 }

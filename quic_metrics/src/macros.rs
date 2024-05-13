@@ -254,6 +254,7 @@ macro_rules! create_histogram_metric_with_buckets {
 /// Example:
 ///
 /// ```no_run
+/// # extern crate aperturec_quic_metrics as aperturec_metrics;
 /// use aperturec_trace::Level;
 /// use aperturec_metrics::MetricsInitializer;
 /// use aperturec_metrics::exporters::{Exporter, LogExporter, PushgatewayExporter};
