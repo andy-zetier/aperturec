@@ -1,0 +1,49 @@
+[package]
+name = "aperturec-server"
+description = "ApertureC Server"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1.0"
+aperturec-channel = { path = "../channel" }
+aperturec-protocol = { path = "../protocol" }
+aperturec-state-machine = { path = "../state_machine" }
+aperturec-metrics = { path = "../metrics" }
+aperturec-trace = { path = "../trace", features = ["queue"] }
+bytes = "1.4"
+clap = { version = "4.3", features = ["derive", "env", "string"] }
+ctrlc = "3.4.1"
+derive_builder = "0.12"
+euclid = "0.22"
+flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
+futures = "0.3"
+gethostname = "0.4"
+linear-map = "1.2"
+paste = "1.0.14"
+prometheus = "0.13.3"
+ndarray = "0.15"
+parking_lot = { version = "0.12", features = ["send_guard", "hardware-lock-elision"] }
+rand = { version = "0.8", features = ["std", "std_rng"] }
+shlex = "1.2"
+tokio = { version = "1.29", features = ["full", "tracing"] }
+tokio-stream = { version = "0.1", features = ["sync", "fs"] }
+tokio-util = "0.7"
+trait-variant = "0.1"
+which = "6.0"
+xcb = { version = "1.2.2", features = ["damage", "randr", "xtest" ] }
+
+[dev-dependencies]
+criterion = "0.4"
+prost-types = "0.12"
+serial_test = "2.0"
+
+[[bench]]
+name = "tracking_buffer_bench"
+harness = false
+
+[package.metadata.deb]
+copyright = "2024, Zetier Inc."
+depends = "$auto, xvfb"
+maintainer = "ApertureC Team <aperturec@zetier.com>"
+section = "x11"
