@@ -2,31 +2,35 @@
 use crate::util::Syncify;
 use crate::*;
 
+use aperturec_trace::log;
+
 use anyhow::anyhow;
 use bytes::Bytes;
 use futures::future;
 use s2n_quic::provider::datagram::default::{Receiver as QuicReceiver, Sender as QuicTransmitter};
 use s2n_quic::provider::event;
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::task::Poll;
 use tokio::runtime::Runtime as TokioRuntime;
 
-pub(crate) const SEND_QUEUE_SIZE: usize = 1;
+pub(crate) const SEND_QUEUE_SIZE: usize = 32;
 pub(crate) const RECV_QUEUE_SIZE: usize = 2_usize.pow(16);
 
-const DEFAULT_MTU: usize = 1000;
-static MAX_MTU: RwLock<usize> = RwLock::new(DEFAULT_MTU);
+static MAX_MTU: AtomicUsize = AtomicUsize::new(1200);
 
 pub fn max_mtu() -> usize {
-    *MAX_MTU.read().expect("read")
+    MAX_MTU.load(Ordering::Relaxed)
 }
 
 pub(crate) struct MtuEventSubscriber;
 
 #[derive(Default)]
 pub(crate) struct MtuEventContext {
-    path_mtus: BTreeMap<u64, u16>,
+    path_mtus: BTreeMap<u64, usize>,
 }
 
 impl event::Subscriber for MtuEventSubscriber {
@@ -46,9 +50,15 @@ impl event::Subscriber for MtuEventSubscriber {
         _: &event::ConnectionMeta,
         event: &event::events::MtuUpdated,
     ) {
-        ctx.path_mtus.entry(event.path_id).or_insert(event.mtu);
-        let min = ctx.path_mtus.values().min().expect("no tracked MTUs");
-        *MAX_MTU.write().expect("write") = *min as usize;
+        ctx.path_mtus.insert(event.path_id, event.mtu as usize);
+        let new_mtu = ctx.path_mtus.values().min().expect("no tracked MTUs");
+        log::debug!(
+            "New MTU: {} on path {} with cause {:?}",
+            *new_mtu,
+            event.path_id,
+            event.cause
+        );
+        MAX_MTU.store(*new_mtu, Ordering::Relaxed);
     }
 }
 
