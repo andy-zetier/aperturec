@@ -1,6 +1,7 @@
 use aperturec_protocol::{control, event, media};
 
 pub mod codec;
+mod events;
 mod quic;
 pub mod tls;
 pub mod transport;

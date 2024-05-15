@@ -11,18 +11,16 @@ use prost::Message;
 use std::error::Error;
 use std::marker::PhantomData;
 
-fn encode<ApiSm, WireSm>(msg: ApiSm) -> anyhow::Result<(Bytes, usize)>
+fn encode<ApiSm, WireSm>(msg: ApiSm) -> anyhow::Result<Bytes>
 where
     WireSm: Message,
     ApiSm: TryInto<WireSm>,
     <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
 {
-    let dg = Bytes::from(msg.try_into()?.encode_to_vec());
-    let dg_len = dg.len();
-    Ok((dg, dg_len))
+    Ok(Bytes::from(msg.try_into()?.encode_to_vec()))
 }
 
-fn decode_and_record_metric<ApiRm, WireRm>(dg: Bytes) -> anyhow::Result<(ApiRm, usize)>
+fn decode<ApiRm, WireRm>(dg: Bytes) -> anyhow::Result<(ApiRm, usize)>
 where
     WireRm: Message + Default,
     ApiRm: TryFrom<WireRm>,
@@ -30,7 +28,6 @@ where
 {
     let dg_len = dg.len();
     let msg = WireRm::decode(dg)?.try_into()?;
-    aperturec_metrics::builtins::rx_bytes(dg_len);
     Ok((msg, dg_len))
 }
 
@@ -44,9 +41,8 @@ pub(crate) mod sync_impls {
         ApiSm: TryInto<WireSm>,
         <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
     {
-        let (dg, dg_len) = encode(msg)?;
+        let dg = encode(msg)?;
         dg_transport.transmit(dg)?;
-        aperturec_metrics::builtins::tx_bytes(dg_len);
         Ok(())
     }
 
@@ -60,7 +56,7 @@ pub(crate) mod sync_impls {
         <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
     {
         let dg = dg_transport.receive()?;
-        decode_and_record_metric(dg)
+        decode(dg)
     }
 }
 
@@ -77,9 +73,8 @@ pub(crate) mod async_impls {
         ApiSm: TryInto<WireSm>,
         <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
     {
-        let (dg, dg_len) = encode(msg)?;
+        let dg = encode(msg)?;
         dg_transport.transmit(dg).await?;
-        aperturec_metrics::builtins::tx_bytes(dg_len);
         Ok(())
     }
 
@@ -93,7 +88,7 @@ pub(crate) mod async_impls {
         <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
     {
         let dg = dg_transport.receive().await?;
-        decode_and_record_metric(dg)
+        decode(dg)
     }
 }
 

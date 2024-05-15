@@ -373,6 +373,7 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
                 .build()?;
             Ok::<_, anyhow::Error>(
                 s2n_quic::Client::builder()
+                    .with_event(events::TrxEventSubscriber)?
                     .with_datagram(dg)?
                     .with_tls(tls)?
                     .with_io(io)?

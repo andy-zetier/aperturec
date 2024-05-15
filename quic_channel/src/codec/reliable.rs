@@ -36,7 +36,6 @@ mod sync_impls {
         if buf.is_empty() {
             buf.resize(1, 0);
             transport.read_exact(&mut buf[..])?;
-            aperturec_metrics::builtins::rx_bytes(1);
         }
 
         let msg_len = loop {
@@ -46,7 +45,6 @@ mod sync_impls {
                     let cur_len = buf.len();
                     buf.resize(cur_len + 1, 0);
                     transport.read_exact(&mut buf[cur_len..])?;
-                    aperturec_metrics::builtins::rx_bytes(1);
                 }
             }
         };
@@ -55,7 +53,6 @@ mod sync_impls {
         let total_len = delim_len + msg_len;
         buf.resize(total_len, 0);
         transport.read_exact(&mut buf[delim_len..])?;
-        aperturec_metrics::builtins::rx_bytes(msg_len);
 
         let msg = RM::decode(&buf[delim_len..])?;
         buf.clear();
@@ -70,7 +67,6 @@ mod sync_impls {
         let nbytes = encode(msg, buf)?;
         transport.write_all(&buf[..nbytes])?;
         transport.flush()?;
-        aperturec_metrics::builtins::tx_bytes(nbytes);
         Ok(())
     }
 }
@@ -85,7 +81,6 @@ mod async_impls {
         if buf.is_empty() {
             buf.resize(1, 0);
             transport.read_exact(&mut buf[..]).await?;
-            aperturec_metrics::builtins::rx_bytes(1);
         }
 
         let msg_len = loop {
@@ -95,7 +90,6 @@ mod async_impls {
                     let cur_len = buf.len();
                     buf.resize(cur_len + 1, 0);
                     transport.read_exact(&mut buf[cur_len..]).await?;
-                    aperturec_metrics::builtins::rx_bytes(1);
                 }
             }
         };
@@ -104,7 +98,6 @@ mod async_impls {
         let total_len = delim_len + msg_len;
         buf.resize(total_len, 0);
         transport.read_exact(&mut buf[delim_len..]).await?;
-        aperturec_metrics::builtins::rx_bytes(msg_len);
 
         let msg = RM::decode(&buf[delim_len..])?;
         buf.clear();
@@ -119,7 +112,6 @@ mod async_impls {
         let nbytes = encode(msg, buf)?;
         transport.write_all(&buf[..nbytes]).await?;
         transport.flush().await?;
-        aperturec_metrics::builtins::tx_bytes(nbytes);
         Ok(())
     }
 }
