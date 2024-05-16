@@ -538,6 +538,8 @@ impl Client {
 
                 log::debug!("[decoder {}] Media channel started", local_port);
                 loop {
+                    crate::metrics::idling(local_port);
+
                     //
                     // Listen for FramebufferUpdates from the server
                     //
@@ -565,6 +567,8 @@ impl Client {
                             }
                         },
                     };
+
+                    crate::metrics::working(local_port);
 
                     if should_stop.load(Ordering::Relaxed) {
                         break;
@@ -641,8 +645,8 @@ impl Client {
                             match Codec::try_from(*codec) {
                                 Ok(Codec::Raw) => match image.draw_raw(
                                     data,
-                                    location.x_position.into(),
-                                    location.y_position.into(),
+                                    location.x_position,
+                                    location.y_position,
                                     dimension.width,
                                     dimension.height,
                                 ) {
@@ -658,8 +662,8 @@ impl Client {
                                 },
                                 Ok(Codec::Zlib) => match image.draw_raw_zlib(
                                     data,
-                                    location.x_position.into(),
-                                    location.y_position.into(),
+                                    location.x_position,
+                                    location.y_position,
                                     dimension.width,
                                     dimension.height,
                                 ) {
@@ -754,12 +758,12 @@ impl Client {
     }
 
     fn setup_control_channel(&mut self, itc: &ItcChannels) -> Result<()> {
-        let (server_host, server_cc_port) = match self.config.server_addr.rsplit_once(":") {
+        let (server_host, server_cc_port) = match self.config.server_addr.rsplit_once(':') {
             Some((host, port)) => (host.to_string(), port.parse::<u16>()?),
             None => (self.config.server_addr.clone(), DEFAULT_SERVER_CC_PORT),
         };
 
-        let retry_interval = self.tcp_retry_interval.clone();
+        let retry_interval = self.tcp_retry_interval;
         let (cc_socket_addr, tcp_client) =
             new_tcp_client_retry_from_host(&server_host, server_cc_port, retry_interval)?;
         let server_addr = cc_socket_addr.ip();

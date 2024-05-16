@@ -1,3 +1,4 @@
+use aperturec_client::metrics;
 use aperturec_client::{client, gtk3};
 use aperturec_metrics::exporters::{CsvExporter, Exporter, LogExporter, PushgatewayExporter};
 use aperturec_trace::{self as trace, log, Level};
@@ -186,6 +187,8 @@ fn main() -> Result<()> {
             .init()
             .expect("Failed to setup metrics");
         metrics_started = true;
+
+        metrics::setup_client_metrics();
     }
 
     client::run_client(config.clone())?;
