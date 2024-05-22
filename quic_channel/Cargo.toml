@@ -15,19 +15,18 @@ once_cell = { version = "1.19", optional = true }
 openssl = { version = "0.10" }
 pin-project = "1.1"
 prost = "0.12"
-rustls-native-certs = "0.7"
+s2n-tls-sys = "0.2"
 tokio = { version = "1.37", features = ["full"] }
 trait-variant = "0.1"
 
 [dependencies.s2n-quic]
 version = "1.37"
 default_features = false
-features = ["provider-address-token-default", "provider-tls-rustls", "unstable-provider-datagram"]
+features = ["provider-address-token-default", "provider-tls-s2n", "unstable-provider-datagram"]
 
-[dependencies.rustls]
-version = "0.23"
-default_features = false
-features = ["fips", "std"]
+[dependencies.s2n-tls]
+version = "0.2"
+features = ["fips"]
 
 [dev-dependencies]
 aperturec-quic-channel = { path = ".", features = ["test-tls-material"] }

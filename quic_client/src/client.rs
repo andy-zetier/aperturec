@@ -950,7 +950,8 @@ impl Client {
         }
         for cert in &self.config.additional_tls_certificates {
             log::debug!("Adding cert: {:?}", cert);
-            channel_builder = channel_builder.additional_tls_certificate(&cert.to_der()?);
+            channel_builder = channel_builder
+                .additional_tls_pem_certificate(&String::from_utf8_lossy(&cert.to_pem()?));
         }
         let channel = channel_builder.build_sync()?;
         let channel = try_transition!(channel, channel_states::Connected).map_err(|r| r.error)?;
@@ -1052,12 +1053,12 @@ mod test {
         setup();
         let material =
             channel::tls::Material::ec_self_signed::<_, &str>([], []).expect("tls material");
-        let der_material: channel::tls::DerMaterial =
-            material.clone().try_into().expect("convert to DER");
+        let pem_material: channel::tls::PemMaterial =
+            material.clone().try_into().expect("convert to PEM");
         let qserver = channel::server::Builder::default()
             .bind_addr("0.0.0.0:0")
-            .tls_certificate(&der_material.certificate)
-            .tls_private_key(&der_material.pkey)
+            .tls_pem_certificate(&pem_material.certificate)
+            .tls_pem_private_key(&pem_material.pkey)
             .build_sync()
             .expect("Create qserver");
 

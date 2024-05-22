@@ -26,15 +26,15 @@ pub mod test {
     fn server_builder() -> server::Builder {
         server::Builder::default()
             .bind_addr("127.0.0.1:0")
-            .tls_certificate(&tls::test_material::DER.certificate)
-            .tls_private_key(&tls::test_material::DER.pkey)
+            .tls_pem_certificate(&tls::test_material::PEM.certificate)
+            .tls_pem_private_key(&tls::test_material::PEM.pkey)
     }
 
     fn client_builder(server_port: u16) -> client::Builder {
         client::Builder::default()
             .server_addr("localhost")
             .server_port(server_port)
-            .additional_tls_certificate(&tls::test_material::DER.certificate)
+            .additional_tls_pem_certificate(&tls::test_material::PEM.certificate)
     }
 
     fn unconnected_sync_client_sync_server() -> (

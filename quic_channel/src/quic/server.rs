@@ -1,17 +1,14 @@
 //! QUIC server types
-use aperturec_protocol as protocol;
 use aperturec_state_machine::*;
-use aperturec_trace::log;
 
 use crate::quic::*;
 use crate::transport::{datagram, stream};
-use crate::util::{new_async_rt, Syncify};
+use crate::util::{common_tls_config_builder, new_async_rt, Syncify};
 use crate::*;
 
 use anyhow::{anyhow, Result};
 use s2n_quic::provider::datagram::default::Endpoint as DatagramEndpoint;
-use s2n_quic::provider::tls::rustls::server::Builder as TlsBuilder;
-use std::env;
+use s2n_quic::provider::tls::default::Server as TlsProvider;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
@@ -80,8 +77,8 @@ use states::*;
 /// A builder for a [`Server`]
 pub struct Builder {
     bind_addr: Option<String>,
-    tls_cert: Option<Vec<u8>>,
-    tls_private_key: Option<Vec<u8>>,
+    tls_pem_cert: Option<String>,
+    tls_pem_private_key: Option<String>,
 }
 
 impl Builder {
@@ -92,14 +89,14 @@ impl Builder {
     }
 
     /// Set the TLS certificate for the server. This is required.
-    pub fn tls_certificate(mut self, cert: &[u8]) -> Self {
-        self.tls_cert = Some(Vec::from(cert));
+    pub fn tls_pem_certificate(mut self, cert: &str) -> Self {
+        self.tls_pem_cert = Some(cert.to_string());
         self
     }
 
     /// Set the private key for the server. This is required.
-    pub fn tls_private_key(mut self, private_key: &[u8]) -> Self {
-        self.tls_private_key = Some(Vec::from(private_key));
+    pub fn tls_pem_private_key(mut self, private_key: &str) -> Self {
+        self.tls_pem_private_key = Some(private_key.to_string());
         self
     }
 
@@ -110,35 +107,24 @@ impl Builder {
             None => (&*bind_addr, DEFAULT_SERVER_BIND_PORT),
         };
 
-        let mut tls_builder = TlsBuilder::new()
-            .with_application_protocols([protocol::MAGIC].iter())
-            .map_err(|e| anyhow!(e))?;
-        tls_builder = tls_builder
-            .with_certificate(
-                &*self.tls_cert.ok_or(anyhow!("no cert provided"))?,
-                &*self
-                    .tls_private_key
-                    .ok_or(anyhow!("no private key provided"))?,
-            )
-            .map_err(|e| anyhow!(e))?;
+        let mut tls_config_builder = common_tls_config_builder()?;
+        tls_config_builder.load_pem(
+            self.tls_pem_cert
+                .ok_or(anyhow!("no cert provided"))?
+                .as_bytes(),
+            self.tls_pem_private_key
+                .ok_or(anyhow!("no private key provided"))?
+                .as_bytes(),
+        )?;
 
-        #[cfg(any(debug_assertions, test))]
-        {
-            tls_builder = tls_builder.with_key_logging().map_err(|e| anyhow!(e))?;
-            if let Ok(key_log_file) = env::var(SSLKEYLOGFILE_VAR) {
-                if !key_log_file.is_empty() {
-                    log::warn!("SSL key logging is enabled. This is insecure and should never happen in production");
-                    log::info!("Saving keylog file to '{}'", key_log_file);
-                }
-            }
-        }
+        let tls_provider = TlsProvider::from_loader(tls_config_builder.build()?);
 
         let datagram_endpoint = DatagramEndpoint::builder()
             .with_send_capacity(transport::datagram::SEND_QUEUE_SIZE)?
             .build()?;
         let quic_server_builder = s2n_quic::Server::builder()
             .with_io((bind_addr, bind_port))?
-            .with_tls(tls_builder.build().map_err(|e| anyhow!(e))?)?
+            .with_tls(tls_provider)?
             .with_datagram(datagram_endpoint)?
             .with_event((events::TrxEventSubscriber, datagram::MtuEventSubscriber))?;
 
@@ -490,8 +476,8 @@ mod test {
     fn builder() -> Builder {
         Builder::default()
             .bind_addr("127.0.0.1:0")
-            .tls_certificate(&tls::test_material::DER.certificate)
-            .tls_private_key(&tls::test_material::DER.pkey)
+            .tls_pem_certificate(&tls::test_material::PEM.certificate)
+            .tls_pem_private_key(&tls::test_material::PEM.pkey)
     }
 
     #[test]

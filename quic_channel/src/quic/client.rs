@@ -5,14 +5,12 @@ use aperturec_trace::log;
 
 use super::*;
 use crate::transport::{datagram, stream};
-use crate::util::{new_async_rt, Syncify};
+use crate::util::{common_tls_config_builder, new_async_rt, Syncify};
 use crate::*;
 
 use anyhow::{anyhow, Result};
-use rustls_native_certs::load_native_certs;
 use s2n_quic::provider::datagram::default::Endpoint as DatagramProvider;
-use s2n_quic::provider::tls::rustls::Client as TlsProvider;
-use std::env;
+use s2n_quic::provider::tls::default::{config::Config as TlsConfig, Client as TlsProvider};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
@@ -33,7 +31,7 @@ pub mod states {
     pub struct Closed {
         pub(super) server_addr: String,
         pub(super) server_port: u16,
-        pub(super) tls_provider: TlsProvider,
+        pub(super) tls_config: TlsConfig,
         pub(super) async_rt: Arc<TokioRuntime>,
     }
 
@@ -42,7 +40,7 @@ pub mod states {
     pub struct AsyncClosed {
         pub(super) server_addr: String,
         pub(super) server_port: u16,
-        pub(super) tls_provider: TlsProvider,
+        pub(super) tls_config: TlsConfig,
     }
 
     #[derive(State, Debug)]
@@ -81,7 +79,7 @@ use states::*;
 pub struct Builder {
     server_addr: Option<String>,
     server_port: Option<u16>,
-    additional_certs: Vec<Vec<u8>>,
+    additional_pem_certs: Vec<String>,
 }
 
 impl Builder {
@@ -98,12 +96,12 @@ impl Builder {
     }
 
     /// Add additional acceptable TLS certificates, beyond those installed on the system
-    pub fn additional_tls_certificate(mut self, cert: &[u8]) -> Self {
-        self.additional_certs.push(Vec::from(cert));
+    pub fn additional_tls_pem_certificate(mut self, cert: &str) -> Self {
+        self.additional_pem_certs.push(cert.to_string());
         self
     }
 
-    fn build(self) -> Result<(TlsProvider, String, u16, Option<TokioRuntime>)> {
+    fn build(self) -> Result<(TlsConfig, String, u16, Option<TokioRuntime>)> {
         let server_addr = self.server_addr.ok_or(anyhow!("no server address"))?;
         let server_port = self.server_port.unwrap_or(DEFAULT_SERVER_BIND_PORT);
 
@@ -113,42 +111,25 @@ impl Builder {
             None
         };
 
-        let mut tls_provider_builder =
-            TlsProvider::builder().with_application_protocols([protocol::MAGIC].iter())?;
-        for cert in load_native_certs()? {
-            tls_provider_builder = tls_provider_builder
-                .with_certificate(&*cert)
-                .map_err(|e| anyhow!(e))?;
-        }
-        for cert in self.additional_certs {
-            tls_provider_builder = tls_provider_builder
-                .with_certificate(cert)
-                .map_err(|e| anyhow!(e))?;
+        let mut tls_config_builder = common_tls_config_builder()?;
+        tls_config_builder.with_system_certs(true)?;
+        for cert in self.additional_pem_certs {
+            tls_config_builder.trust_pem(cert.as_bytes())?;
         }
 
-        #[cfg(any(debug_assertions, test))]
-        {
-            tls_provider_builder = tls_provider_builder
-                .with_key_logging()
-                .map_err(|e| anyhow!(e))?;
-            if let Ok(key_log_file) = env::var(SSLKEYLOGFILE_VAR) {
-                if !key_log_file.is_empty() {
-                    log::warn!("SSL key logging is enabled. This is insecure and should never happen in production");
-                    log::info!("Saving keylog file to '{}'", key_log_file);
-                }
-            }
-        }
-
-        let tls_provider = tls_provider_builder.build().map_err(|e| anyhow!(e))?;
-
-        Ok((tls_provider, server_addr, server_port, async_rt))
+        Ok((
+            tls_config_builder.build()?,
+            server_addr,
+            server_port,
+            async_rt,
+        ))
     }
 
     /// Build a synchronous variant of the client.
     ///
     /// This will return an error if called from within an async runtime
     pub fn build_sync(self) -> Result<Client<Closed>> {
-        let (tls_provider, server_addr, server_port, async_rt_opt) = self.build()?;
+        let (tls_config, server_addr, server_port, async_rt_opt) = self.build()?;
 
         let async_rt = async_rt_opt
             .ok_or(anyhow!("building sync client within an async runtime"))?
@@ -158,7 +139,7 @@ impl Builder {
             state: Closed {
                 server_addr,
                 server_port,
-                tls_provider,
+                tls_config,
                 async_rt,
             },
         })
@@ -168,7 +149,7 @@ impl Builder {
     ///
     /// This will return an error if not called within an async runtime
     pub fn build_async(self) -> Result<Client<AsyncClosed>> {
-        let (tls_provider, server_addr, server_port, async_rt_opt) = self.build()?;
+        let (tls_config, server_addr, server_port, async_rt_opt) = self.build()?;
 
         if async_rt_opt.is_some() {
             anyhow::bail!("building async client within a sync runtime");
@@ -178,7 +159,7 @@ impl Builder {
             state: AsyncClosed {
                 server_addr,
                 server_port,
-                tls_provider,
+                tls_config,
             },
         })
     }
@@ -233,7 +214,7 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
 
             let client = try_recover!(
                 make_client(
-                    self.state.tls_provider.clone(),
+                    TlsProvider::from_loader(self.state.tls_config.clone()),
                     (local_ip, 0),
                     &self.state.async_rt
                 ),
@@ -389,7 +370,10 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
             };
 
             let client = try_recover!(
-                make_client(self.state.tls_provider.clone(), (local_ip, 0)),
+                make_client(
+                    TlsProvider::from_loader(self.state.tls_config.clone()),
+                    (local_ip, 0)
+                ),
                 self
             );
             let connect = s2n_quic::client::Connect::new(socket_addr)
@@ -486,7 +470,7 @@ mod test {
         Builder::default()
             .server_addr("localhost")
             .server_port(10000)
-            .additional_tls_certificate(&tls::test_material::DER.certificate)
+            .additional_tls_pem_certificate(&tls::test_material::PEM.certificate)
     }
 
     #[test]
