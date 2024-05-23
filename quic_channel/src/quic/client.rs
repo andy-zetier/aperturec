@@ -9,7 +9,6 @@ use crate::util::{common_tls_config_builder, new_async_rt, Syncify};
 use crate::*;
 
 use anyhow::{anyhow, Result};
-use s2n_quic::provider::datagram::default::Endpoint as DatagramProvider;
 use s2n_quic::provider::tls::default::{config::Config as TlsConfig, Client as TlsProvider};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
@@ -193,9 +192,7 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
 
         let make_client = |tls, io, async_rt: &TokioRuntime| {
             let _guard = async_rt.enter();
-            let dg = DatagramProvider::builder()
-                .with_recv_capacity(datagram::RECV_QUEUE_SIZE)?
-                .build()?;
+            let dg = provider::datagram::EndpointBuilder::default().build()?;
             Ok::<_, anyhow::Error>(
                 s2n_quic::Client::builder()
                     .with_datagram(dg)?
@@ -294,10 +291,17 @@ impl TryTransitionable<Ready, Connected> for Client<Connected> {
             self
         );
 
-        let mc = ClientMedia::new(datagram::Receiver::new(
-            self.state.connection.split().0,
-            self.state.async_rt.clone(),
-        ));
+        let dg_rx = try_recover!(
+            try_recover!(
+                self.state.connection.datagram_mut(
+                    |dg_receiver: &mut provider::datagram::Receiver| dg_receiver.handle()
+                ),
+                self
+            ),
+            self
+        );
+
+        let mc = ClientMedia::new(datagram::Receiver::new(dg_rx));
 
         Ok(Client {
             state: Ready { cc, ec, mc },
@@ -349,9 +353,7 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
         }
 
         let make_client = |tls, io| {
-            let dg = DatagramProvider::builder()
-                .with_recv_capacity(datagram::RECV_QUEUE_SIZE)?
-                .build()?;
+            let dg = provider::datagram::EndpointBuilder::default().build()?;
             Ok::<_, anyhow::Error>(
                 s2n_quic::Client::builder()
                     .with_event(events::TrxEventSubscriber)?
@@ -436,9 +438,17 @@ impl AsyncTryTransitionable<AsyncReady, AsyncConnected> for Client<AsyncConnecte
             self
         );
 
-        let mc = AsyncClientMedia::new(datagram::AsyncReceiver::new(
-            self.state.connection.split().0,
-        ));
+        let dg_rx = try_recover!(
+            try_recover!(
+                self.state.connection.datagram_mut(
+                    |dg_receiver: &mut provider::datagram::Receiver| dg_receiver.handle()
+                ),
+                self
+            ),
+            self
+        );
+
+        let mc = AsyncClientMedia::new(datagram::AsyncReceiver::new(dg_rx));
 
         Ok(Client {
             state: AsyncReady { cc, ec, mc },

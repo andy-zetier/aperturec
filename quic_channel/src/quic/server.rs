@@ -7,7 +7,6 @@ use crate::util::{common_tls_config_builder, new_async_rt, Syncify};
 use crate::*;
 
 use anyhow::{anyhow, Result};
-use s2n_quic::provider::datagram::default::Endpoint as DatagramEndpoint;
 use s2n_quic::provider::tls::default::Server as TlsProvider;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -119,9 +118,7 @@ impl Builder {
 
         let tls_provider = TlsProvider::from_loader(tls_config_builder.build()?);
 
-        let datagram_endpoint = DatagramEndpoint::builder()
-            .with_send_capacity(transport::datagram::SEND_QUEUE_SIZE)?
-            .build()?;
+        let datagram_endpoint = provider::datagram::EndpointBuilder::default().build()?;
         let quic_server_builder = s2n_quic::Server::builder()
             .with_io((bind_addr, bind_port))?
             .with_tls(tls_provider)?
@@ -270,10 +267,18 @@ impl TryTransitionable<Ready, Accepted> for Server<Accepted> {
             ),
             self.state.async_rt.clone(),
         ));
-        let mc = ServerMedia::new(datagram::Transmitter::new(
-            self.state.connection.split().0,
-            self.state.async_rt.clone(),
-        ));
+        let dg_tx = try_recover!(
+            try_recover!(
+                self.state
+                    .connection
+                    .datagram_mut(|dg_sender: &mut provider::datagram::Sender| dg_sender.handle()),
+                self,
+                Accepted
+            ),
+            self,
+            Accepted
+        );
+        let mc = ServerMedia::new(datagram::Transmitter::new(dg_tx));
 
         Ok(Server {
             state: Ready {
@@ -406,9 +411,18 @@ impl AsyncTryTransitionable<AsyncReady, AsyncAccepted> for Server<AsyncAccepted>
             self,
             AsyncAccepted
         )));
-        let mc = AsyncServerMedia::new(datagram::AsyncTransmitter::new(
-            self.state.connection.split().0,
-        ));
+        let dg_tx = try_recover!(
+            try_recover!(
+                self.state
+                    .connection
+                    .datagram_mut(|dg_sender: &mut provider::datagram::Sender| dg_sender.handle()),
+                self,
+                AsyncAccepted
+            ),
+            self,
+            AsyncAccepted
+        );
+        let mc = AsyncServerMedia::new(datagram::AsyncTransmitter::new(dg_tx));
 
         Ok(Server {
             state: AsyncReady {

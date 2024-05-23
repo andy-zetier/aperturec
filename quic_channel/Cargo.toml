@@ -10,6 +10,7 @@ aperturec-metrics = { package = "aperturec-quic-metrics", path = "../quic_metric
 aperturec-trace = { path = "../trace" }
 anyhow = "1.0"
 bytes = "1.6"
+derive_builder = "0.12"
 futures = "0.3"
 once_cell = { version = "1.19", optional = true }
 openssl = { version = "0.10" }

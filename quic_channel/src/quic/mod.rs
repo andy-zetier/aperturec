@@ -2,6 +2,8 @@
 pub mod client;
 pub mod server;
 
+pub mod provider;
+
 /// Default port the server will bind to
 pub const DEFAULT_SERVER_BIND_PORT: u16 = 46452;
 /// Default port the client will bind to.

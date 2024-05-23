@@ -228,6 +228,7 @@ dependencies = [
  "aperturec-state-machine",
  "aperturec-trace",
  "bytes",
+ "derive_builder 0.12.0",
  "futures",
  "once_cell",
  "openssl",

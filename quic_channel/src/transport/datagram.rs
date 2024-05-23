@@ -1,24 +1,13 @@
 //! Byte-oriented, unreliable, out-of-order transport
-use crate::util::Syncify;
+use crate::provider::datagram::{ReceiverHandle, SenderHandle};
 use crate::*;
 
 use aperturec_trace::log;
 
-use anyhow::anyhow;
 use bytes::Bytes;
-use futures::future;
-use s2n_quic::provider::datagram::default::{Receiver as QuicReceiver, Sender as QuicTransmitter};
 use s2n_quic::provider::event;
 use std::collections::BTreeMap;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-};
-use std::task::Poll;
-use tokio::runtime::Runtime as TokioRuntime;
-
-pub(crate) const SEND_QUEUE_SIZE: usize = 32;
-pub(crate) const RECV_QUEUE_SIZE: usize = 2_usize.pow(16);
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 static MAX_MTU: AtomicUsize = AtomicUsize::new(1200);
 
@@ -153,183 +142,136 @@ mod async_variants {
 }
 pub use async_variants::{Gated as AsyncGated, Receive as AsyncReceive, Transmit as AsyncTransmit};
 
-mod async_impls {
-    use super::*;
-
-    pub(super) async fn receive(
-        handle: &mut s2n_quic::connection::Handle,
-    ) -> anyhow::Result<Bytes> {
-        future::poll_fn(|cx| {
-            match handle.datagram_mut(|rx: &mut QuicReceiver| rx.poll_recv_datagram(cx)) {
-                Ok(poll_value) => poll_value.map(Ok),
-                Err(e) => Poll::Ready(Err(e)),
-            }
-        })
-        .await?
-        .map_err(|e| anyhow!(e))
-    }
-
-    pub(super) async fn transmit(
-        handle: &mut s2n_quic::connection::Handle,
-        mut data: Bytes,
-    ) -> anyhow::Result<()> {
-        future::poll_fn(|cx| {
-            match handle
-                .datagram_mut(|tx: &mut QuicTransmitter| tx.poll_send_datagram(&mut data, cx))
-            {
-                Ok(poll_value) => poll_value.map(Ok),
-                Err(e) => Poll::Ready(Err(e)),
-            }
-        })
-        .await?
-        .map_err(|e| anyhow!(e))
-    }
-}
-
-mod sync_impls {
-    use super::*;
-
-    pub(super) fn receive(
-        handle: &mut s2n_quic::connection::Handle,
-        async_rt: &TokioRuntime,
-    ) -> anyhow::Result<Bytes> {
-        async_impls::receive(handle).syncify(async_rt)
-    }
-
-    pub(super) fn transmit(
-        handle: &mut s2n_quic::connection::Handle,
-        data: Bytes,
-        async_rt: &TokioRuntime,
-    ) -> anyhow::Result<()> {
-        async_impls::transmit(handle, data).syncify(async_rt)
-    }
-}
-
 /// A byte-oriented sender and receiver
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Transceiver {
-    handle: s2n_quic::connection::Handle,
-    async_rt: Arc<TokioRuntime>,
+    sender_handle: SenderHandle,
+    receiver_handle: ReceiverHandle,
 }
 
 impl Transceiver {
     /// Create a new [`Self`]
-    pub fn new(handle: s2n_quic::connection::Handle, async_rt: Arc<TokioRuntime>) -> Self {
-        Transceiver { handle, async_rt }
+    pub fn new(sender_handle: SenderHandle, receiver_handle: ReceiverHandle) -> Self {
+        Transceiver {
+            sender_handle,
+            receiver_handle,
+        }
     }
 }
 
 impl Receive for Transceiver {
     fn receive(&mut self) -> anyhow::Result<Bytes> {
-        sync_impls::receive(&mut self.handle, &self.async_rt)
+        Receive::receive(&mut self.receiver_handle)
     }
 }
 
 impl Transmit for Transceiver {
     fn transmit(&mut self, data: Bytes) -> anyhow::Result<()> {
-        sync_impls::transmit(&mut self.handle, data, &self.async_rt)
+        Transmit::transmit(&mut self.sender_handle, data)
     }
 }
 
 /// A byte-oriented sender
 #[derive(Debug, Clone)]
 pub struct Transmitter {
-    handle: s2n_quic::connection::Handle,
-    async_rt: Arc<TokioRuntime>,
+    handle: SenderHandle,
 }
 
 impl Transmitter {
     /// Create a new [`Self`]
-    pub fn new(handle: s2n_quic::connection::Handle, async_rt: Arc<TokioRuntime>) -> Self {
-        Transmitter { handle, async_rt }
+    pub fn new(handle: SenderHandle) -> Self {
+        Transmitter { handle }
     }
 }
 
 impl Transmit for Transmitter {
     fn transmit(&mut self, data: Bytes) -> anyhow::Result<()> {
-        sync_impls::transmit(&mut self.handle, data, &self.async_rt)
+        Transmit::transmit(&mut self.handle, data)
     }
 }
 
 /// A byte-oriented receiver
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Receiver {
-    handle: s2n_quic::connection::Handle,
-    async_rt: Arc<TokioRuntime>,
+    handle: ReceiverHandle,
 }
 
 impl Receiver {
     /// Create a new [`Self`]
-    pub fn new(handle: s2n_quic::connection::Handle, async_rt: Arc<TokioRuntime>) -> Self {
-        Receiver { handle, async_rt }
+    pub fn new(handle: ReceiverHandle) -> Self {
+        Receiver { handle }
     }
 }
 
 impl Receive for Receiver {
     fn receive(&mut self) -> anyhow::Result<Bytes> {
-        sync_impls::receive(&mut self.handle, &self.async_rt)
+        Receive::receive(&mut self.handle)
     }
 }
 
 /// Async variant of [`Transceiver`]
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct AsyncTransceiver {
-    handle: s2n_quic::connection::Handle,
+    sender_handle: SenderHandle,
+    receiver_handle: ReceiverHandle,
 }
 
 impl AsyncTransceiver {
     /// Create a new [`Self`]
-    pub fn new(handle: s2n_quic::connection::Handle) -> Self {
-        AsyncTransceiver { handle }
+    pub fn new(sender_handle: SenderHandle, receiver_handle: ReceiverHandle) -> Self {
+        AsyncTransceiver {
+            sender_handle,
+            receiver_handle,
+        }
     }
 }
 
 impl AsyncReceive for AsyncTransceiver {
     async fn receive(&mut self) -> anyhow::Result<Bytes> {
-        async_impls::receive(&mut self.handle).await
+        AsyncReceive::receive(&mut self.receiver_handle).await
     }
 }
 
 impl AsyncTransmit for AsyncTransceiver {
     async fn transmit(&mut self, data: Bytes) -> anyhow::Result<()> {
-        async_impls::transmit(&mut self.handle, data).await
+        AsyncTransmit::transmit(&mut self.sender_handle, data).await
     }
 }
 
 /// Async variant of [`Transmitter`]
 #[derive(Debug, Clone)]
 pub struct AsyncTransmitter {
-    handle: s2n_quic::connection::Handle,
+    sender_handle: SenderHandle,
 }
 
 impl AsyncTransmitter {
     /// Create a new [`Self`]
-    pub fn new(handle: s2n_quic::connection::Handle) -> Self {
-        AsyncTransmitter { handle }
+    pub fn new(sender_handle: SenderHandle) -> Self {
+        AsyncTransmitter { sender_handle }
     }
 }
 
 impl AsyncTransmit for AsyncTransmitter {
     async fn transmit(&mut self, data: Bytes) -> anyhow::Result<()> {
-        async_impls::transmit(&mut self.handle, data).await
+        AsyncTransmit::transmit(&mut self.sender_handle, data).await
     }
 }
 
 /// Async variant of [`Receiver`]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AsyncReceiver {
-    handle: s2n_quic::connection::Handle,
+    receiver_handle: ReceiverHandle,
 }
 
 impl AsyncReceiver {
     /// Create a new [`Self`]
-    pub fn new(handle: s2n_quic::connection::Handle) -> Self {
-        AsyncReceiver { handle }
+    pub fn new(receiver_handle: ReceiverHandle) -> Self {
+        AsyncReceiver { receiver_handle }
     }
 }
 
 impl AsyncReceive for AsyncReceiver {
     async fn receive(&mut self) -> anyhow::Result<Bytes> {
-        async_impls::receive(&mut self.handle).await
+        AsyncReceive::receive(&mut self.receiver_handle).await
     }
 }
