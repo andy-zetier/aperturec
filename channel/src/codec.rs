@@ -1193,6 +1193,7 @@ mod udp_test {
     use aperturec_protocol::media::server_to_client as mm_s2c;
     use aperturec_state_machine::*;
     use std::net::SocketAddr;
+    use std::time::SystemTime;
 
     fn udp_client_and_server<A: Into<SocketAddr>>(
         addr: A,
@@ -1227,16 +1228,20 @@ mod udp_test {
 
     macro_rules! test_s2c_media_message {
         () => {{
-            mm::FramebufferUpdate::new(vec![mm::RectangleUpdateBuilder::default()
-                .sequence_id(1_u64)
-                .location(Location::new(0, 0))
-                .rectangle(mm::Rectangle::new(
-                    Codec::Raw.into(),
-                    None,
-                    vec![0xc5; 1024].into(),
-                ))
-                .build()
-                .expect("RectangleUpdate build")])
+            mm::FramebufferUpdate::new(
+                vec![mm::RectangleUpdateBuilder::default()
+                    .sequence_id(1_u64)
+                    .location(Location::new(0, 0))
+                    .rectangle(mm::Rectangle::new(
+                        Codec::Raw.into(),
+                        None,
+                        vec![0xc5; 1024].into(),
+                    ))
+                    .build()
+                    .expect("RectangleUpdate build")],
+                1_u64,
+                Some(SystemTime::now().into()),
+            )
         }};
     }
 

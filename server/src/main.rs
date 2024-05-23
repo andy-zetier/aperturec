@@ -2,11 +2,13 @@ use anyhow::Result;
 use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
+use aperturec_server::task::encoder;
 use aperturec_state_machine::*;
 use aperturec_trace::{self as trace, log, Level};
 use clap::Parser;
 use gethostname::gethostname;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false)]
@@ -27,6 +29,44 @@ impl From<RootProgramGroup> for Option<String> {
             (Some(root_program_cmdline), false) => Some(root_program_cmdline),
             (None, true) => None,
             _ => unreachable!("root-program and no-root-program in invalid state"),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum WindowSizeOption {
+    Size(usize),
+    Negotiated,
+    Disabled,
+}
+
+impl FromStr for WindowSizeOption {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "NONE" => Ok(WindowSizeOption::Disabled),
+            "NEGOTIATED" => Ok(WindowSizeOption::Negotiated),
+            _ => {
+                let val = s.parse()?;
+                if val < encoder::MAX_BYTES_PER_MESSAGE {
+                    anyhow::bail!(
+                        "window size cannot be smaller than {}",
+                        encoder::MAX_BYTES_PER_MESSAGE
+                    )
+                }
+                Ok(WindowSizeOption::Size(val))
+            }
+        }
+    }
+}
+
+impl From<WindowSizeOption> for Option<usize> {
+    fn from(w: WindowSizeOption) -> Option<usize> {
+        match w {
+            WindowSizeOption::Disabled => None,
+            WindowSizeOption::Negotiated => Some(0),
+            WindowSizeOption::Size(sz) => Some(sz),
         }
     }
 }
@@ -71,9 +111,16 @@ struct Args {
     #[arg(short, long, default_value = "1234")]
     temp_client_id: u64,
 
-    /// Maximum data transmit rate in whole megabits per second (Mbps)
+    /// Maximum data transmit rate in whole megabits per second (Mbps). Specifying "none" turns off
+    /// max bit rate throttling.
     #[arg(long, default_value = "25")]
-    mbps_max: u16,
+    mbps_max: String,
+
+    /// Flow control window size in bytes. Leaving this unspecified will negotiate the window size
+    /// between Client and Server. Specifying "none" turns off windowing. The window size cannot be
+    /// smaller than one message.
+    #[arg(long, default_value = "Negotiated", value_parser = clap::value_parser!(WindowSizeOption))]
+    window_size: WindowSizeOption,
 
     /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
     /// verbosity. The maximum is 3. Overwrites the behavior set via AC_TRACE_FILTER environment
@@ -154,7 +201,11 @@ async fn main() -> Result<()> {
         .temp_client_id(args.temp_client_id)
         .max_width(dims[0])
         .max_height(dims[1])
-        .mbps_max(args.mbps_max)
+        .mbps_max(match args.mbps_max.to_uppercase().as_str() {
+            "NONE" => None,
+            mbps => Some(mbps.parse()?),
+        })
+        .window_size(args.window_size.into())
         .allow_client_exec(args.allow_client_exec);
     if let Some(root_program_cmdline) = args.root_program_cmdline.into() {
         config_builder.root_process_cmdline(root_program_cmdline);

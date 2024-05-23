@@ -111,6 +111,10 @@ struct Args {
     /// verbosity. The maximum is 3.
     #[arg(short, action = clap::ArgAction::Count)]
     verbosity: u8,
+
+    /// Maximum downstream rate in whole megabits per second (Mbps).
+    #[arg(long, default_value = None)]
+    mbps_max: Option<u16>,
 }
 
 fn main() -> Result<()> {
@@ -148,7 +152,8 @@ fn main() -> Result<()> {
         .win_width(width)
         .id(args.temp_client_id)
         .max_fps(Duration::from_secs_f32(1.0 / (args.fps_max as f32)))
-        .keepalive_timeout(Duration::from_secs(args.keepalive_timeout));
+        .keepalive_timeout(Duration::from_secs(args.keepalive_timeout))
+        .mbps_max(args.mbps_max);
     if let Some(program_cmdline) = args.program_cmdline {
         config_builder.program_cmdline(program_cmdline);
     }

@@ -182,6 +182,7 @@ dependencies = [
  "paste",
  "prost-types",
  "rand 0.8.5",
+ "socket2",
  "sysinfo",
  "windows",
 ]
@@ -328,6 +329,7 @@ dependencies = [
  "rand 0.8.5",
  "serial_test",
  "shlex",
+ "socket2",
  "tokio",
  "tokio-stream",
  "tokio-util",

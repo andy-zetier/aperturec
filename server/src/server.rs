@@ -37,7 +37,8 @@ pub struct Configuration {
     #[builder(setter(strip_option), default)]
     root_process_cmdline: Option<String>,
     allow_client_exec: bool,
-    mbps_max: u16,
+    mbps_max: Option<usize>,
+    window_size: Option<usize>,
 }
 
 #[derive(Stateful, Debug)]
@@ -84,6 +85,7 @@ pub struct AuthenticatedClient<B: Backend + 'static> {
     decoders: Vec<(Decoder, Location, Dimension)>,
     mc_servers: Vec<udp::Server<udp::AsyncListening>>,
     codecs: BTreeMap<u16, Codec>,
+    fc_config: flow_control::Configuration,
 }
 
 #[derive(State)]
@@ -96,6 +98,7 @@ pub struct ChannelsAccepted<B: Backend + 'static> {
     decoders: Vec<(Decoder, Location, Dimension)>,
     mc_servers: Vec<AsyncServerMediaChannel>,
     codecs: BTreeMap<u16, Codec>,
+    fc_config: flow_control::Configuration,
 }
 
 #[derive(State)]
@@ -483,6 +486,19 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
             try_recover_async!(self.state.cc.send(msg.into()), self);
             return_recover_async!(self, "client sent invalid decoder max");
         }
+        let client_recv_buffer_size: usize = match client_init
+            .client_info
+            .as_ref()
+            .and_then(|ci| ci.recv_buffer_size.try_into().map_or(None, |bs| Some(bs)))
+        {
+            Some(recv_buffer_size) => recv_buffer_size,
+            _ => return_recover!(self, "Client did not provide valid recv buffer size"),
+        };
+        let client_mbps_max: usize =
+            match client_init.mbps_max.try_into().map_or(None, |mm| Some(mm)) {
+                Some(mbps_max) => mbps_max,
+                _ => return_recover!(self, "Client provided invalid mbps max"),
+            };
         let client_resolution = match client_init.client_info.and_then(|ci| ci.display_size) {
             Some(display_size) => display_size,
             _ => return_recover!(self, "Client did not provide display size"),
@@ -595,6 +611,17 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
             })
             .collect();
         let client_id: u64 = rand::random();
+
+        let fc_config = flow_control::Configuration::new(
+            self.config.window_size,
+            self.config.mbps_max,
+            local_mc_addr,
+            decoder_areas.len(),
+            client_mbps_max,
+            client_recv_buffer_size,
+        );
+        log::debug!("Flow Control {:?}", fc_config);
+
         let server_init = try_recover!(
             cm::ServerInitBuilder::default()
                 .client_id(client_id)
@@ -606,6 +633,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                     resolution.width as u64,
                     resolution.height as u64,
                 ))
+                .window_size(fc_config.get_initial_window_size())
                 .build(),
             recover_server_backend_moved!(backend)
         );
@@ -634,6 +662,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                 .ok_or(anyhow!("No client HB response interval")),
             recover_server_backend_moved!(backend)
         );
+
         Ok(Server {
             state: AuthenticatedClient {
                 backend,
@@ -644,6 +673,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                 decoders,
                 mc_servers,
                 codecs,
+                fc_config,
             },
             config: self.config,
         })
@@ -747,6 +777,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<ChannelsAccepted<B>, ChannelsL
                 decoders: self.state.decoders,
                 mc_servers,
                 codecs: self.state.codecs,
+                fc_config: self.state.fc_config,
             },
             config: self.config,
         })
@@ -767,7 +798,8 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
 
         let (cc_handler_task, cc_handler_channels) = cc_handler::Task::new(self.state.cc);
         let (ec_handler_task, ec_handler_channels) = ec_handler::Task::new(self.state.ec);
-        let (flow_control_task, fc_handle) = flow_control::Task::new(self.config.mbps_max.into());
+        let (flow_control_task, fc_handle) =
+            flow_control::Task::new(self.state.fc_config, cc_handler_channels.flow_control_rx);
 
         let (backend_task, backend_channels) = backend::Task::<backend::Created<B>>::new(
             self.state.backend,
@@ -1213,7 +1245,8 @@ mod test {
             .max_width(1920)
             .max_height(1080)
             .allow_client_exec(false)
-            .mbps_max(500)
+            .mbps_max(Some(500))
+            .window_size(None)
             .build()
             .expect("Configuration build");
         let server: Server<ChannelsListening<X>> = Server::new(server_config.clone())

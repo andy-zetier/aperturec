@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package media;
 import "common.proto";
+import "google/protobuf/timestamp.proto";
 
 message Rectangle {
   common.Codec codec = 1;
@@ -15,7 +16,11 @@ message RectangleUpdate {
   Rectangle rectangle = 3;
 }
 
-message FramebufferUpdate { repeated RectangleUpdate rectangle_updates = 1; }
+message FramebufferUpdate {
+  repeated RectangleUpdate rectangle_updates = 1;
+  uint64 window_id = 2;
+  google.protobuf.Timestamp latency_timestamp = 3;
+}
 
 message MediaKeepalive { common.Decoder decoder = 1; }
 

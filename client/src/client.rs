@@ -10,6 +10,7 @@ use aperturec_protocol::control::{
     server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder,
     ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, DecoderArea,
     DecoderSequencePair, Endianness, HeartbeatResponseBuilder, MissedFrameReportBuilder, Os,
+    WindowAdvanceBuilder,
 };
 use aperturec_protocol::event::{
     button, client_to_server as em_c2s, Button, ButtonStateBuilder, KeyEvent, MappedButton,
@@ -21,15 +22,17 @@ use aperturec_protocol::media::{
 };
 use aperturec_state_machine::{try_transition, TryTransitionable};
 use aperturec_trace::log;
-use crossbeam_channel::{select, unbounded};
+use crossbeam_channel::{after, never, select, unbounded};
 use derive_builder::Builder;
+use socket2::{Domain, Socket, Type};
+use std::cmp::min;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 use std::{assert, thread};
 use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
 
@@ -177,8 +180,18 @@ pub enum UiMessage {
     QuitMessage(String),
 }
 
+#[derive(Builder, Debug)]
+pub struct UpdateReport {
+    decoder_id: u16,
+    sequence_id: u64,
+    missing_sequence_ids: Vec<u64>,
+    window_id: u64,
+    update_size: usize,
+    latency_timestamp: Option<SystemTime>,
+}
+
 pub enum ControlMessage {
-    UpdateReceivedMessage(u16, u64, Vec<u64>),
+    UpdateReceivedMessage(UpdateReport),
     UiClosed(GoodbyeMessage),
     EventChannelDied(GoodbyeMessage),
     SigintReceived,
@@ -250,6 +263,7 @@ pub struct Configuration {
     pub keepalive_timeout: Duration,
     pub win_width: u64,
     pub win_height: u64,
+    pub mbps_max: Option<u16>,
     #[builder(setter(strip_option), default)]
     pub program_cmdline: Option<String>,
 }
@@ -277,6 +291,40 @@ impl ClientDecoder {
     fn set_dims(&mut self, dims: Dimension) {
         self.width = dims.width.try_into().unwrap();
         self.height = dims.height.try_into().unwrap();
+    }
+}
+
+fn get_recv_buffer_size(sock_addr: SocketAddr) -> usize {
+    let sock =
+        Socket::new(Domain::for_address(sock_addr), Type::DGRAM, None).expect("Socket create");
+    sock.recv_buffer_size().expect("SO_RCVBUF")
+}
+
+struct CountdownTimer {
+    duration: Duration,
+    start_time: Instant,
+}
+
+impl CountdownTimer {
+    fn new(duration: Duration) -> Self {
+        let start_time = Instant::now();
+        Self {
+            duration,
+            start_time,
+        }
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.duration.checked_sub(self.start_time.elapsed())
+    }
+
+    fn reset(&mut self) {
+        self.start_time = Instant::now();
+    }
+
+    fn reinitialize(&mut self, duration: Duration) {
+        self.duration = duration;
+        self.reset()
     }
 }
 
@@ -409,6 +457,10 @@ impl Client {
                 self.config.win_width,
                 self.config.win_height,
             ))
+            .recv_buffer_size(get_recv_buffer_size(SocketAddr::from((
+                self.server_addr.expect("Server Address"),
+                0,
+            ))) as u64)
             .build()
             .expect("Failed to generate ClientInfo")
     }
@@ -435,6 +487,7 @@ impl Client {
                     .clone()
                     .unwrap_or(String::from("")),
             )
+            .mbps_max(self.config.mbps_max.unwrap_or(0))
             .build()
             .expect("Failed to generate ClientInit!")
     }
@@ -543,8 +596,8 @@ impl Client {
                     //
                     // Listen for FramebufferUpdates from the server
                     //
-                    let fbu = match client_mc_rx.receive() {
-                        Ok(mm_s2c::Message::FramebufferUpdate(fbu)) => fbu,
+                    let (fbu, len) = match client_mc_rx.receive_with_len() {
+                        Ok((mm_s2c::Message::FramebufferUpdate(fbu), len)) => (fbu, len),
                         Err(err) => match err.downcast::<std::io::Error>() {
                             Ok(ioe) => match ioe.kind() {
                                 ErrorKind::WouldBlock => {
@@ -732,13 +785,29 @@ impl Client {
                         // If these packets were lost, they must have been sent
                         aperturec_metrics::builtins::packet_sent(missing_count);
                     }
+
                     //
                     // Notify Control thread of last SequenceId and missing SequenceIds
                     //
                     match control_tx.send(ControlMessage::UpdateReceivedMessage(
-                        remote_port,
-                        current_seq_id.unwrap(),
-                        missing_seq.into_iter().collect(),
+                        UpdateReportBuilder::default()
+                            .decoder_id(remote_port)
+                            .sequence_id(current_seq_id.unwrap())
+                            .missing_sequence_ids(missing_seq.into_iter().collect())
+                            .window_id(fbu.window_id)
+                            .update_size(len)
+                            .latency_timestamp(
+                                match fbu.latency_timestamp.map(SystemTime::try_from) {
+                                    Some(Ok(systime)) => Some(systime),
+                                    Some(Err(err)) => {
+                                        log::warn!("Failed to read latency timestamp: {:?}", err);
+                                        None
+                                    }
+                                    _ => None,
+                                },
+                            )
+                            .build()
+                            .expect("Failed to build UpdateReport!"),
                     )) {
                         Ok(_) => (),
                         Err(err) => {
@@ -897,9 +966,14 @@ impl Client {
         let should_stop = self.should_stop.clone();
         let control_rx = itc.notify_control_rx.take().unwrap();
 
+        let window_len = si.window_size as f64;
+        let mut window_bytes_recv = 0_usize;
+        let mut window_id_current = 0_u64;
+        const WA_TRIGGER_PERCENT: f64 = 0.75;
+
         self.control_jh = Some(thread::spawn(move || {
-            // Track the last received sequence id for each decoder, this is needed for HBRs
             let mut decoder_seq = BTreeMap::new();
+            let mut wa_timer = CountdownTimer::new(Duration::from_secs(1));
 
             log::debug!("Control channel started");
             loop {
@@ -972,28 +1046,65 @@ impl Client {
                         }
                     },
                     recv(control_rx) -> msg => match msg {
-                        Ok(ControlMessage::UpdateReceivedMessage(dec, seq, missing)) => {
-                            decoder_seq.insert(dec.into(), seq);
+                        Ok(ControlMessage::UpdateReceivedMessage(report)) => {
+                            decoder_seq.insert(report.decoder_id.into(), report.sequence_id);
 
-                            let num_frames = missing.len();
-                            if !missing.is_empty() {
+                            //
+                            // Generate MFRs for missing frames
+                            //
+                            if !report.missing_sequence_ids.is_empty() {
                                 let mfr = MissedFrameReportBuilder::default()
-                                    .decoder(dec)
-                                    .frame_sequence_ids(missing)
+                                    .decoder(report.decoder_id)
+                                    .frame_sequence_ids(report.missing_sequence_ids)
                                     .build()
                                     .expect("Failed to build MissedFrameReport!");
+
+                                let num_missing = mfr.frame_sequence_ids.len();
 
                                 match control_tx_tx.send(mfr.into()) {
                                     Err(err) => log::warn!("Failed to send MissedFrameReport: {}", err),
                                     _ => {
                                         log::trace!(
                                             "Sent MissedFrameReport for Decoder {}, missed {}",
-                                            dec,
-                                            num_frames);
+                                            report.decoder_id,
+                                            num_missing);
                                     }
                                 };
                             }
 
+                            //
+                            // Update Flow Control statistics
+                            //
+                            wa_timer.reset();
+                            if report.window_id >= window_id_current {
+                                window_id_current = report.window_id;
+                                window_bytes_recv += report.update_size;
+                                let fill_percent = window_bytes_recv as f64 / window_len;
+
+                                if let Some(Ok(wa_latency)) = report.latency_timestamp.map(|l| l.elapsed()) {
+                                    wa_timer.reinitialize(min(Duration::from_millis(1000), wa_latency));
+                                }
+
+                                if fill_percent >= WA_TRIGGER_PERCENT {
+                                    let wa = WindowAdvanceBuilder::default()
+                                        .completed_window_id(report.window_id)
+                                        .latency_timestamp(SystemTime::now())
+                                        .build()
+                                        .expect("Failed to build WindowAdvance!");
+                                    match control_tx_tx.send(wa.into()) {
+                                        Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
+                                        _ => {
+                                            log::trace!(
+                                                "Sent WindowAdvance completed {} at {:.2}%",
+                                                report.window_id,
+                                                fill_percent * 100.0);
+                                        }
+                                    };
+
+                                    window_bytes_recv = 0;
+                                    window_id_current += 1;
+                                }
+                            }
                         },
                         Ok(ControlMessage::UiClosed(gm)) => {
                             control_tx_tx.send(gm.to_client_goodbye(client_id).into())
@@ -1021,6 +1132,27 @@ impl Client {
                         Err(err) => {
                             log::error!("Failed to recv from ITC channel: {}", err);
                             break;
+                        }
+                    },
+                    recv(wa_timer.remaining().map(after).unwrap_or(never())) -> _ => {
+                        if window_bytes_recv > 0 {
+                            let wa = WindowAdvanceBuilder::default()
+                                .completed_window_id(window_id_current)
+                                .latency_timestamp(SystemTime::now())
+                                .build()
+                                .expect("Failed to build WindowAdvance!");
+                            match control_tx_tx.send(wa.into()) {
+                                Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
+                                _ => {
+                                    log::trace!(
+                                        "Sent WindowAdvance timeout after {:?} at {:.2}%",
+                                        wa_timer.duration,
+                                        (window_bytes_recv as f64 / window_len) * 100.0);
+                                }
+                            };
+
+                            window_bytes_recv = 0;
+                            window_id_current += 1;
                         }
                     }
 
@@ -1168,6 +1300,7 @@ mod test {
             .max_fps(Duration::from_secs((1 / 30u16).into()))
             .keepalive_timeout(Duration::from_secs(1))
             .decoder_port_start(decoder_port_start)
+            .mbps_max(Some(250))
             .build()
             .expect("Failed to build Configuration!")
     }
