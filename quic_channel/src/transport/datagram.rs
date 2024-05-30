@@ -2,54 +2,10 @@
 use crate::provider::datagram::{ReceiverHandle, SenderHandle};
 use crate::*;
 
-use aperturec_trace::log;
-
 use bytes::Bytes;
-use s2n_quic::provider::event;
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-static MAX_MTU: AtomicUsize = AtomicUsize::new(1200);
-
-pub fn max_mtu() -> usize {
-    MAX_MTU.load(Ordering::Relaxed)
-}
-
-pub(crate) struct MtuEventSubscriber;
-
-#[derive(Default)]
-pub(crate) struct MtuEventContext {
-    path_mtus: BTreeMap<u64, usize>,
-}
-
-impl event::Subscriber for MtuEventSubscriber {
-    type ConnectionContext = MtuEventContext;
-
-    fn create_connection_context(
-        &mut self,
-        _: &event::ConnectionMeta,
-        _: &event::ConnectionInfo,
-    ) -> Self::ConnectionContext {
-        MtuEventContext::default()
-    }
-
-    fn on_mtu_updated(
-        &mut self,
-        ctx: &mut Self::ConnectionContext,
-        _: &event::ConnectionMeta,
-        event: &event::events::MtuUpdated,
-    ) {
-        ctx.path_mtus.insert(event.path_id, event.mtu as usize);
-        let new_mtu = ctx.path_mtus.values().min().expect("no tracked MTUs");
-        log::debug!(
-            "New MTU: {} on path {} with cause {:?}",
-            *new_mtu,
-            event.path_id,
-            event.cause
-        );
-        MAX_MTU.store(*new_mtu, Ordering::Relaxed);
-    }
-}
+/// Maximum size to of data to pack into a datagram
+pub const MAX_SIZE: usize = 1000;
 
 /// A trait for types which can receive bytes
 ///
@@ -78,6 +34,7 @@ pub trait Transmit: Sized {
 /// A [`Gated`] datagram [`Transmit`]er
 ///
 /// This is constructed by calling [`Transmit::gated`] on an existing [`Transmit`] type
+#[derive(Clone)]
 pub struct Gated<T: Transmit, G: Gate> {
     ungated: T,
     gate: G,
@@ -122,6 +79,7 @@ mod async_variants {
     }
 
     /// Async variant of [`Gated`](super::Gated)
+    #[derive(Clone)]
     pub struct Gated<T: LocalTransmit, G: Gate> {
         ungated: T,
         gate: G,
@@ -174,19 +132,19 @@ impl Transmit for Transceiver {
 /// A byte-oriented sender
 #[derive(Debug, Clone)]
 pub struct Transmitter {
-    handle: SenderHandle,
+    sender_handle: SenderHandle,
 }
 
 impl Transmitter {
     /// Create a new [`Self`]
-    pub fn new(handle: SenderHandle) -> Self {
-        Transmitter { handle }
+    pub fn new(sender_handle: SenderHandle) -> Self {
+        Transmitter { sender_handle }
     }
 }
 
 impl Transmit for Transmitter {
     fn transmit(&mut self, data: Bytes) -> anyhow::Result<()> {
-        Transmit::transmit(&mut self.handle, data)
+        Transmit::transmit(&mut self.sender_handle, data)
     }
 }
 

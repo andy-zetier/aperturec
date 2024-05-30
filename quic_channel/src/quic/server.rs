@@ -123,7 +123,10 @@ impl Builder {
             .with_io((bind_addr, bind_port))?
             .with_tls(tls_provider)?
             .with_datagram(datagram_endpoint)?
-            .with_event((events::TrxEventSubscriber, datagram::MtuEventSubscriber))?;
+            .with_event((
+                provider::event::TrxSubscriber,
+                provider::event::MtuSubscriber,
+            ))?;
 
         let mut rt = None;
         let quic_server = if tokio::runtime::Handle::try_current().is_err() {

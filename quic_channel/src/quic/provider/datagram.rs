@@ -8,7 +8,9 @@ use s2n_quic::connection as s2n_conn;
 use s2n_quic::provider::datagram as s2n_dg;
 use std::collections::VecDeque;
 use std::task::Waker;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
+
+pub type SizeSubscription = watch::Receiver<usize>;
 
 struct SendRequest {
     data: Bytes,
@@ -27,6 +29,22 @@ struct PendingSendRequest {
     num_tries: usize,
 }
 
+impl PendingSendRequest {
+    fn return_failure<E: Into<anyhow::Error>>(self, e: E) {
+        self.req
+            .result_tx
+            .send(Err(e.into()))
+            .unwrap_or_else(|res| log::warn!("Failed to notify sender of failure '{:?}'", res));
+    }
+
+    fn return_success(self) {
+        self.req
+            .result_tx
+            .send(Ok(()))
+            .unwrap_or_else(|_| log::warn!("Failed to notify sender of success"));
+    }
+}
+
 pub struct Sender {
     send_requests: mpsc::UnboundedReceiver<SendRequest>,
     send_requests_tx: mpsc::UnboundedSender<SendRequest>,
@@ -36,27 +54,12 @@ pub struct Sender {
     error: Option<s2n_conn::Error>,
 }
 
-impl Sender {
-    fn new(waker: &Waker, max_tries: usize) -> Self {
-        let (tx_tx, tx_rx) = mpsc::unbounded_channel();
-        Sender {
-            send_requests: tx_rx,
-            send_requests_tx: tx_tx,
-            pending_requests: VecDeque::new(),
-            waker: waker.clone(),
-            max_tries,
-            error: None,
-        }
-    }
-}
-
 impl s2n_dg::Sender for Sender {
     fn on_transmit<P>(&mut self, packet: &mut P)
     where
         P: s2n_dg::Packet,
     {
         if !packet.datagrams_prioritized() && packet.has_pending_streams() {
-            self.wake_if_required();
             return;
         }
 
@@ -67,77 +70,53 @@ impl s2n_dg::Sender for Sender {
 
         if let Some(e) = self.error {
             for pending_req in self.pending_requests.drain(..) {
-                pending_req
-                    .req
-                    .result_tx
-                    .send(Err(e.into()))
-                    .unwrap_or_else(|res| {
-                        log::warn!("Failed to notify sender of result '{:?}'", res)
-                    })
+                pending_req.return_failure(e);
             }
+            return;
         }
 
         let mut has_written = false;
-        let mut i = 0;
-        while i < self.pending_requests.len() {
-            if packet.remaining_capacity() == 0 {
-                break;
-            }
-
-            let pending_req = self.pending_requests.get_mut(i).unwrap();
-
-            if pending_req.req.data.len() > packet.remaining_capacity() {
-                // If a datagram has already been written to the packet and we cannot fit the
-                // next datagram, we do not actually count this as a failed try. Just move on to the
-                // next
-                if !has_written {
-                    log::warn!(
-                        "datagram of size {} will not fit in packet with capacity {}",
-                        pending_req.req.data.len(),
-                        packet.remaining_capacity()
-                    );
-                    pending_req.num_tries += 1;
-                }
+        while let Some(pending_req) = self.pending_requests.front_mut() {
+            if pending_req.num_tries >= self.max_tries {
+                let pending_req = self.pending_requests.pop_front().unwrap();
+                let num_tries = pending_req.num_tries;
+                pending_req
+                    .return_failure(anyhow!("Failed to send datagram after {} tries", num_tries));
                 continue;
             }
 
             match packet.write_datagram(&pending_req.req.data) {
                 Ok(()) => {
                     has_written = true;
-                    let pending_req = self.pending_requests.remove(i).unwrap();
-                    pending_req
-                        .req
-                        .result_tx
-                        .send(Ok(()))
-                        .unwrap_or_else(|res| {
-                            log::warn!("Failed to notify sender of result '{:?}'", res)
-                        });
-                    continue;
+                    let pending_req = self.pending_requests.pop_front().unwrap();
+                    pending_req.return_success();
+                }
+                Err(s2n_dg::WriteError::ExceedsPacketCapacity) => {
+                    if !has_written {
+                        log::warn!(
+                            "datagram of size {} will not fit in packet with capacity {}",
+                            pending_req.req.data.len(),
+                            packet.remaining_capacity()
+                        );
+                        pending_req.num_tries += 1;
+                    }
+                    break;
                 }
                 Err(e) => {
-                    log::warn!("datagram failed to be written to packet: {:?}", e);
-                    pending_req.num_tries += 1
+                    let pending_req = self.pending_requests.pop_front().unwrap();
+                    let dg_len = pending_req.req.data.len();
+                    pending_req.return_failure(anyhow!(
+                        "unrecoverable error while attempting to send datagram of size {}: {:?}",
+                        dg_len,
+                        e
+                    ));
                 }
-            }
-
-            if pending_req.num_tries >= self.max_tries {
-                let pending_req = self.pending_requests.remove(i).unwrap();
-                pending_req
-                    .req
-                    .result_tx
-                    .send(Err(anyhow!(
-                        "Failed to send datagram after {} tries",
-                        pending_req.num_tries
-                    )))
-                    .unwrap_or_else(|res| {
-                        log::warn!("Failed to notify sender of result '{:?}'", res)
-                    });
-            } else {
-                i += 1;
             }
         }
 
-        self.wake_if_required();
+        if self.has_transmission_interest() {
+            self.waker.wake_by_ref();
+        }
     }
 
     fn has_transmission_interest(&self) -> bool {
@@ -153,6 +132,18 @@ impl s2n_dg::Sender for Sender {
 }
 
 impl Sender {
+    fn new(waker: &Waker, max_tries: usize) -> Self {
+        let (tx_tx, tx_rx) = mpsc::unbounded_channel();
+        Sender {
+            send_requests: tx_rx,
+            send_requests_tx: tx_tx,
+            pending_requests: VecDeque::new(),
+            waker: waker.clone(),
+            max_tries,
+            error: None,
+        }
+    }
+
     pub fn handle(&self) -> Result<SenderHandle> {
         match self.error {
             Some(e) => Err(e.into()),
@@ -160,12 +151,6 @@ impl Sender {
                 tx: self.send_requests_tx.clone(),
                 waker: self.waker.clone(),
             }),
-        }
-    }
-
-    fn wake_if_required(&self) {
-        if !self.pending_requests.is_empty() || !self.send_requests.is_empty() {
-            self.waker.wake_by_ref();
         }
     }
 }

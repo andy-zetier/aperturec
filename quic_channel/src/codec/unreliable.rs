@@ -158,7 +158,7 @@ where
 }
 
 /// Send-only channel
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SenderSimplex<T: Transmit, ApiSm, WireSm> {
     transport: T,
     _api_sm: PhantomData<ApiSm>,
@@ -174,15 +174,7 @@ impl<T: Transmit, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm> {
             _wire_sm: PhantomData,
         }
     }
-}
 
-impl<T, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm>
-where
-    T: Transmit,
-    WireSm: Message,
-    ApiSm: TryInto<WireSm>,
-    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
-{
     /// Create a [`Self`] which limits the rate at which messages are sent based on the
     /// provided [`Gate`]
     pub fn gated<G: Gate>(self, gate: G) -> SenderSimplex<datagram::Gated<T, G>, ApiSm, WireSm> {
@@ -208,7 +200,7 @@ where
 }
 
 /// Async variant of [`SenderSimplex`]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AsyncSenderSimplex<T: AsyncTransmit, ApiSm, WireSm> {
     transport: T,
     _api_sm: PhantomData<ApiSm>,

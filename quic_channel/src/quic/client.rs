@@ -241,7 +241,6 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
             None => return_recover!(self, "Could not create connection to {}", server_addr),
             Some(connection) => connection,
         };
-
         try_recover!(connection.keep_alive(true), self);
 
         Ok(Client {
@@ -356,7 +355,7 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
             let dg = provider::datagram::EndpointBuilder::default().build()?;
             Ok::<_, anyhow::Error>(
                 s2n_quic::Client::builder()
-                    .with_event(events::TrxEventSubscriber)?
+                    .with_event(provider::event::TrxSubscriber)?
                     .with_datagram(dg)?
                     .with_tls(tls)?
                     .with_io(io)?
