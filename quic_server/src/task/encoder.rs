@@ -36,7 +36,7 @@ const DISPATCH_QUEUE: queue::QueueGroup = trace_queue_group!("encoder:dispatch")
 
 pub const RAW_BYTES_PER_PIXEL: usize = 4;
 const ENC_BYTES_PER_PIXEL: usize = 3;
-const MAX_BYTES_PER_MESSAGE: usize = 1400;
+pub const MAX_BYTES_PER_MESSAGE: usize = 1400;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RawPixel {
@@ -1057,11 +1057,17 @@ where
                                 MutexGuard::unlock_fair(responsible_sequence_nos_locked);
                                 MutexGuard::unlock_fair(in_flight_locked);
                                 let rus_count = rus.len();
-                                let message: mm_s2c::Message = mm::FramebufferUpdate::new(rus).into();
 
-                                if let Err(e) = fc_handle.request_to_send(message.encoded_len()).await {
-                                    break 'select Err(e);
-                                }
+                                let mut message: mm_s2c::Message = mm::FramebufferUpdate::new(rus, u64::MAX, None).into();
+                                match fc_handle.request_to_send(message.encoded_len()).await {
+                                    Ok((window_id, latency_timestamp)) => match message {
+                                        mm_s2c::Message::FramebufferUpdate(ref mut fbu) => {
+                                            fbu.window_id = window_id;
+                                            fbu.latency_timestamp = latency_timestamp.map(|t| t.into());
+                                        },
+                                    },
+                                    Err(e) => break 'select Err(e),
+                                };
 
                                 if let Err(e) = send_recv.send(message).await {
                                     if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
