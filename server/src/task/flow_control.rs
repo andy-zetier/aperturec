@@ -94,9 +94,23 @@ impl Configuration {
     ) -> Self {
         let initial_window_size = match window_size {
             Some(0) => {
+                //
+                // The largest buffer size we can use is the smallest size between the Server's
+                // send buffer and the Client's receive buffer.
+                //
                 let buffer_size = min(client_recv_size, get_send_buffer_size(sock_addr));
+
+                // We must be able to send at least one message-worth of bytes.
                 let buffer_size = max(buffer_size, encoder::MAX_BYTES_PER_MESSAGE);
-                Some(buffer_size * (decoder_count / 2))
+
+                //
+                // Each encoder / decoder pair will have its own socket buffer. However, depending
+                // on workload, not all of the pairs may be active. Therefore, multiply the buffer
+                // size by half the number of available pairs and truncate to the floor to arrive
+                // at initial_window_size.
+                //
+                let multiplier = max(decoder_count, 2) / 2;
+                Some(buffer_size * multiplier)
             }
             _ => window_size,
         };
