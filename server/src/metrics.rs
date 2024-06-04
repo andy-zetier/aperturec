@@ -1,6 +1,6 @@
 use aperturec_metrics::exporters::{CsvExporter, Exporter, LogExporter, PushgatewayExporter};
 use aperturec_metrics::{
-    create_histogram_metric_with_buckets, create_metric, register_metric, Measurement, Metric,
+    create_histogram_metric_with_buckets, create_metric, create_stats_metric, Measurement, Metric,
     MetricUpdate, MetricsInitializer,
 };
 use aperturec_trace::{log, Level};
@@ -175,6 +175,8 @@ create_histogram_metric_with_buckets!(
     prometheus::linear_buckets(10., 10., 10).unwrap()
 );
 
+create_stats_metric!(WindowFillPercent, "%", 100.0);
+
 pub fn setup_server_metrics(
     metrics_log: bool,
     metrics_csv: Option<String>,
@@ -218,13 +220,13 @@ pub fn setup_server_metrics(
         })
         .unwrap();
 
-        // Register crate-defined Metric with the Metrics system
-        aperturec_metrics::register(|| Box::<Rtt>::default());
+        aperturec_metrics::register_default_metric!(Rtt);
 
-        register_metric!(CompressionRatio);
-        register_metric!(PixelsCompressed);
-        register_metric!(TimeInCompression);
-        register_metric!(FramebufferUpdatesSent);
-        register_metric!(TrackingBufferDamageRatio);
+        CompressionRatio::register();
+        TrackingBufferDamageRatio::register();
+        PixelsCompressed::register();
+        TimeInCompression::register();
+        FramebufferUpdatesSent::register();
+        WindowFillPercent::register();
     }
 }

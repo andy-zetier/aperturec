@@ -140,7 +140,6 @@ impl CsvExporter {
     fn open_file(path: &str) -> Result<std::fs::File> {
         Ok(OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(path)
             .map_err(|e| {

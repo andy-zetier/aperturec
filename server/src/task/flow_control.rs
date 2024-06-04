@@ -165,15 +165,7 @@ impl TokenBucket {
 
         match dropped_token_count.cmp(&0) {
             std::cmp::Ordering::Greater => {
-                #[cfg(any(debug_assertions, test))]
-                {
-                    log::trace!(
-                        "{} is {:.2}% empty, refilling {} tokens",
-                        self.name,
-                        (1.0 - self.percent_remaining()) * 100.0,
-                        dropped_token_count
-                    );
-                }
+                log::trace!("{} refilling {} tokens", self.name, dropped_token_count);
                 self.bucket.add_permits(dropped_token_count as usize);
             }
             std::cmp::Ordering::Less => {
@@ -188,8 +180,11 @@ impl TokenBucket {
         self.bucket.available_permits() == 0
     }
 
-    fn percent_remaining(&self) -> f64 {
-        self.bucket.available_permits() as f64 / self.token_capacity.load(Ordering::Relaxed) as f64
+    fn percent_filled_deferred(&self) -> impl FnOnce() -> f64 {
+        let capacity = self.token_capacity.load(Ordering::Relaxed);
+        let tokens = self.bucket.available_permits();
+
+        move || (capacity - tokens) as f64 / capacity as f64
     }
 }
 
@@ -354,6 +349,8 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                                 _ => None,
                             }
                         }
+
+                        crate::metrics::WindowFillPercent::update_with(window_tb.percent_filled_deferred());
 
                         window_id.fetch_add(1, Ordering::Relaxed);
                         window_tb.fill();
