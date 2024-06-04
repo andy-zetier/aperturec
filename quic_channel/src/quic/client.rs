@@ -164,6 +164,18 @@ impl Builder {
     }
 }
 
+impl Client<Connected> {
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.state.connection.local_addr()?)
+    }
+}
+
+impl Client<AsyncConnected> {
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.state.connection.local_addr()?)
+    }
+}
+
 impl TryTransitionable<Connected, Closed> for Client<Closed> {
     type SuccessStateful = Client<Connected>;
     type FailureStateful = Client<Closed>;

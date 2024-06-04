@@ -3,6 +3,7 @@
 //! Built on-top of the [`crate::transport::datagram`] API, this provides methods for sending and
 //! receiving messages unreliably and out-of-order.
 
+use crate::gate::*;
 use crate::transport::datagram::{self, AsyncReceive, AsyncTransmit, Receive, Transmit};
 use crate::*;
 
@@ -10,6 +11,36 @@ use bytes::Bytes;
 use prost::Message;
 use std::error::Error;
 use std::marker::PhantomData;
+
+pub struct Gated<S, G> {
+    gate: G,
+    ungated: S,
+}
+
+impl<S: Sender, G: Gate> Sender for Gated<S, G>
+where
+    <G as Gate>::StampedMessage: Into<<S as Sender>::Message>,
+{
+    type Message = <G as Gate>::UnstampedMessage;
+
+    fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+        let stamped = self.gate.wait_and_stamp(msg)?;
+        self.ungated.send(stamped.into())
+    }
+}
+
+impl<S: AsyncSender, G: AsyncGate + Send> AsyncSender for Gated<S, G>
+where
+    <G as AsyncGate>::StampedMessage: Into<<S as AsyncSender>::Message>,
+    <G as AsyncGate>::UnstampedMessage: Send,
+{
+    type Message = <G as AsyncGate>::UnstampedMessage;
+
+    async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
+        let stamped = self.gate.wait_and_stamp(msg).await?;
+        self.ungated.send(stamped.into()).await
+    }
+}
 
 fn encode<ApiSm, WireSm>(msg: ApiSm) -> anyhow::Result<Bytes>
 where
@@ -174,14 +205,21 @@ impl<T: Transmit, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm> {
             _wire_sm: PhantomData,
         }
     }
+}
 
+impl<T: Transmit, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm>
+where
+    T: Transmit,
+    WireSm: Message,
+    ApiSm: TryInto<WireSm>,
+    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
+{
     /// Create a [`Self`] which limits the rate at which messages are sent based on the
     /// provided [`Gate`]
-    pub fn gated<G: Gate>(self, gate: G) -> SenderSimplex<datagram::Gated<T, G>, ApiSm, WireSm> {
-        SenderSimplex {
-            transport: self.transport.gated(gate),
-            _api_sm: PhantomData,
-            _wire_sm: PhantomData,
+    pub fn gated<G: Gate>(self, gate: G) -> Gated<Self, G> {
+        Gated {
+            gate,
+            ungated: self,
         }
     }
 }
@@ -219,14 +257,10 @@ impl<T: AsyncTransmit, ApiSm, WireSm> AsyncSenderSimplex<T, ApiSm, WireSm> {
 
     /// Create a [`Self`] which limits the rate at which messages are sent based on the
     /// provided [`Gate`]
-    pub fn gated<G: AsyncGate>(
-        self,
-        gate: G,
-    ) -> AsyncSenderSimplex<datagram::AsyncGated<T, G>, ApiSm, WireSm> {
-        AsyncSenderSimplex {
-            transport: self.transport.gated(gate),
-            _api_sm: PhantomData,
-            _wire_sm: PhantomData,
+    pub fn gated<G: AsyncGate>(self, gate: G) -> Gated<Self, G> {
+        Gated {
+            gate,
+            ungated: self,
         }
     }
 }
@@ -269,16 +303,10 @@ impl<T: Receive + Transmit, ApiRm, ApiSm, WireRm, WireSm> Duplex<T, ApiRm, ApiSm
 
     /// Create a [`Self`] which limits the rate at which messages are sent based on the
     /// provided [`Gate`]
-    pub fn gated<G: Gate>(
-        self,
-        gate: G,
-    ) -> Duplex<datagram::Gated<T, G>, ApiRm, ApiSm, WireRm, WireSm> {
-        Duplex {
-            transport: self.transport.gated(gate),
-            _api_rm: PhantomData,
-            _api_sm: PhantomData,
-            _wire_rm: PhantomData,
-            _wire_sm: PhantomData,
+    pub fn gated<G: Gate>(self, gate: G) -> Gated<Self, G> {
+        Gated {
+            gate,
+            ungated: self,
         }
     }
 }
@@ -335,16 +363,10 @@ impl<T: AsyncReceive + AsyncTransmit, ApiRm, ApiSm, WireRm, WireSm>
 
     /// Create a [`Self`] which limits the rate at which messages are sent based on the
     /// provided [`Gate`]
-    pub fn gated<G: AsyncGate>(
-        self,
-        gate: G,
-    ) -> AsyncDuplex<datagram::AsyncGated<T, G>, ApiRm, ApiSm, WireRm, WireSm> {
-        AsyncDuplex {
-            transport: self.transport.gated(gate),
-            _api_rm: PhantomData,
-            _api_sm: PhantomData,
-            _wire_rm: PhantomData,
-            _wire_sm: PhantomData,
+    pub fn gated<G: AsyncGate>(self, gate: G) -> Gated<Self, G> {
+        Gated {
+            gate,
+            ungated: self,
         }
     }
 }
@@ -381,17 +403,8 @@ where
     }
 }
 
-pub type ServerMediaChannel =
-    SenderSimplex<datagram::Transmitter, media::server_to_client::Message, media::ServerToClient>;
-
 pub type ClientMediaChannel =
     ReceiverSimplex<datagram::Receiver, media::server_to_client::Message, media::ServerToClient>;
-
-pub type AsyncServerMediaChannel = AsyncSenderSimplex<
-    datagram::AsyncTransmitter,
-    media::server_to_client::Message,
-    media::ServerToClient,
->;
 
 pub type AsyncClientMediaChannel = AsyncReceiverSimplex<
     datagram::AsyncReceiver,
@@ -399,13 +412,23 @@ pub type AsyncClientMediaChannel = AsyncReceiverSimplex<
     media::ServerToClient,
 >;
 
-pub type AsyncGatedServerMediaChannel<G> = AsyncSenderSimplex<
-    datagram::AsyncGated<datagram::AsyncTransmitter, G>,
+pub type ServerMediaChannel =
+    SenderSimplex<datagram::Transmitter, media::server_to_client::Message, media::ServerToClient>;
+pub type AsyncServerMediaChannel = AsyncSenderSimplex<
+    datagram::AsyncTransmitter,
     media::server_to_client::Message,
     media::ServerToClient,
 >;
-pub type GatedServerMediaChannel<G> = SenderSimplex<
-    datagram::Gated<datagram::Transmitter, G>,
-    media::server_to_client::Message,
-    media::ServerToClient,
+
+pub type GatedServerMediaChannel<G> = Gated<
+    SenderSimplex<datagram::Transmitter, media::server_to_client::Message, media::ServerToClient>,
+    G,
+>;
+pub type AsyncGatedServerMediaChannel<G> = Gated<
+    AsyncSenderSimplex<
+        datagram::AsyncTransmitter,
+        media::server_to_client::Message,
+        media::ServerToClient,
+    >,
+    G,
 >;

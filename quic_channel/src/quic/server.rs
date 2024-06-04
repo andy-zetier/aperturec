@@ -69,6 +69,23 @@ pub mod states {
         pub(super) mc: AsyncServerMedia,
         pub(super) quic_server: s2n_quic::Server,
     }
+
+    macro_rules! as_ref_quic_server {
+        ($state:ty) => {
+            impl AsRef<s2n_quic::Server> for $state {
+                fn as_ref(&self) -> &s2n_quic::Server {
+                    &self.quic_server
+                }
+            }
+        };
+    }
+
+    as_ref_quic_server!(Listening);
+    as_ref_quic_server!(Accepted);
+    as_ref_quic_server!(Ready);
+    as_ref_quic_server!(AsyncListening);
+    as_ref_quic_server!(AsyncAccepted);
+    as_ref_quic_server!(AsyncReady);
 }
 use states::*;
 
@@ -173,17 +190,13 @@ impl Builder {
     }
 }
 
-impl Server<Listening> {
+impl<S: State> Server<S>
+where
+    S: AsRef<s2n_quic::Server>,
+{
     /// Get the address the server is bound and listening on
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.state.quic_server.local_addr()?)
-    }
-}
-
-impl Server<AsyncListening> {
-    /// Get the address the server is bound and listening on
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.state.quic_server.local_addr()?)
+        Ok(self.state.as_ref().local_addr()?)
     }
 }
 

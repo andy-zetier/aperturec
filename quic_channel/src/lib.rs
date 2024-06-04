@@ -1,6 +1,7 @@
 use aperturec_protocol::{control, event, media};
 
 pub mod codec;
+pub mod gate;
 mod quic;
 pub mod tls;
 pub mod transport;
@@ -30,18 +31,6 @@ pub use codec::unreliable::GatedServerMediaChannel as GatedServerMedia;
 pub use codec::unreliable::ServerMediaChannel as ServerMedia;
 
 pub use quic::*;
-
-/// A trait to gate how fast a [`Sender`] can send messages.
-///
-/// This trait assumes that the [`Sender`]'s messages will serialize to some number of bytes. The
-/// [`Gate`] limits the number of bytes which can be sent at any given time.
-pub trait Gate {
-    /// Block until the [`Gate`] is ready to send the provided number of bytes
-    ///
-    /// This function will be called by gated [`Sender`]s each time a message is sent, ensuring
-    /// that the [`Gate`] is in control of how many bytes can be sent at a time.
-    fn wait_for_permission<T: Into<usize>>(&self, num_bytes: T) -> anyhow::Result<()>;
-}
 
 /// A trait for types which receive messages
 pub trait Receiver {
@@ -121,20 +110,10 @@ pub trait UnifiedServer {
 }
 
 mod async_variants {
-    use aperturec_protocol::{control, event, media};
+    use super::*;
     use futures::sink::{self, Sink};
     use futures::stream::{self, Stream};
     use futures::{Future, FutureExt};
-
-    #[trait_variant::make(Gate: Send + Sync)]
-    #[allow(dead_code)]
-    /// Async variant of [`super::Gate`]
-    pub trait LocalGate {
-        async fn wait_for_permission<T: Into<usize> + Send + Sync>(
-            &self,
-            num_bytes: T,
-        ) -> anyhow::Result<()>;
-    }
 
     #[trait_variant::make(Receiver: Send)]
     #[allow(dead_code)]
@@ -213,7 +192,6 @@ mod async_variants {
 }
 
 pub use async_variants::Duplex as AsyncDuplex;
-pub use async_variants::Gate as AsyncGate;
 pub use async_variants::Receiver as AsyncReceiver;
 pub use async_variants::Sender as AsyncSender;
 pub use async_variants::UnifiedClient as AsyncUnifiedClient;

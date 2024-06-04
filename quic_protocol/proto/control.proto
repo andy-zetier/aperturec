@@ -3,6 +3,7 @@ syntax = "proto3";
 package control;
 import "common.proto";
 import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 
 enum Os {
   OS_UNSPECIFIED = 0;
@@ -54,6 +55,7 @@ message ClientInfo {
   uint64 number_of_cores = 11;
   string amount_of_ram = 12;
   common.Dimension display_size = 13;
+  uint64 recv_buffer_size = 14;
 }
 
 message ClientInit {
@@ -64,6 +66,7 @@ message ClientInit {
   google.protobuf.Duration client_heartbeat_response_interval = 5;
   uint32 max_decoder_count = 6;
   string client_specified_program_cmdline = 7;
+  uint32 mbps_max = 8;
 }
 
 enum ClientGoodbyeReason {
@@ -88,12 +91,18 @@ message MissedFrameReport {
   repeated uint64 frame_sequence_ids = 2;
 }
 
+message WindowAdvance {
+    uint64 completed_window_id = 1;
+    google.protobuf.Timestamp latency_timestamp = 2;
+}
+
 message ClientToServer {
   oneof message {
     ClientInit client_init = 1;
     ClientGoodbye client_goodbye = 2;
     HeartbeatResponse heartbeat_response = 3;
     MissedFrameReport missed_frame_report = 4;
+    WindowAdvance window_advance = 6;
   }
 }
 
@@ -103,6 +112,7 @@ message ServerInit {
   common.Dimension display_size = 3;
   repeated common.CursorBitmap cursor_bitmaps = 4;
   repeated DecoderArea decoder_areas = 5;
+  uint64 window_size = 7;
 }
 
 enum ServerGoodbyeReason {

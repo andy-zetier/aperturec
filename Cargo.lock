@@ -264,8 +264,10 @@ dependencies = [
  "gtk",
  "keycode",
  "openssl",
+ "paste",
  "prost-types",
  "rand 0.8.5",
+ "socket2",
  "sysinfo",
  "windows",
 ]

@@ -16,6 +16,7 @@ once_cell = { version = "1.19", optional = true }
 openssl = { version = "0.10" }
 pin-project = "1.1"
 prost = "0.12"
+prost-types = "0.12"
 s2n-tls-sys = "0.2"
 tokio = { version = "1.37", features = ["full"] }
 trait-variant = "0.1"

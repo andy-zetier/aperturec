@@ -1,5 +1,5 @@
 use crate::gtk3::{GtkUi, ItcChannels};
-use anyhow::{bail, Result};
+use anyhow::Result;
 use aperturec_channel::{
     self as channel, client::states as channel_states, Receiver, Sender, UnifiedClient,
 };
@@ -8,6 +8,7 @@ use aperturec_protocol::control::{
     server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder,
     ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, DecoderArea,
     DecoderSequencePair, Endianness, HeartbeatResponseBuilder, MissedFrameReportBuilder, Os,
+    WindowAdvanceBuilder,
 };
 use aperturec_protocol::event::{
     button, client_to_server as em_c2s, Button, ButtonStateBuilder, KeyEvent, MappedButton,
@@ -16,15 +17,18 @@ use aperturec_protocol::event::{
 use aperturec_protocol::media::{self, server_to_client as mm_s2c};
 use aperturec_state_machine::*;
 use aperturec_trace::log;
-use crossbeam_channel::{select, unbounded};
+use crossbeam_channel::{after, never, select, unbounded};
 use derive_builder::Builder;
 use openssl::x509::X509;
+use socket2::{Domain, Socket, Type};
+use std::cmp::min;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::ErrorKind;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 use std::{assert, thread};
 use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
 
@@ -170,12 +174,18 @@ pub enum UiMessage {
     QuitMessage(String),
 }
 
+#[derive(Builder, Debug)]
+pub struct UpdateReport {
+    decoder_id: u32,
+    sequence_id: u64,
+    missing_sequence_ids: Vec<u64>,
+    window_id: u64,
+    update_size: usize,
+    latency_timestamp: Option<SystemTime>,
+}
+
 pub enum ControlMessage {
-    UpdateReceivedMessage {
-        decoder_id: u32,
-        sequence: u64,
-        missing_sequences: BTreeSet<u64>,
-    },
+    UpdateReceivedMessage(UpdateReport),
     UiClosed(GoodbyeMessage),
     EventChannelDied(GoodbyeMessage),
     SigintReceived,
@@ -238,6 +248,39 @@ impl ClientDecoder {
     }
 }
 
+fn get_recv_buffer_size(sock_addr: SocketAddr) -> usize {
+    let sock =
+        Socket::new(Domain::for_address(sock_addr), Type::DGRAM, None).expect("Socket create");
+    sock.recv_buffer_size().expect("SO_RCVBUF")
+}
+
+struct CountdownTimer {
+    duration: Duration,
+    start_time: Instant,
+}
+
+impl CountdownTimer {
+    fn new(duration: Duration) -> Self {
+        let start_time = Instant::now();
+        Self {
+            duration,
+            start_time,
+        }
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.duration.checked_sub(self.start_time.elapsed())
+    }
+
+    fn reset(&mut self) {
+        self.start_time = Instant::now();
+    }
+
+    fn reinitialize(&mut self, duration: Duration) {
+        self.duration = duration;
+        self.reset()
+    }
+}
 pub struct Client {
     config: Configuration,
     id: Option<u64>,
@@ -247,6 +290,7 @@ pub struct Client {
     control_jh: Option<thread::JoinHandle<()>>,
     should_stop: Arc<AtomicBool>,
     decoders: Vec<ClientDecoder>,
+    local_addr: Option<SocketAddr>,
 }
 
 impl Client {
@@ -255,6 +299,7 @@ impl Client {
         Self {
             config: config.clone(),
             should_stop: Arc::new(AtomicBool::new(false)),
+            local_addr: None,
 
             //
             // TODO: I'm undecided on initial hearbeat resonse (HBR) timing. Basing HBR interval on
@@ -352,6 +397,7 @@ impl Client {
                 self.config.win_width,
                 self.config.win_height,
             ))
+            .recv_buffer_size(get_recv_buffer_size(self.local_addr.expect("local address")) as u64)
             .build()
             .expect("Failed to generate ClientInfo")
     }
@@ -402,16 +448,10 @@ impl Client {
             decoder_channels_rx.insert(decoder.id, rx);
         }
         thread::spawn::<_, Result<()>>(move || loop {
-            let mm_s2c::Message::FramebufferUpdate(fbu) = mc.receive()?;
-            aperturec_metrics::builtins::packet_sent(1);
-            log::debug!(
-                "[decoder {}] received sequence {}",
-                fbu.decoder_id,
-                fbu.sequence
-            );
+            let (mm_s2c::Message::FramebufferUpdate(fbu), len) = mc.receive_with_len()?;
 
             match decoder_channels_tx.get_mut(&fbu.decoder_id) {
-                Some(channel) => channel.send(fbu)?,
+                Some(channel) => channel.send((fbu, len))?,
                 None => log::warn!(
                     "Received media message for decoder ID {} which does not exist",
                     fbu.decoder_id
@@ -454,18 +494,29 @@ impl Client {
                             err
                         );
                         log::debug!("[decoder {}] exiting", decoder_id);
-                        bail!(err);
+                        return;
                     }
                 };
 
-                let loop_res = loop {
+                log::debug!("[decoder {}] Media channel started", decoder_id);
+                loop {
+                    crate::metrics::idling(decoder_id);
+
                     //
                     // Listen for FramebufferUpdates from the server
                     //
-                    let fbu = fbu_rx.recv()?;
+                    let (fbu, len) = match fbu_rx.recv() {
+                        Ok((fbu, len)) => (fbu, len),
+                        Err(err) => {
+                            log::warn!("[decoder {}] error receiving FBU: {}", decoder_id, err);
+                            continue;
+                        }
+                    };
+
+                    crate::metrics::working(decoder_id);
 
                     if should_stop.load(Ordering::Relaxed) {
-                        break Ok::<_, anyhow::Error>(());
+                        break;
                     }
 
                     // FramebufferUpdate logging is *very* noisy
@@ -475,10 +526,7 @@ impl Client {
                     //     fbu.sequence
                     // );
 
-                    aperturec_metrics::builtins::packet_received(1);
-
                     let mut missing_sequences: BTreeSet<u64> = BTreeSet::new();
-
                     //
                     // Handle out-of-sequence RectangleUpdates
                     //
@@ -510,34 +558,11 @@ impl Client {
 
                     current_seq_id = Some(fbu.sequence);
 
-                    if !missing_sequences.is_empty() {
-                        let missing_count = missing_sequences.len();
-                        aperturec_metrics::builtins::packet_lost(missing_count);
-
-                        // If these packets were lost, they must have been sent
-                        aperturec_metrics::builtins::packet_sent(missing_count);
-                    }
-                    //
-                    // Notify Control thread of last SequenceId and missing SequenceIds
-                    //
-                    match control_tx.send(ControlMessage::UpdateReceivedMessage {
-                        decoder_id,
-                        sequence: fbu.sequence,
-                        missing_sequences,
-                    }) {
-                        Ok(_) => (),
-                        Err(err) => {
-                            if !should_stop.load(Ordering::Relaxed) {
-                                log::error!("[decoder {}] Fatal error sending UpdateReceivedMessage to control thread: {}", decoder_id, err);
-                            }
-                            break Err(err.into());
-                        }
-                    };
-
                     //
                     // Write rectangle data to the Image with the appropriate Codec
                     //
                     if let media::FramebufferUpdate {
+                        sequence,
                         codec,
                         location: Some(location),
                         dimension: Some(dimension),
@@ -548,8 +573,8 @@ impl Client {
                         match Codec::try_from(*codec) {
                             Ok(Codec::Raw) => match image.draw_raw(
                                 data,
-                                location.x_position.into(),
-                                location.y_position.into(),
+                                location.x_position,
+                                location.y_position,
                                 dimension.width,
                                 dimension.height,
                             ) {
@@ -565,8 +590,8 @@ impl Client {
                             },
                             Ok(Codec::Zlib) => match image.draw_raw_zlib(
                                 data,
-                                location.x_position.into(),
-                                location.y_position.into(),
+                                location.x_position,
+                                location.y_position,
                                 dimension.width,
                                 dimension.height,
                             ) {
@@ -584,16 +609,16 @@ impl Client {
                                 log::warn!(
                                     "[decoder {}] Dropping Rectangle {}, unsupported codec",
                                     decoder_id,
-                                    current_seq_id.unwrap()
+                                    sequence
                                 );
                                 continue;
                             }
                         }
                     } else {
                         log::warn!(
-                            "[decoder {}] Dropping rectangle {}, malformed",
+                            "[decoder {}] Dropping fbu {}, malformed",
                             decoder_id,
-                            current_seq_id.unwrap()
+                            fbu.sequence
                         );
                         continue;
                     }
@@ -610,7 +635,7 @@ impl Client {
                                     decoder_id,
                                     err
                                 );
-                                break Err(err.into());
+                                break;
                             }
                         },
                         Err(err) => {
@@ -619,13 +644,52 @@ impl Client {
                                 decoder_id,
                                 err
                             );
-                            break Err(err.into());
+                            break;
                         }
                     };
-                }; // loop
+
+                    if !missing_sequences.is_empty() {
+                        log::debug!(
+                            "[decoder {}] MFRs generated for {:?}",
+                            decoder_id,
+                            missing_sequences
+                        );
+                    }
+
+                    //
+                    // Notify Control thread of last SequenceId and missing SequenceIds
+                    //
+                    match control_tx.send(ControlMessage::UpdateReceivedMessage(
+                        UpdateReportBuilder::default()
+                            .decoder_id(decoder_id)
+                            .sequence_id(current_seq_id.unwrap())
+                            .missing_sequence_ids(missing_sequences.into_iter().collect())
+                            .window_id(fbu.window_id)
+                            .update_size(len)
+                            .latency_timestamp(
+                                match fbu.latency_timestamp.map(SystemTime::try_from) {
+                                    Some(Ok(systime)) => Some(systime),
+                                    Some(Err(err)) => {
+                                        log::warn!("Failed to read latency timestamp: {:?}", err);
+                                        None
+                                    }
+                                    _ => None,
+                                },
+                            )
+                            .build()
+                            .expect("Failed to build UpdateReport!"),
+                    )) {
+                        Ok(_) => (),
+                        Err(err) => {
+                            if !should_stop.load(Ordering::Relaxed) {
+                                log::error!("[decoder {}] Fatal error sending UpdateReceivedMessage to control thread: {}", decoder_id, err);
+                            }
+                            break;
+                        }
+                    };
+                } // loop receive FramebufferUpdate
 
                 log::debug!("[decoder {}] Media channel exiting", decoder_id);
-                loop_res
             }); // thread::spawn
         } // for self.decoder
 
@@ -698,7 +762,7 @@ impl Client {
         // Setup Control Channel TX/RX threads
         //
         // The QUIC tx/rx threads read/write network control channel messages from/to appropriate
-        // ITC channels. This allows the core Control Channel thread to select!() on unbounded ITC
+        // ITC channels. This allows the core Control Channel thread to select!() on bounded ITC
         // channels to drive execution and avoid mixing network and ITC reads.
         //
         let (control_tx_tx, control_tx_rx) = unbounded();
@@ -765,9 +829,15 @@ impl Client {
         let should_stop = self.should_stop.clone();
         let control_rx = itc.notify_control_rx.take().unwrap();
 
+        let window_len = si.window_size as f64;
+        let mut window_bytes_recv = 0_usize;
+        let mut window_id_current = 0_u64;
+        const WA_TRIGGER_PERCENT: f64 = 0.75;
+
         self.control_jh = Some(thread::spawn(move || {
             // Track the last received sequence id for each decoder, this is needed for HBRs
             let mut decoder_seq = BTreeMap::new();
+            let mut wa_timer = CountdownTimer::new(Duration::from_secs(1));
 
             log::debug!("Control channel started");
             loop {
@@ -835,18 +905,55 @@ impl Client {
                         }
                     },
                     recv(control_rx) -> msg => match msg {
-                        Ok(ControlMessage::UpdateReceivedMessage { decoder_id, sequence, missing_sequences }) => {
-                            decoder_seq.insert(decoder_id, sequence);
+                        Ok(ControlMessage::UpdateReceivedMessage(report)) => {
+                            decoder_seq.insert(report.decoder_id, report.sequence_id);
 
-                            if !missing_sequences.is_empty() {
+                            //
+                            // Generate MFRs for missing frames
+                            //
+                            if !report.missing_sequence_ids.is_empty() {
                                 let mfr = MissedFrameReportBuilder::default()
-                                    .decoder_id(decoder_id)
-                                    .frame_sequence_ids(missing_sequences.into_iter().collect::<Vec<_>>())
+                                    .decoder_id(report.decoder_id)
+                                    .frame_sequence_ids(report.missing_sequence_ids.into_iter().collect::<Vec<_>>())
                                     .build()
                                     .expect("Failed to build MissedFrameReport!");
 
                                 if let Err(err) = control_tx_tx.send(mfr.into()) {
                                     log::warn!("Failed to send MissedFrameReport: {}", err);
+                                }
+                            }
+
+                            //
+                            // Update Flow Control statistics
+                            //
+                            wa_timer.reset();
+                            if report.window_id >= window_id_current {
+                                window_id_current = report.window_id;
+                                window_bytes_recv += report.update_size;
+                                let fill_percent = window_bytes_recv as f64 / window_len;
+
+                                if let Some(Ok(wa_latency)) = report.latency_timestamp.map(|l| l.elapsed()) {
+                                    wa_timer.reinitialize(min(Duration::from_millis(1000), wa_latency));
+                                }
+
+                                if fill_percent >= WA_TRIGGER_PERCENT {
+                                    let wa = WindowAdvanceBuilder::default()
+                                        .completed_window_id(report.window_id)
+                                        .latency_timestamp(SystemTime::now())
+                                        .build()
+                                        .expect("Failed to build WindowAdvance!");
+                                    match control_tx_tx.send(wa.into()) {
+                                        Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
+                                        _ => {
+                                            log::trace!(
+                                                "Sent WindowAdvance completed {} at {:.2}%",
+                                                report.window_id,
+                                                fill_percent * 100.0);
+                                        }
+                                    };
+
+                                    window_bytes_recv = 0;
+                                    window_id_current += 1;
                                 }
                             }
 
@@ -877,6 +984,27 @@ impl Client {
                         Err(err) => {
                             log::error!("Failed to recv from ITC channel: {}", err);
                             break;
+                        }
+                    },
+                    recv(wa_timer.remaining().map(after).unwrap_or(never())) -> _ => {
+                        if window_bytes_recv > 0 {
+                            let wa = WindowAdvanceBuilder::default()
+                                .completed_window_id(window_id_current)
+                                .latency_timestamp(SystemTime::now())
+                                .build()
+                                .expect("Failed to build WindowAdvance!");
+                            match control_tx_tx.send(wa.into()) {
+                                Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
+                                _ => {
+                                    log::trace!(
+                                        "Sent WindowAdvance timeout after {:?} at {:.2}%",
+                                        wa_timer.duration,
+                                        (window_bytes_recv as f64 / window_len) * 100.0);
+                                }
+                            };
+
+                            window_bytes_recv = 0;
+                            window_id_current += 1;
                         }
                     }
 
@@ -939,7 +1067,7 @@ impl Client {
         channel::ClientEvent,
         channel::ClientMedia,
     )> {
-        let (server_addr, server_port) = match self.config.server_addr.rsplit_once(":") {
+        let (server_addr, server_port) = match self.config.server_addr.rsplit_once(':') {
             Some((addr, port)) => (addr, Some(port.parse()?)),
             None => (&*self.config.server_addr, None),
         };
@@ -955,6 +1083,7 @@ impl Client {
         }
         let channel = channel_builder.build_sync()?;
         let channel = try_transition!(channel, channel_states::Connected).map_err(|r| r.error)?;
+        self.local_addr = Some(channel.local_addr()?);
         let channel = try_transition!(channel, channel_states::Ready).map_err(|r| r.error)?;
         let (cc, ec, mc, _) = channel.split();
         Ok((cc, ec, mc))
@@ -1072,12 +1201,12 @@ mod test {
         config
             .additional_tls_certificates
             .push(material.certificate);
-        let sthread = thread::spawn(move || {
+        let _sthread = thread::spawn(move || {
             let qserver = try_transition!(qserver).expect("server listen");
             try_transition!(qserver).expect("server ready");
         });
 
         let itc = ItcChannels::new(&config);
-        let client = Client::startup(&config, &itc);
+        let _client = Client::startup(&config, &itc);
     }
 }
