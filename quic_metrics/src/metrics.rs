@@ -109,11 +109,10 @@ pub fn stop() {
 ///
 /// Example:
 /// ```
-/// # extern crate aperturec_quic_metrics as aperturec_metrics;
 /// # use aperturec_trace::Level;
-/// use aperturec_metrics::MetricsInitializer;
-/// use aperturec_metrics::builtins;
-/// use aperturec_metrics::exporters::{Exporter, LogExporter};
+/// use aperturec_quic_metrics::MetricsInitializer;
+/// use aperturec_quic_metrics::builtins;
+/// use aperturec_quic_metrics::exporters::{Exporter, LogExporter};
 ///
 /// MetricsInitializer::default()
 ///     .with_poll_rate_from_secs(3)
@@ -123,11 +122,11 @@ pub fn stop() {
 ///     .expect("Failed to init metrics");
 ///
 /// // Update packet loss metric
-/// aperturec_metrics::builtins::packet_sent(5);
-/// aperturec_metrics::builtins::packet_lost(1);
+/// aperturec_quic_metrics::builtins::packet_sent(5);
+/// aperturec_quic_metrics::builtins::packet_lost(1);
 ///
 /// // Stop metric tracking
-/// aperturec_metrics::stop();
+/// aperturec_quic_metrics::stop();
 /// ```
 pub struct MetricsInitializer {
     exporters: Vec<Exporter>,

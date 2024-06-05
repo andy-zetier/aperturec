@@ -140,7 +140,6 @@ impl CsvExporter {
     fn open_file(path: &str) -> Result<std::fs::File> {
         Ok(OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(path)
             .map_err(|e| {
@@ -436,15 +435,12 @@ mod test {
         .expect("fake-pushgateway");
 
         let port = server.server_addr().port();
-        let prom_id = std::process::id();
+        let id = std::process::id();
         let (jh, sender) = server.stoppable();
 
-        let mut pge = PushgatewayExporter::new(
-            format!("http://127.0.0.1:{}", port),
-            JOB.to_string(),
-            prom_id,
-        )
-        .expect("Pushgateway Exporter");
+        let mut pge =
+            PushgatewayExporter::new(format!("http://127.0.0.1:{}", port), JOB.to_string(), id)
+                .expect("Pushgateway Exporter");
 
         // Generate a PUSH request
         pge.do_export(&generate_measurements()).expect("export");

@@ -1,4 +1,4 @@
-use aperturec_metrics::{register_metric, Measurement, Metric, MetricUpdate};
+use aperturec_metrics::{register_default_metric, Measurement, Metric, MetricUpdate};
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -181,6 +181,9 @@ mod test {
     }
 }
 
+aperturec_metrics::create_stats_metric!(WindowFillPercent, "%", 100.0);
+aperturec_metrics::create_stats_metric!(WindowAdvanceLatency, "ms", 1000.0);
+
 pub fn idling(id: u32) {
     aperturec_metrics::update(IdleUpdate::Idle(id, Instant::now()));
 }
@@ -190,5 +193,7 @@ pub fn working(id: u32) {
 }
 
 pub fn setup_client_metrics() {
-    register_metric!(Idle);
+    register_default_metric!(Idle);
+    WindowAdvanceLatency::register_sticky();
+    WindowFillPercent::register();
 }
