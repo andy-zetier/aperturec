@@ -23,7 +23,7 @@ trait-variant = "0.1"
 
 [dependencies.s2n-quic]
 version = "1.37"
-default_features = false
+default-features = false
 features = ["provider-address-token-default", "provider-tls-s2n", "unstable-provider-datagram"]
 
 [dependencies.s2n-tls]

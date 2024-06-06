@@ -267,7 +267,7 @@ impl TryTransitionable<Ready, Accepted> for Server<Accepted> {
             ),
             self.state.async_rt.clone(),
         ));
-        let ec = ServerEvent::new(stream::Receiver::new(
+        let mut ec = ServerEvent::new(stream::Receiver::new(
             try_recover!(
                 try_recover!(
                     self.state
@@ -283,6 +283,19 @@ impl TryTransitionable<Ready, Accepted> for Server<Accepted> {
             ),
             self.state.async_rt.clone(),
         ));
+
+        // First event is not real, but required for QUIC to actually set up a unidirectional
+        // stream
+        match try_recover!(ec.receive(), self, Accepted) {
+            event::client_to_server::Message::NoopEvent(_) => (),
+            _ => {
+                return Err(Recovered {
+                    stateful: transition!(self, Accepted),
+                    error: anyhow!("Non-noop initial EC message"),
+                })
+            }
+        }
+
         let dg_tx = try_recover!(
             try_recover!(
                 self.state
@@ -417,7 +430,7 @@ impl AsyncTryTransitionable<AsyncReady, AsyncAccepted> for Server<AsyncAccepted>
             self,
             AsyncAccepted
         )));
-        let ec = AsyncServerEvent::new(stream::AsyncReceiver::new(try_recover!(
+        let mut ec = AsyncServerEvent::new(stream::AsyncReceiver::new(try_recover!(
             try_recover!(
                 self.state.connection.accept_receive_stream().await,
                 self,
@@ -427,6 +440,19 @@ impl AsyncTryTransitionable<AsyncReady, AsyncAccepted> for Server<AsyncAccepted>
             self,
             AsyncAccepted
         )));
+
+        // First event is not real, but required for QUIC to actually set up a unidirectional
+        // stream
+        match try_recover!(ec.receive().await, self, AsyncAccepted) {
+            event::client_to_server::Message::NoopEvent(_) => (),
+            _ => {
+                return Err(Recovered {
+                    stateful: transition!(self, AsyncAccepted),
+                    error: anyhow!("Non-noop initial EC message"),
+                })
+            }
+        }
+
         let dg_tx = try_recover!(
             try_recover!(
                 self.state

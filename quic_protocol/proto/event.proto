@@ -41,10 +41,13 @@ message PointerEvent {
 
 message DisplayEvent { common.Dimension display_size = 1; }
 
+message NoopEvent {}
+
 message ClientToServer {
   oneof message {
     KeyEvent key_event = 1;
     PointerEvent pointer_event = 2;
     DisplayEvent display_event = 3;
+    NoopEvent noop_event = 4;
   }
 }

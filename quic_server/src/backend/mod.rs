@@ -100,6 +100,7 @@ pub enum Event {
     Display {
         size: Dimension,
     },
+    Noop,
 }
 
 #[derive(Debug)]
@@ -139,6 +140,7 @@ impl TryFrom<em_c2s::Message> for Event {
             em_c2s::Message::DisplayEvent(display_event) => Event::Display {
                 size: display_event.display_size.ok_or(EventError)?,
             },
+            em_c2s::Message::NoopEvent(_) => Event::Noop,
         })
     }
 }

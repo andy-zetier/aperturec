@@ -13,7 +13,7 @@ stages:
   - server
 .crates:no-extra-dependencies: "channel,metrics,protocol,state_machine,trace,quic_metrics,quic_protocol"
 .crates:fips-dependencies: "quic_channel"
-.crates:server-dependencies: "server"
+.crates:server-dependencies: "server,quic_server"
 .crates:client-dependencies: "client,quic_client"
 
 .images:debian:
@@ -192,6 +192,10 @@ cargo:check-build-test:
         IMAGE_TARGET: fips-capable-image
         ARCHITECTURE: !reference [.architectures:all]
       - CRATES: server
+        IMAGE_BASE: !reference [.images:all]
+        IMAGE_TARGET: server-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - CRATES: quic_server
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]

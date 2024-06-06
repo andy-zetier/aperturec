@@ -67,10 +67,10 @@ RUN rustup target add x86_64-pc-windows-gnu
 
 FROM --platform=${ARCHITECTURE} client-image-${OS_VARIANT} as client-image
 
-FROM --platform=${ARCHITECTURE} rust-image as server-image-debian
+FROM --platform=${ARCHITECTURE} fips-capable-image as server-image-debian
 RUN $APT_UPDATE && $APT_INSTALL xvfb libxcb1-dev ubuntu-session mesa-utils lsb-release && $APT_CLEAN
 
-FROM --platform=${ARCHITECTURE} rust-image as server-image-fedora
+FROM --platform=${ARCHITECTURE} fips-capable-image as server-image-fedora
 RUN $DNF_INSTALL -y glx-utils xorg-x11-server-Xvfb libxcb-devel mesa-dri-drivers && $DNF_CLEAN
 
 FROM --platform=${ARCHITECTURE} server-image-${OS_VARIANT} as server-image

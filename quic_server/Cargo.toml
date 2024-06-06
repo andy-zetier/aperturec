@@ -1,15 +1,16 @@
 [package]
-name = "aperturec-server"
+name = "aperturec-quic-server"
 description = "ApertureC Server"
 edition.workspace = true
 version.workspace = true
 
 [dependencies]
+prost = "0.12"
 anyhow = "1.0"
-aperturec-channel = { path = "../channel" }
-aperturec-protocol = { path = "../protocol" }
+aperturec-channel = { package = "aperturec-quic-channel", path = "../quic_channel" }
+aperturec-protocol = { package = "aperturec-quic-protocol", path = "../quic_protocol" }
 aperturec-state-machine = { path = "../state_machine" }
-aperturec-metrics = { path = "../metrics" }
+aperturec-metrics = { package = "aperturec-quic-metrics", path = "../quic_metrics" }
 aperturec-trace = { path = "../trace", features = ["queue"] }
 bytes = "1.4"
 clap = { version = "4.3", features = ["derive", "env", "string"] }
@@ -22,22 +23,25 @@ gethostname = "0.4"
 linear-map = "1.2"
 paste = "1.0.14"
 prometheus = "0.13.3"
+md5 = "0.7"
 ndarray = "0.15"
-parking_lot = { version = "0.12", features = ["send_guard", "hardware-lock-elision"] }
+parking_lot = { version = "0.12.3", features = ["send_guard", "hardware-lock-elision", "arc_lock"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
 shlex = "1.2"
+socket2 = "0.5"
 tokio = { version = "1.37", features = ["full", "tracing"] }
 tokio-stream = { version = "0.1", features = ["sync", "fs"] }
 tokio-util = "0.7"
 trait-variant = "0.1"
 which = "6.0"
 xcb = { version = "1.2.2", features = ["damage", "randr", "xtest" ] }
-socket2 = "0.5.7"
 
 [dev-dependencies]
+aperturec-channel = { package = "aperturec-quic-channel", path = "../quic_channel", features = ["test-tls-material"] }
 criterion = "0.4"
 prost-types = "0.12"
 serial_test = "2.0"
+tempdir = "0.3"
 
 [[bench]]
 name = "tracking_buffer_bench"

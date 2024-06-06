@@ -1,8 +1,7 @@
 use crate::backend::Event;
 
 use anyhow::{anyhow, Result};
-use aperturec_channel::reliable::tcp;
-use aperturec_channel::*;
+use aperturec_channel::{self as channel, AsyncReceiver};
 use aperturec_state_machine::*;
 use aperturec_trace::log;
 use aperturec_trace::queue::{self, enq, trace_queue};
@@ -20,28 +19,26 @@ pub struct Task<S: State> {
 
 #[derive(State)]
 pub struct Created {
-    ec: AsyncServerEventChannel,
+    ec: channel::AsyncServerEvent,
     event_tx: mpsc::UnboundedSender<Event>,
     ct: CancellationToken,
 }
 
 #[derive(State)]
 pub struct Running {
-    task: JoinHandle<(AsyncServerEventChannel, Result<()>)>,
+    task: JoinHandle<Result<()>>,
     ct: CancellationToken,
 }
 
 #[derive(State, Debug)]
-pub struct Terminated {
-    ec: tcp::Server<tcp::AsyncListening>,
-}
+pub struct Terminated;
 
 pub struct Channels {
     pub event_rx: mpsc::UnboundedReceiver<Event>,
 }
 
 impl Task<Created> {
-    pub fn new(ec: AsyncServerEventChannel) -> (Self, Channels) {
+    pub fn new(ec: channel::AsyncServerEvent) -> (Self, Channels) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         (
             Task {
@@ -54,10 +51,6 @@ impl Task<Created> {
             Channels { event_rx },
         )
     }
-
-    pub async fn into_event_channel_server(self) -> tcp::Server<tcp::AsyncListening> {
-        transition_async!(self.state.ec.into_inner(), tcp::AsyncListening)
-    }
 }
 
 impl Task<Running> {
@@ -67,12 +60,6 @@ impl Task<Running> {
 
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.state.ct
-    }
-}
-
-impl Task<Terminated> {
-    pub fn into_event_channel_server(self) -> tcp::Server<tcp::AsyncListening> {
-        self.state.ec
     }
 }
 
@@ -87,7 +74,7 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
         let ct = self.state.ct.clone();
 
         let task = tokio::spawn(async move {
-            let loop_res = loop {
+            loop {
                 tokio::select! {
                     ec_msg_res = self.state.ec.receive() => {
                         let ec_msg = match ec_msg_res {
@@ -112,13 +99,22 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                         break Ok(());
                     }
                 }
-            };
-            (self.state.ec, loop_res)
+            }
         });
 
         Ok(Task {
             state: Running { task, ct },
         })
+    }
+}
+
+impl Task<Running> {
+    async fn complete(self) -> Option<anyhow::Error> {
+        match self.state.task.await {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(anyhow!("Event channel handler failed with error: {}", e)),
+            Err(e) => Some(anyhow!("Event channel handler panicked: {}", e)),
+        }
     }
 }
 
@@ -130,19 +126,15 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        match self.state.task.await {
-            Ok((ec, res)) => {
-                let stateful = Task {
-                    state: Terminated {
-                        ec: transition_async!(ec.into_inner(), tcp::AsyncListening),
-                    },
-                };
-                match res {
-                    Ok(()) => Ok(stateful),
-                    Err(err) => Err(Recovered::new(stateful, err)),
-                }
-            }
-            Err(join_err) => panic!("Event channel handler panicked: {}", join_err),
+        let task = Task { state: Terminated };
+        let error = self.complete().await;
+        if let Some(error) = error {
+            Err(Recovered {
+                stateful: task,
+                error,
+            })
+        } else {
+            Ok(task)
         }
     }
 }
@@ -151,22 +143,10 @@ impl AsyncTransitionable<Terminated> for Task<Running> {
     type NextStateful = Task<Terminated>;
 
     async fn transition(self) -> Self::NextStateful {
-        self.state.ct.cancel();
-        let task = self.state.task;
-        let ec = match task.await {
-            Ok((ec, Ok(()))) => ec,
-            Ok((ec, Err(err))) => {
-                log::error!(
-                    "Event channel handler terminated in failure with error {}",
-                    err
-                );
-                ec
-            }
-            Err(join_err) => panic!("Event channel handler panicked: {}", join_err),
-        };
-        let ec = transition_async!(ec.into_inner(), tcp::AsyncListening);
-        Task {
-            state: Terminated { ec },
+        self.stop();
+        if let Some(error) = self.complete().await {
+            log::error!("Event channel handler task experienced error: {}", error);
         }
+        Task { state: Terminated }
     }
 }

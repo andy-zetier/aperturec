@@ -297,10 +297,7 @@ impl TryTransitionable<Ready, Connected> for Client<Connected> {
         // QUIC unidirectional streams are lazy; they do not actually initialize until the sender
         // sends something. To work around this, immediately send a pointer event on the event
         // channel, ensuring the stream is initialized
-        try_recover!(
-            ec.send(protocol::event::PointerEvent::default().into()),
-            self
-        );
+        try_recover!(ec.send(protocol::event::NoopEvent::default().into()), self);
 
         let dg_rx = try_recover!(
             try_recover!(
@@ -444,8 +441,7 @@ impl AsyncTryTransitionable<AsyncReady, AsyncConnected> for Client<AsyncConnecte
         // sends something. To work around this, immediately send a pointer event on the event
         // channel, ensuring the stream is initialized
         try_recover!(
-            ec.send(protocol::event::PointerEvent::default().into())
-                .await,
+            ec.send(protocol::event::NoopEvent::default().into()).await,
             self
         );
 

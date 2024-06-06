@@ -1,10 +1,13 @@
-use anyhow::Result;
+extern crate aperturec_quic_server as aperturec_server;
+
+use aperturec_channel::transport::datagram;
 use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
-use aperturec_server::task::encoder;
 use aperturec_state_machine::*;
 use aperturec_trace::{self as trace, log, Level};
+
+use anyhow::Result;
 use clap::Parser;
 use gethostname::gethostname;
 use std::path::PathBuf;
@@ -23,14 +26,24 @@ pub struct RootProgramGroup {
     no_root_program: bool,
 }
 
-impl From<RootProgramGroup> for Option<String> {
-    fn from(g: RootProgramGroup) -> Option<String> {
-        match (g.root_program_cmdline, g.no_root_program) {
-            (Some(root_program_cmdline), false) => Some(root_program_cmdline),
-            (None, true) => None,
-            _ => unreachable!("root-program and no-root-program in invalid state"),
-        }
-    }
+#[derive(Debug, clap::Args, Clone)]
+#[group(required = true, multiple = true)]
+struct TlsGroup {
+    /// Path to TLS certificate PEM file
+    #[arg(short, long, requires = "private_key", conflicts_with_all = &["tls_save_directory", "external_addresses"])]
+    certificate: Option<PathBuf>,
+
+    /// Path to TLS private key PEM file
+    #[arg(short, long, requires = "certificate", conflicts_with_all = &["tls_save_directory", "external_addresses"])]
+    private_key: Option<PathBuf>,
+
+    /// Path to save TLS material which is generated at runtime
+    #[arg(short = 'd', long, conflicts_with_all = &["private_key", "certificate"])]
+    tls_save_directory: Option<PathBuf>,
+
+    /// Domain names the server will operate on
+    #[arg(short, long = "external-address", requires = "tls_save_directory", conflicts_with_all =  &["private_key", "certificate"], default_value = gethostname())]
+    external_addresses: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,11 +62,8 @@ impl FromStr for WindowSizeOption {
             "NEGOTIATED" => Ok(WindowSizeOption::Negotiated),
             _ => {
                 let val = s.parse()?;
-                if val < encoder::MAX_BYTES_PER_MESSAGE {
-                    anyhow::bail!(
-                        "window size cannot be smaller than {}",
-                        encoder::MAX_BYTES_PER_MESSAGE
-                    )
+                if val < datagram::MAX_SIZE {
+                    anyhow::bail!("window size cannot be smaller than {}", datagram::MAX_SIZE)
                 }
                 Ok(WindowSizeOption::Size(val))
             }
@@ -71,6 +81,41 @@ impl From<WindowSizeOption> for Option<usize> {
     }
 }
 
+impl From<RootProgramGroup> for Option<String> {
+    fn from(g: RootProgramGroup) -> Option<String> {
+        match (g.root_program_cmdline, g.no_root_program) {
+            (Some(root_program_cmdline), false) => Some(root_program_cmdline),
+            (None, true) => None,
+            _ => unreachable!("root-program and no-root-program in invalid state"),
+        }
+    }
+}
+
+impl From<TlsGroup> for TlsConfiguration {
+    fn from(g: TlsGroup) -> TlsConfiguration {
+        match (
+            g.certificate,
+            g.private_key,
+            g.tls_save_directory,
+            g.external_addresses,
+        ) {
+            (Some(certificate_path), Some(private_key_path), None, _) => {
+                TlsConfiguration::Provided {
+                    certificate_path,
+                    private_key_path,
+                }
+            }
+            (None, None, Some(save_directory), Some(external_addresses)) => {
+                TlsConfiguration::Generated {
+                    save_directory,
+                    external_addresses,
+                }
+            }
+            cfg => unreachable!("invalid TLS configuration: {:?}", cfg),
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -82,7 +127,7 @@ struct Args {
     #[arg(short, long, action = clap::ArgAction::SetTrue, default_value = "false")]
     allow_client_exec: bool,
 
-    /// External IP address for the server to listen on
+    /// External IP address for the server to listen on, optionally including a port
     #[arg(short, long, default_value = "0.0.0.0")]
     bind_address: String,
 
@@ -93,19 +138,6 @@ struct Args {
     /// Server instance name
     #[arg(short, long, default_value = gethostname())]
     name: String,
-
-    /// Port the control channel will listen on
-    #[arg(short, long, default_value = "46452")]
-    control_port: u16,
-
-    /// Port the event channel will listen on
-    #[arg(short, long, default_value = "46453")]
-    event_port: u16,
-
-    /// Initial port to bind for the encoders. A block of sequential ports must be available for
-    /// each encoder starting with this one. A value of 0 will defer port selection to the OS
-    #[arg(short = 'p', default_value = "46454")]
-    encoder_port_start: u16,
 
     /// Initial ID that a client can use to connect to the server
     #[arg(short, long, default_value = "1234")]
@@ -121,6 +153,9 @@ struct Args {
     /// smaller than one message.
     #[arg(long, default_value = "Negotiated", value_parser = clap::value_parser!(WindowSizeOption))]
     window_size: WindowSizeOption,
+
+    #[clap(flatten)]
+    tls: TlsGroup,
 
     /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
     /// verbosity. The maximum is 3. Overwrites the behavior set via AC_TRACE_FILTER environment
@@ -189,14 +224,12 @@ async fn main() -> Result<()> {
         args.metrics_log,
         args.metrics_csv,
         args.metrics_pushgateway,
-        args.control_port,
+        std::process::id(),
     );
 
     let mut config_builder = ConfigurationBuilder::default();
     config_builder
-        .control_channel_addr(format!("{}:{}", args.bind_address, args.control_port).parse()?)
-        .event_channel_addr(format!("{}:{}", args.bind_address, args.event_port).parse()?)
-        .media_channel_addr(format!("{}:{}", args.bind_address, args.encoder_port_start).parse()?)
+        .bind_addr(args.bind_address)
         .name(args.name)
         .temp_client_id(args.temp_client_id)
         .max_width(dims[0])
@@ -206,7 +239,9 @@ async fn main() -> Result<()> {
             mbps => Some(mbps.parse()?),
         })
         .window_size(args.window_size.into())
+        .tls_configuration(args.tls.into())
         .allow_client_exec(args.allow_client_exec);
+
     if let Some(root_program_cmdline) = args.root_program_cmdline.into() {
         config_builder.root_process_cmdline(root_program_cmdline);
     }
@@ -220,23 +255,17 @@ async fn main() -> Result<()> {
     let mut listening = server.try_transition().await.expect("failed listening");
 
     loop {
-        let cc_accepted: Server<ControlChannelAccepted<_>> =
+        let accepted: Server<Accepted<_>> =
             try_transition_continue_async!(listening, listening, |e| async move {
                 log::error!("Error accepting CC: {}", e)
             });
-        let client_authed =
-            try_transition_continue_async!(cc_accepted, listening, |e| async move {
-                log::error!("Error authenticating client: {}", e)
-            });
-        let channels_accepted =
-            try_transition_continue_async!(client_authed, listening, |e| async move {
-                log::error!("Error accepting EC or MC: {}", e)
-            });
+        let client_authed = try_transition_continue_async!(accepted, listening, |e| async move {
+            log::error!("Error authenticating client: {}", e)
+        });
 
-        let running =
-            try_transition_continue_async!(channels_accepted, listening, |e| async move {
-                log::error!("Error starting session: {}", e)
-            });
+        let running = try_transition_continue_async!(client_authed, listening, |e| async move {
+            log::error!("Error starting session: {}", e)
+        });
 
         let session_complete = match running.try_transition().await {
             Ok(session_complete) => {
@@ -249,6 +278,6 @@ async fn main() -> Result<()> {
             }
         };
 
-        listening = transition_async!(session_complete, ChannelsListening<_>);
+        listening = transition_async!(session_complete, Listening<_>);
     }
 }

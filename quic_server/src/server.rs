@@ -1,36 +1,49 @@
 use crate::backend::{Backend, SwapableBackend};
 use crate::task::{
     backend, control_channel_handler as cc_handler, encoder, event_channel_handler as ec_handler,
-    flow_control, heartbeat,
+    flow_control, heartbeat, media_channel_handler as mc_handler,
 };
 
-use anyhow::{anyhow, Result};
-use aperturec_channel::reliable::tcp;
-use aperturec_channel::unreliable::udp;
-use aperturec_channel::*;
+use anyhow::{anyhow, bail, Result};
+use aperturec_channel::{
+    self as channel, server::states as channel_states, AsyncReceiver, AsyncSender,
+    AsyncUnifiedServer,
+};
 use aperturec_protocol::common::*;
 use aperturec_protocol::control as cm;
 use aperturec_protocol::control::client_to_server as cm_c2s;
 use aperturec_protocol::control::server_to_client as cm_s2c;
-use aperturec_protocol::media::client_to_server as mm_c2s;
 use aperturec_state_machine::*;
 use aperturec_trace::log;
 use derive_builder::Builder;
 use futures::future::{self, TryFutureExt};
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, VecDeque};
-use std::net::SocketAddr;
+use std::fs;
+use std::net::IpAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+#[derive(Debug, Clone)]
+pub enum TlsConfiguration {
+    Provided {
+        certificate_path: PathBuf,
+        private_key_path: PathBuf,
+    },
+    Generated {
+        save_directory: PathBuf,
+        external_addresses: Vec<String>,
+    },
+}
+
 #[derive(Builder, Debug, Clone)]
 pub struct Configuration {
-    control_channel_addr: SocketAddr,
-    event_channel_addr: SocketAddr,
-    media_channel_addr: SocketAddr,
     name: String,
+    bind_addr: String,
+    tls_configuration: TlsConfiguration,
     temp_client_id: u64,
     max_width: usize,
     max_height: usize,
@@ -51,72 +64,60 @@ pub struct Server<S: State> {
 #[derive(State, Debug)]
 pub struct Created {
     root_process_cmd: Option<Command>,
+    tls_material: channel::tls::Material,
 }
 impl SelfTransitionable for Server<Created> {}
 
 #[derive(State, Debug)]
 pub struct BackendInitialized<B: Backend + 'static> {
     backend: B,
+    tls_material: channel::tls::Material,
 }
 impl<B: Backend + 'static> SelfTransitionable for Server<BackendInitialized<B>> {}
 
 #[derive(State, Debug)]
-pub struct ChannelsListening<B: Backend + 'static> {
+pub struct Listening<B: Backend + 'static> {
     backend: B,
-    cc_server: tcp::Server<tcp::AsyncListening>,
-    ec_server: tcp::Server<tcp::AsyncListening>,
+    channel_server: channel::Server<channel_states::AsyncListening>,
 }
-impl<B: Backend + 'static> SelfTransitionable for Server<ChannelsListening<B>> {}
+impl<B: Backend + 'static> SelfTransitionable for Server<Listening<B>> {}
 
-#[derive(State)]
-pub struct ControlChannelAccepted<B: Backend + 'static> {
+#[derive(State, Debug)]
+pub struct Accepted<B: Backend + 'static> {
     backend: B,
-    cc: AsyncServerControlChannel,
-    ec_server: tcp::Server<tcp::AsyncListening>,
+    channel_server: channel::Server<channel_states::AsyncAccepted>,
 }
 
-#[derive(State)]
+#[derive(State, Debug)]
 pub struct AuthenticatedClient<B: Backend + 'static> {
     backend: SwapableBackend<B>,
-    cc: AsyncServerControlChannel,
-    ec_server: tcp::Server<tcp::AsyncListening>,
+    cc: channel::AsyncServerControl,
+    ec: channel::AsyncServerEvent,
+    mc: channel::AsyncServerMedia,
+    channel_server: channel::Server<channel_states::AsyncListening>,
     client_hb_interval: Duration,
     client_hb_response_interval: Duration,
-    decoders: Vec<(Decoder, Location, Dimension)>,
-    mc_servers: Vec<udp::Server<udp::AsyncListening>>,
-    codecs: BTreeMap<u16, Codec>,
-    fc_config: flow_control::Configuration,
-}
-
-#[derive(State)]
-pub struct ChannelsAccepted<B: Backend + 'static> {
-    backend: SwapableBackend<B>,
-    cc: AsyncServerControlChannel,
-    ec: AsyncServerEventChannel,
-    client_hb_interval: Duration,
-    client_hb_response_interval: Duration,
-    decoders: Vec<(Decoder, Location, Dimension)>,
-    mc_servers: Vec<AsyncServerMediaChannel>,
-    codecs: BTreeMap<u16, Codec>,
+    decoders: BTreeMap<u32, (Location, Dimension, Codec)>,
     fc_config: flow_control::Configuration,
 }
 
 #[derive(State)]
 pub struct Running<B: Backend + 'static> {
     ct: CancellationToken,
+    channel_server: channel::Server<channel_states::AsyncListening>,
     cc_tx: mpsc::Sender<cm_s2c::Message>,
     backend_task: backend::Task<backend::Running<B>>,
     heartbeat_task: heartbeat::Task<heartbeat::Running>,
     cc_handler_task: cc_handler::Task<cc_handler::Running>,
     ec_handler_task: ec_handler::Task<ec_handler::Running>,
+    mc_handler_task: mc_handler::Task<mc_handler::Running>,
     flow_control_task: flow_control::Task<flow_control::Running>,
 }
 
 #[derive(State)]
 pub struct SessionComplete<B: Backend + 'static> {
     backend: SwapableBackend<B>,
-    cc_server: tcp::Server<tcp::AsyncListening>,
-    ec_server: tcp::Server<tcp::AsyncListening>,
+    channel_server: channel::Server<channel_states::AsyncListening>,
 }
 
 fn parse_create_command(cmdline: &str) -> Result<Command> {
@@ -164,6 +165,59 @@ fn parse_create_command(cmdline: &str) -> Result<Command> {
     }
 }
 
+fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material> {
+    match config {
+        TlsConfiguration::Provided {
+            certificate_path,
+            private_key_path,
+        } => Ok(channel::tls::Material::from_pem_files(
+            certificate_path,
+            private_key_path,
+        )?),
+        TlsConfiguration::Generated {
+            save_directory,
+            external_addresses,
+        } => {
+            let mut domain_names = vec![];
+            let mut ip_addresses = vec![];
+            for addr in external_addresses {
+                if addr.parse::<IpAddr>().is_err() {
+                    domain_names.push(addr);
+                } else {
+                    ip_addresses.push(addr);
+                }
+            }
+
+            let tls_material = channel::tls::Material::ec_self_signed(domain_names, ip_addresses)?;
+            let pem_material: channel::tls::PemMaterial = tls_material.clone().try_into()?;
+
+            if save_directory.exists() && !save_directory.is_dir() {
+                bail!("{} is not a directory", save_directory.display());
+            }
+
+            if !save_directory.exists() {
+                fs::create_dir_all(save_directory)?;
+            }
+
+            let mut path = save_directory.to_path_buf();
+
+            path.push("cert.pem");
+            log::info!(
+                "Writing server self-signed certificate to {}",
+                path.display()
+            );
+            fs::write(&path, &pem_material.certificate)?;
+            path.pop();
+
+            path.push("pkey.pem");
+            log::warn!("Writing server private key to {}", path.display());
+            fs::write(&path, &pem_material.pkey)?;
+
+            Ok(tls_material)
+        }
+    }
+}
+
 impl Server<Created> {
     pub fn new(config: Configuration) -> Result<Self> {
         let root_process_cmd = if let Some(ref rp) = config.root_process_cmdline {
@@ -172,8 +226,13 @@ impl Server<Created> {
             None
         };
 
+        let tls_material = get_tls_material(&config.tls_configuration)?;
+
         Ok(Server {
-            state: Created { root_process_cmd },
+            state: Created {
+                root_process_cmd,
+                tls_material,
+            },
             config,
         })
     }
@@ -338,170 +397,192 @@ impl<B: Backend + 'static> AsyncTryTransitionable<BackendInitialized<B>, Created
             self
         );
         Ok(Server {
-            state: BackendInitialized { backend },
+            state: BackendInitialized {
+                backend,
+                tls_material: self.state.tls_material,
+            },
             config: self.config,
         })
     }
 }
 
-impl<B: Backend + 'static> AsyncTryTransitionable<ChannelsListening<B>, BackendInitialized<B>>
+impl<B: Backend + 'static> AsyncTryTransitionable<Listening<B>, BackendInitialized<B>>
     for Server<BackendInitialized<B>>
 {
-    type SuccessStateful = Server<ChannelsListening<B>>;
+    type SuccessStateful = Server<Listening<B>>;
     type FailureStateful = Server<BackendInitialized<B>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let cc_server = tcp::Server::<tcp::Closed>::new(self.config.control_channel_addr);
-        let cc_server_listening =
-            try_transition_inner_recover_async!(cc_server, tcp::Closed, |_| async { self });
-        let ec_server = tcp::Server::<tcp::Closed>::new(self.config.event_channel_addr);
-        let ec_server_listening =
-            try_transition_inner_recover_async!(ec_server, tcp::Closed, |_| async { self });
+        let pem_material: channel::tls::PemMaterial =
+            try_recover!(self.state.tls_material.clone().try_into(), self);
+        let channel_server = try_recover!(
+            channel::server::Builder::default()
+                .bind_addr(&self.config.bind_addr)
+                .tls_pem_certificate(&pem_material.certificate)
+                .tls_pem_private_key(&pem_material.pkey)
+                .build_async(),
+            self
+        );
         Ok(Server {
-            state: ChannelsListening {
+            state: Listening {
                 backend: self.state.backend,
-                cc_server: cc_server_listening,
-                ec_server: ec_server_listening,
+                channel_server,
             },
             config: self.config,
         })
     }
 }
 
-impl<B: Backend + 'static> AsyncTryTransitionable<ControlChannelAccepted<B>, ChannelsListening<B>>
-    for Server<ChannelsListening<B>>
+impl<B: Backend + 'static> AsyncTryTransitionable<Accepted<B>, Listening<B>>
+    for Server<Listening<B>>
 {
-    type SuccessStateful = Server<ControlChannelAccepted<B>>;
-    type FailureStateful = Server<ChannelsListening<B>>;
+    type SuccessStateful = Server<Accepted<B>>;
+    type FailureStateful = Server<Listening<B>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
-        mut self,
+        self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        macro_rules! recover_cc_server_constructor {
-            () => {{
-                |recovered_cc_server| async {
-                    Server {
-                        state: ChannelsListening {
-                            backend: self.state.backend,
-                            cc_server: recovered_cc_server,
-                            ec_server: self.state.ec_server,
-                        },
-                        config: self.config,
-                    }
+        let channel_server = try_transition_inner_recover_async!(
+            self.state.channel_server,
+            channel_states::AsyncListening,
+            |channel_server| async {
+                Server {
+                    state: Listening {
+                        backend: self.state.backend,
+                        channel_server,
+                    },
+                    config: self.config,
                 }
-            }};
-        }
-
-        let cc_accepted = tokio::select! {
-            root_res = self.state.backend.wait_root_process() => {
-                // If the root process dies before we can even get a client connected, we are in a
-                // really bad state. Instead of trying to recover, let's just panic and let the
-                // user identify what may have gone wrong.
-                match root_res {
-                    Ok(es) => log::error!("Root process exited with status: {:?}", es),
-                    Err(e) => log::error!("Root process died unexpectedly with error: {}", e),
-                }
-                panic!("Root process exited!");
             }
-            cc_accept_res = self.state.cc_server.try_transition() => {
-                match cc_accept_res {
-                    Ok(cc_accepted) => cc_accepted,
-                    Err(recovered) => {
-                        return_recover_async!(recover_cc_server_constructor!()(recovered.stateful).await, recovered.error);
-                    }
-                }
-            },
-        };
-
+        );
         Ok(Server {
-            state: ControlChannelAccepted {
+            state: Accepted {
                 backend: self.state.backend,
-                cc: AsyncServerControlChannel::new(cc_accepted),
-                ec_server: self.state.ec_server,
+                channel_server,
             },
             config: self.config,
         })
     }
 }
 
-impl<B: Backend + 'static> Transitionable<ChannelsListening<B>>
-    for Server<ControlChannelAccepted<B>>
-{
-    type NextStateful = Server<ChannelsListening<B>>;
+impl<B: Backend + 'static> Transitionable<Listening<B>> for Server<Accepted<B>> {
+    type NextStateful = Server<Listening<B>>;
 
     fn transition(self) -> Self::NextStateful {
-        let cc_listening = transition!(self.state.cc.into_inner(), tcp::AsyncListening);
+        let channel_server = transition!(self.state.channel_server, channel_states::AsyncListening);
 
         Server {
-            state: ChannelsListening {
+            state: Listening {
                 backend: self.state.backend,
-                cc_server: cc_listening,
-                ec_server: self.state.ec_server,
+                channel_server,
             },
             config: self.config,
         }
     }
 }
 
-impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, ChannelsListening<B>>
-    for Server<ControlChannelAccepted<B>>
+impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listening<B>>
+    for Server<Accepted<B>>
 {
     type SuccessStateful = Server<AuthenticatedClient<B>>;
-    type FailureStateful = Server<ChannelsListening<B>>;
+    type FailureStateful = Server<Listening<B>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
-        mut self,
+        self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        macro_rules! recover_server_backend_moved {
-            ($backend:ident) => {{
+        macro_rules! recover_self {
+            ($cc:expr, $ec:expr, $mc:expr, $listener:expr) => {{
+                recover_self!($cc, $ec, $mc, $listener, self.state.backend)
+            }};
+            ($cc:expr, $ec:expr, $mc:expr, $listener:expr, $backend: expr) => {{
+                let server: channel::Server<channel_states::AsyncReady> =
+                    AsyncUnifiedServer::unsplit($cc, $ec, $mc, $listener);
                 Server {
-                    state: ChannelsListening {
-                        backend: $backend.into_root(),
-                        cc_server: transition!(self.state.cc.into_inner(), tcp::AsyncListening),
-                        ec_server: self.state.ec_server,
+                    state: Listening {
+                        backend: $backend,
+                        channel_server: transition!(server, channel_states::AsyncListening),
                     },
                     config: self.config,
                 }
             }};
         }
 
-        let msg = try_recover_async!(self.state.cc.receive(), self);
+        let local_addr = try_recover!(self.state.channel_server.local_addr(), self);
+
+        let (mut cc, ec, mc, listener): (channel::AsyncServerControl, _, _, _) =
+            try_transition_inner_recover_async!(
+                self.state.channel_server,
+                channel_states::AsyncReady,
+                channel_states::AsyncAccepted,
+                |channel_server: channel::Server<channel_states::AsyncAccepted>| future::ready(
+                    Server {
+                        state: Listening {
+                            backend: self.state.backend,
+                            channel_server: transition!(
+                                channel_server,
+                                channel_states::AsyncListening
+                            ),
+                        },
+                        config: self.config
+                    }
+                )
+            )
+            .split();
+
+        let msg = try_recover_async!(cc.receive(), recover_self!(cc, ec, mc, listener));
         let client_init = match msg {
             cm_c2s::Message::ClientInit(client_init) => client_init,
-            _ => return_recover_async!(self, "non client init message received"),
+            _ => return_recover_async!(
+                recover_self!(cc, ec, mc, listener),
+                "non client init message received"
+            ),
         };
         log::trace!("Client init: {:#?}", client_init);
         if client_init.temp_id != self.config.temp_client_id {
             let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::AuthenticationFailure);
-            try_recover_async!(self.state.cc.send(msg.into()), self);
-            return_recover_async!(self, "mismatched temporary ID");
+            try_recover_async!(cc.send(msg.into()), recover_self!(cc, ec, mc, listener));
+            return_recover_async!(
+                recover_self!(cc, ec, mc, listener),
+                "mismatched temporary ID"
+            );
         }
         if client_init.max_decoder_count < 1 {
             let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::InvalidConfiguration);
-            try_recover_async!(self.state.cc.send(msg.into()), self);
-            return_recover_async!(self, "client sent invalid decoder max");
+            try_recover_async!(cc.send(msg.into()), recover_self!(cc, ec, mc, listener));
+            return_recover_async!(
+                recover_self!(cc, ec, mc, listener),
+                "client sent invalid decoder max"
+            );
         }
         let client_recv_buffer_size: usize = match client_init
             .client_info
             .as_ref()
-            .and_then(|ci| ci.recv_buffer_size.try_into().map_or(None, |bs| Some(bs)))
+            .and_then(|ci| ci.recv_buffer_size.try_into().ok())
         {
             Some(recv_buffer_size) => recv_buffer_size,
-            _ => return_recover!(self, "Client did not provide valid recv buffer size"),
+            _ => return_recover!(
+                recover_self!(cc, ec, mc, listener),
+                "Client did not provide valid recv buffer size"
+            ),
         };
-        let client_mbps_max: usize =
-            match client_init.mbps_max.try_into().map_or(None, |mm| Some(mm)) {
-                Some(mbps_max) => mbps_max,
-                _ => return_recover!(self, "Client provided invalid mbps max"),
-            };
+        let client_mbps_max: usize = match client_init.mbps_max.try_into().ok() {
+            Some(mbps_max) => mbps_max,
+            _ => return_recover!(
+                recover_self!(cc, ec, mc, listener),
+                "Client provided invalid mbps max"
+            ),
+        };
         let client_resolution = match client_init.client_info.and_then(|ci| ci.display_size) {
             Some(display_size) => display_size,
-            _ => return_recover!(self, "Client did not provide display size"),
+            _ => return_recover!(
+                recover_self!(cc, ec, mc, listener),
+                "Client did not provide display size"
+            ),
         };
 
         let mut backend = SwapableBackend::new(self.state.backend);
@@ -511,11 +592,11 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
             if !self.config.allow_client_exec {
                 let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::ClientExecDisallowed);
                 try_recover!(
-                    self.state.cc.send(msg.into()).await,
-                    recover_server_backend_moved!(backend)
+                    cc.send(msg.into()).await,
+                    recover_self!(cc, ec, mc, listener, backend.into_inner().0)
                 );
                 return_recover!(
-                    recover_server_backend_moved!(backend),
+                    recover_self!(cc, ec, mc, listener, backend.into_inner().0),
                     "Client attempted to exec '{}', but client exec is disallowed",
                     cmdline
                 );
@@ -532,18 +613,14 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                         .await
                     })
                     .await,
-                (|| async {
+                async {
                     log::error!("Failed to launch process");
                     let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::ProcessLaunchFailed);
-                    self.state
-                        .cc
-                        .send(msg.clone().into())
-                        .await
-                        .unwrap_or_else(|e| {
-                            log::error!("Failed to send server goodbye {:?}: {}", msg, e)
-                        });
-                    recover_server_backend_moved!(backend)
-                })()
+                    cc.send(msg.clone().into()).await.unwrap_or_else(|e| {
+                        log::error!("Failed to send server goodbye {:?}: {}", msg, e)
+                    });
+                    recover_self!(cc, ec, mc, listener, backend.into_inner().0)
+                }
                 .await
             );
             backend.set_client_specified(client_backend);
@@ -553,29 +630,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
             &client_resolution,
             client_init.max_decoder_count.try_into().unwrap(),
         );
-
-        let mut decoders: Vec<(Decoder, Location, Dimension)> = vec![];
-        let mut mc_servers: Vec<udp::Server<udp::AsyncListening>> = vec![];
-        let port_start = self.config.media_channel_addr.port();
-        let mut local_mc_addr = self.config.media_channel_addr;
-
-        for (i, rect) in partitions.into_iter().enumerate() {
-            if port_start != 0 {
-                local_mc_addr.set_port(port_start + i as u16);
-            }
-            let mc_server = udp::Server::<udp::Closed>::new(local_mc_addr);
-            let mc_server_listening =
-                try_transition_inner_recover_async!(mc_server, udp::Closed, |_| async {
-                    recover_server_backend_moved!(backend)
-                });
-
-            decoders.push((
-                Decoder::new(mc_server_listening.local_addr().port() as u32),
-                Location::new(rect.origin.x as u64, rect.origin.y as u64),
-                Dimension::new(rect.size.width as u64, rect.size.height as u64),
-            ));
-            mc_servers.push(mc_server_listening);
-        }
 
         let preferred_codec = match client_init.client_caps {
             Some(caps) => {
@@ -588,24 +642,34 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
             None => Codec::Raw,
         };
 
-        let codecs = decoders
-            .iter()
-            .map(|(decoder, _, _)| (decoder.port as u16, preferred_codec))
+        let decoders: BTreeMap<_, _> = partitions
+            .into_iter()
+            .enumerate()
+            .map(|(id, rect)| {
+                (
+                    id as u32,
+                    (
+                        Location::new(rect.origin.x as u64, rect.origin.y as u64),
+                        Dimension::new(rect.size.width as u64, rect.size.height as u64),
+                        preferred_codec,
+                    ),
+                )
+            })
             .collect();
         try_recover_async!(
             backend.set_resolution(&resolution),
-            recover_server_backend_moved!(backend)
+            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
         );
         log::trace!("Resolution set to {:?}", resolution);
         let cursor_bitmaps = try_recover_async!(
             backend.cursor_bitmaps(),
-            recover_server_backend_moved!(backend)
+            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
         );
 
         let decoder_areas: Vec<_> = decoders
             .iter()
-            .map(|(decoder, location, dimension)| cm::DecoderArea {
-                decoder: Some(decoder.clone()),
+            .map(|(id, (location, dimension, ..))| cm::DecoderArea {
+                decoder_id: *id,
                 location: Some(location.clone()),
                 dimension: Some(dimension.clone()),
             })
@@ -615,12 +679,10 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
         let fc_config = flow_control::Configuration::new(
             self.config.window_size,
             self.config.mbps_max,
-            local_mc_addr,
-            decoder_areas.len(),
+            local_addr,
             client_mbps_max,
             client_recv_buffer_size,
         );
-        log::debug!("Flow Control {:?}", fc_config);
 
         let server_init = try_recover!(
             cm::ServerInitBuilder::default()
@@ -628,20 +690,19 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                 .server_name(self.config.name.clone())
                 .cursor_bitmaps(cursor_bitmaps)
                 .decoder_areas(decoder_areas)
-                .event_port(self.config.event_channel_addr.port())
                 .display_size(Dimension::new(
                     resolution.width as u64,
                     resolution.height as u64,
                 ))
                 .window_size(fc_config.get_initial_window_size())
                 .build(),
-            recover_server_backend_moved!(backend)
+            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
         );
         log::trace!("Server init: {:#?}", server_init);
 
         try_recover_async!(
-            self.state.cc.send(server_init.into()),
-            recover_server_backend_moved!(backend)
+            cc.send(server_init.into()),
+            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
         );
 
         let client_hb_interval = try_recover!(
@@ -651,7 +712,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                     Duration::from_secs(d.seconds as u64) + Duration::from_nanos(d.nanos as u64)
                 })
                 .ok_or(anyhow!("No client HB interval")),
-            recover_server_backend_moved!(backend)
+            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
         );
         let client_hb_response_interval = try_recover!(
             client_init
@@ -660,19 +721,18 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
                     Duration::from_secs(d.seconds as u64) + Duration::from_nanos(d.nanos as u64)
                 })
                 .ok_or(anyhow!("No client HB response interval")),
-            recover_server_backend_moved!(backend)
+            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
         );
-
         Ok(Server {
             state: AuthenticatedClient {
                 backend,
-                cc: self.state.cc,
-                ec_server: self.state.ec_server,
+                cc,
+                ec,
+                mc,
+                channel_server: listener,
                 client_hb_interval,
                 client_hb_response_interval,
                 decoders,
-                mc_servers,
-                codecs,
                 fc_config,
             },
             config: self.config,
@@ -680,137 +740,44 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Channe
     }
 }
 
-impl<B: Backend + 'static> Transitionable<ChannelsListening<B>> for Server<AuthenticatedClient<B>> {
-    type NextStateful = Server<ChannelsListening<B>>;
+impl<B: Backend + 'static> Transitionable<Listening<B>> for Server<AuthenticatedClient<B>> {
+    type NextStateful = Server<Listening<B>>;
 
     fn transition(self) -> Self::NextStateful {
-        let cc_server = transition!(self.state.cc.into_inner(), tcp::AsyncListening);
         Server {
-            state: ChannelsListening {
+            state: Listening {
                 backend: self.state.backend.into_root(),
-                cc_server,
-                ec_server: self.state.ec_server,
+                channel_server: self.state.channel_server,
             },
             config: self.config,
         }
     }
 }
 
-impl<B: Backend + 'static> AsyncTryTransitionable<ChannelsAccepted<B>, ChannelsListening<B>>
+impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Listening<B>>
     for Server<AuthenticatedClient<B>>
 {
-    type SuccessStateful = Server<ChannelsAccepted<B>>;
-    type FailureStateful = Server<ChannelsListening<B>>;
-    type Error = anyhow::Error;
-
-    async fn try_transition(
-        self,
-    ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let ec_server = try_transition_inner_recover_async!(
-            self.state.ec_server,
-            tcp::AsyncListening,
-            |recovered_ec_server| async {
-                Server {
-                    state: ChannelsListening {
-                        backend: self.state.backend.into_root(),
-                        cc_server: transition_async!(
-                            self.state.cc.into_inner(),
-                            tcp::AsyncListening
-                        ),
-                        ec_server: recovered_ec_server,
-                    },
-                    config: self.config,
-                }
-            }
-        );
-        let ec = AsyncServerEventChannel::new(ec_server);
-
-        macro_rules! recover_mc_server_constructor {
-            () => {{
-                Server {
-                    state: ChannelsListening {
-                        backend: self.state.backend.into_root(),
-                        cc_server: transition_async!(
-                            self.state.cc.into_inner(),
-                            tcp::AsyncListening
-                        ),
-                        ec_server: transition_async!(ec.into_inner(), tcp::AsyncListening),
-                    },
-                    config: self.config,
-                }
-            }};
-        }
-
-        let mut mc_servers: Vec<AsyncServerMediaChannel> = vec![];
-
-        for mc_server in self.state.mc_servers {
-            let port = mc_server.local_addr().port();
-
-            let mut mc = AsyncServerMediaChannel::new(try_transition_inner_recover_async!(
-                mc_server,
-                udp::AsyncListening,
-                |_| async { recover_mc_server_constructor!() }
-            ));
-
-            match mc.receive().await {
-                Ok(mm_c2s::Message::MediaKeepalive(mk)) => {
-                    log::trace!("Received initial {:?}", mk);
-                }
-                Err(err) => return_recover_async!(
-                    recover_mc_server_constructor!(),
-                    "Failed to receive MediaKeepalive from Decoder {}: {:?}",
-                    port,
-                    err
-                ),
-            }
-
-            mc_servers.push(mc);
-        }
-
-        Ok(Server {
-            state: ChannelsAccepted {
-                backend: self.state.backend,
-                cc: self.state.cc,
-                ec,
-                client_hb_interval: self.state.client_hb_interval,
-                client_hb_response_interval: self.state.client_hb_response_interval,
-                decoders: self.state.decoders,
-                mc_servers,
-                codecs: self.state.codecs,
-                fc_config: self.state.fc_config,
-            },
-            config: self.config,
-        })
-    }
-}
-
-impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<B>>
-    for Server<ChannelsAccepted<B>>
-{
     type SuccessStateful = Server<Running<B>>;
-    type FailureStateful = Server<ChannelsListening<B>>;
+    type FailureStateful = Server<Listening<B>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let remote_addr = try_recover!(self.state.cc.as_ref().as_ref().peer_addr(), self);
-
         let (cc_handler_task, cc_handler_channels) = cc_handler::Task::new(self.state.cc);
-        let (ec_handler_task, ec_handler_channels) = ec_handler::Task::new(self.state.ec);
         let (flow_control_task, fc_handle) =
             flow_control::Task::new(self.state.fc_config, cc_handler_channels.flow_control_rx);
+        let (ec_handler_task, ec_handler_channels) = ec_handler::Task::new(self.state.ec);
+        let (mc_handler_task, mc_handler_channels) =
+            mc_handler::Task::new(self.state.mc.gated(fc_handle), self.state.decoders.len());
 
         let (backend_task, backend_channels) = backend::Task::<backend::Created<B>>::new(
             self.state.backend,
-            &self.state.decoders,
-            self.state.mc_servers,
-            self.state.codecs,
-            &remote_addr,
-            ec_handler_channels.event_rx,
-            cc_handler_channels.fb_update_req_rx,
+            self.state.decoders.clone(),
             cc_handler_channels.missed_frame_rx,
-            fc_handle,
+            ec_handler_channels.event_rx,
+            mc_handler_channels.fbu_tx,
+            mc_handler_channels.synthetic_missed_frame_rxs,
         );
         let heartbeat_task = heartbeat::Task::<heartbeat::Created>::new(
             self.state.client_hb_interval,
@@ -820,105 +787,52 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, ChannelsListening<
             cc_handler_channels.to_send_tx.clone(),
         );
 
-        let heartbeat_task =
-            try_transition_inner_recover_async!(heartbeat_task, heartbeat::Created, |_| async {
-                Server {
-                    state: ChannelsListening {
-                        backend: backend_task.into_backend().into_root(),
-                        cc_server: cc_handler_task.into_control_channel_server().await,
-                        ec_server: ec_handler_task.into_event_channel_server().await,
-                    },
-                    config: self.config,
+        macro_rules! recover {
+            () => {{
+                |_| {
+                    future::ready(Server {
+                        state: Listening {
+                            backend: backend_task.into_backend().into_root(),
+                            channel_server: self.state.channel_server,
+                        },
+                        config: self.config,
+                    })
                 }
-            });
+            }};
+        }
 
-        let flow_control_task = try_transition_inner_recover_async!(
-            flow_control_task,
-            flow_control::Created,
-            |_| async {
-                Server {
-                    state: ChannelsListening {
-                        backend: backend_task.into_backend().into_root(),
-                        cc_server: cc_handler_task.into_control_channel_server().await,
-                        ec_server: ec_handler_task.into_event_channel_server().await,
-                    },
-                    config: self.config,
-                }
-            }
-        );
-        let cc_handler_task = try_transition_inner_recover_async!(
-            cc_handler_task,
-            cc_handler::Created,
-            |recovered: cc_handler::Task<cc_handler::Created>| async {
-                Server {
-                    state: ChannelsListening {
-                        backend: backend_task.into_backend().into_root(),
-                        cc_server: recovered.into_control_channel_server().await,
-                        ec_server: ec_handler_task.into_event_channel_server().await,
-                    },
-                    config: self.config,
-                }
-            }
-        );
-        let ec_handler_task = try_transition_inner_recover_async!(
-            ec_handler_task,
-            ec_handler::Created,
-            |recovered: ec_handler::Task<ec_handler::Created>| async {
-                Server {
-                    state: ChannelsListening {
-                        backend: backend_task.into_backend().into_root(),
-                        cc_server: transition_async!(cc_handler_task, cc_handler::Terminated)
-                            .into_control_channel_server(),
-                        ec_server: recovered.into_event_channel_server().await,
-                    },
-                    config: self.config,
-                }
-            }
-        );
-
-        let backend_task: backend::Task<backend::Running<B>> =
-            try_transition_inner_recover_async!(backend_task, |recovered: backend::Task<
+        let heartbeat_task = try_transition_inner_recover_async!(heartbeat_task, recover!());
+        let cc_handler_task = try_transition_inner_recover_async!(cc_handler_task, recover!());
+        let ec_handler_task = try_transition_inner_recover_async!(ec_handler_task, recover!());
+        let mc_handler_task = try_transition_inner_recover_async!(mc_handler_task, recover!());
+        let flow_control_task = try_transition_inner_recover_async!(flow_control_task, recover!());
+        let backend_task =
+            try_transition_inner_recover_async!(backend_task, |be_task: backend::Task<
                 backend::Created<B>,
-            >| async {
+            >| future::ready(
                 Server {
-                    state: ChannelsListening {
-                        backend: recovered.into_backend().into_root(),
-                        cc_server: transition_async!(cc_handler_task, cc_handler::Terminated)
-                            .into_control_channel_server(),
-                        ec_server: transition_async!(ec_handler_task, ec_handler::Terminated)
-                            .into_event_channel_server(),
+                    state: Listening {
+                        backend: be_task.into_backend().into_root(),
+                        channel_server: self.state.channel_server
                     },
-                    config: self.config,
+                    config: self.config
                 }
-            });
+            ));
 
         Ok(Server {
             state: Running {
                 ct: CancellationToken::new(),
+                channel_server: self.state.channel_server,
                 cc_tx: cc_handler_channels.to_send_tx.clone(),
                 backend_task,
                 heartbeat_task,
                 cc_handler_task,
                 ec_handler_task,
+                mc_handler_task,
                 flow_control_task,
             },
             config: self.config,
         })
-    }
-}
-
-impl<B: Backend + 'static> Transitionable<ChannelsListening<B>> for Server<ChannelsAccepted<B>> {
-    type NextStateful = Server<ChannelsListening<B>>;
-
-    fn transition(self) -> Self::NextStateful {
-        Server {
-            state: ChannelsListening {
-                backend: self.state.backend.into_root(),
-                cc_server: transition!(self.state.cc.into_inner(), tcp::AsyncListening),
-                ec_server: transition!(self.state.ec.into_inner(), tcp::AsyncListening),
-            },
-            config: self.config,
-        }
     }
 }
 
@@ -940,25 +854,35 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         let mut heartbeat_terminated = None;
         let mut cc_handler_terminated = None;
         let mut ec_handler_terminated = None;
+        let mut mc_handler_terminated = None;
         let mut flow_control_terminated = None;
 
         let heartbeat_ct = self.state.heartbeat_task.cancellation_token().clone();
         let backend_ct = self.state.backend_task.cancellation_token().clone();
         let cc_handler_ct = self.state.cc_handler_task.cancellation_token().clone();
         let ec_handler_ct = self.state.ec_handler_task.cancellation_token().clone();
+        let mc_handler_ct = self.state.mc_handler_task.cancellation_token().clone();
         let flow_control_ct = self.state.flow_control_task.cancellation_token().clone();
         let client_process_ct = CancellationToken::new();
 
-        let mut backend_task =
-            tokio::spawn(async move { self.state.backend_task.try_transition().await });
-        let mut heartbeat_task =
-            tokio::spawn(async move { self.state.heartbeat_task.try_transition().await });
-        let mut cc_handler_task =
-            tokio::spawn(async move { self.state.cc_handler_task.try_transition().await });
-        let mut ec_handler_task =
-            tokio::spawn(async move { self.state.ec_handler_task.try_transition().await });
-        let mut flow_control_task =
-            tokio::spawn(async move { self.state.flow_control_task.try_transition().await });
+        let mut heartbeat_task = tokio::spawn(async move {
+            try_transition_async!(self.state.heartbeat_task, heartbeat::Terminated)
+        });
+        let mut backend_task = tokio::spawn(async move {
+            try_transition_async!(self.state.backend_task, backend::Terminated<B>)
+        });
+        let mut cc_handler_task = tokio::spawn(async move {
+            try_transition_async!(self.state.cc_handler_task, cc_handler::Terminated)
+        });
+        let mut ec_handler_task = tokio::spawn(async move {
+            try_transition_async!(self.state.ec_handler_task, ec_handler::Terminated)
+        });
+        let mut mc_handler_task = tokio::spawn(async move {
+            try_transition_async!(self.state.mc_handler_task, mc_handler::Terminated)
+        });
+        let mut flow_control_task = tokio::spawn(async move {
+            try_transition_async!(self.state.flow_control_task, flow_control::Terminated)
+        });
 
         loop {
             tokio::select! {
@@ -968,7 +892,9 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                     top_level_cleanup_executed = true;
                     heartbeat_ct.cancel();
                     backend_ct.cancel();
+                    cc_handler_ct.cancel();
                     ec_handler_ct.cancel();
+                    mc_handler_ct.cancel();
                     flow_control_ct.cancel();
                     client_process_ct.cancel();
                 }
@@ -981,14 +907,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                     }
                     has_sent_gb = true;
                     cc_handler_ct.cancel();
-                }
-                hb_term = &mut heartbeat_task, if heartbeat_terminated.is_none() => {
-                    log::debug!("Heartbeat subtask completed");
-                    if server_gb_reason.is_none() && hb_term.is_err() {
-                        server_gb_reason = Some(cm::ServerGoodbyeReason::NetworkError);
-                    }
-                    heartbeat_terminated = Some(hb_term);
-                    self.state.ct.cancel();
                 }
                 be_term = &mut backend_task, if backend_terminated.is_none() => {
                     log::debug!("Backend subtask completed");
@@ -1005,12 +923,12 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                     backend_terminated = Some(be_term);
                     self.state.ct.cancel();
                 }
-                ec_term = &mut ec_handler_task, if ec_handler_terminated.is_none() => {
-                    log::debug!("EC subtask completed");
-                    if server_gb_reason.is_none() && ec_term.is_err() {
-                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
+                hb_term = &mut heartbeat_task, if heartbeat_terminated.is_none() => {
+                    log::debug!("Heartbeat subtask completed");
+                    if server_gb_reason.is_none() && hb_term.is_err() {
+                        server_gb_reason = Some(cm::ServerGoodbyeReason::NetworkError);
                     }
-                    ec_handler_terminated = Some(ec_term);
+                    heartbeat_terminated = Some(hb_term);
                     self.state.ct.cancel();
                 }
                 cc_term = &mut cc_handler_task, if cc_handler_terminated.is_none() => {
@@ -1019,6 +937,22 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                         server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
                     }
                     cc_handler_terminated = Some(cc_term);
+                    self.state.ct.cancel();
+                }
+                ec_term = &mut ec_handler_task, if ec_handler_terminated.is_none() => {
+                    log::debug!("EC subtask completed");
+                    if server_gb_reason.is_none() && ec_term.is_err() {
+                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
+                    }
+                    ec_handler_terminated = Some(ec_term);
+                    self.state.ct.cancel();
+                }
+                mc_term = &mut mc_handler_task, if mc_handler_terminated.is_none() => {
+                    log::debug!("MC subtask completed");
+                    if server_gb_reason.is_none() && mc_term.is_err() {
+                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
+                    }
+                    mc_handler_terminated = Some(mc_term);
                     self.state.ct.cancel();
                 }
                 fc_term = &mut flow_control_task, if flow_control_terminated.is_none() => {
@@ -1036,6 +970,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         let heartbeat_terminated = heartbeat_terminated.expect("heartbeat terminated");
         let cc_handler_terminated = cc_handler_terminated.expect("cc handler terminated");
         let ec_handler_terminated = ec_handler_terminated.expect("ec handler terminated");
+        let mc_handler_terminated = mc_handler_terminated.expect("mc handler terminated");
         let flow_control_terminated = flow_control_terminated.expect("flow control terminated");
 
         let mut errors = vec![];
@@ -1055,67 +990,26 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         }
         .into_backend();
 
-        match heartbeat_terminated {
-            Ok(Ok(_)) => (),
-            Ok(Err(Recovered { error, .. })) => {
-                log::error!("Heartbeat terminated with error: {}", error);
-                errors.push(error);
-            }
-            Err(join_error) => {
-                log::error!("Heartbeat task panicked: {}", join_error);
-                errors.push(join_error.into());
-            }
+        if let Err(e) = heartbeat_terminated {
+            errors.push(e.into());
         }
-
-        let cc_server = match cc_handler_terminated {
-            Ok(Ok(cc)) => cc,
-            Ok(Err(Recovered { error, stateful })) => {
-                log::error!("Control channel handler terminated with error: {}", error);
-                errors.push(error);
-                stateful
-            }
-            Err(join_error) => {
-                panic!(
-                    "Control channel handler task panicked leaving CC unrecoverable: {}",
-                    join_error
-                );
-            }
+        if let Err(e) = cc_handler_terminated {
+            errors.push(e.into());
         }
-        .into_control_channel_server();
-
-        let ec_server = match ec_handler_terminated {
-            Ok(Ok(ec)) => ec,
-            Ok(Err(Recovered { error, stateful })) => {
-                log::error!("Event channel handler terminated with error: {}", error);
-                errors.push(error);
-                stateful
-            }
-            Err(join_error) => {
-                panic!(
-                    "Event channel handler task panicked leaving EC unrecoverable: {}",
-                    join_error
-                );
-            }
+        if let Err(e) = ec_handler_terminated {
+            errors.push(e.into());
         }
-        .into_event_channel_server();
-
-        match flow_control_terminated {
-            Ok(Ok(_)) => (),
-            Ok(Err(Recovered { error, .. })) => {
-                log::error!("Flow Control terminated with error: {}", error);
-                errors.push(error);
-            }
-            Err(join_error) => {
-                log::error!("Flow Control task panicked: {}", join_error);
-                errors.push(join_error.into());
-            }
+        if let Err(e) = mc_handler_terminated {
+            errors.push(e.into());
+        }
+        if let Err(e) = flow_control_terminated {
+            errors.push(e.into());
         }
 
         let stateful = Server {
             state: SessionComplete {
                 backend,
-                cc_server,
-                ec_server,
+                channel_server: self.state.channel_server,
             },
             config: self.config,
         };
@@ -1143,30 +1037,24 @@ impl<B: Backend + 'static> AsyncTransitionable<SessionComplete<B>> for Server<Ru
 
         let backend =
             transition_async!(self.state.backend_task, backend::Terminated<B>).into_backend();
-        let cc_server = transition_async!(self.state.cc_handler_task, cc_handler::Terminated)
-            .into_control_channel_server();
-        let ec_server = transition_async!(self.state.ec_handler_task, ec_handler::Terminated)
-            .into_event_channel_server();
         Server {
             state: SessionComplete {
                 backend,
-                cc_server,
-                ec_server,
+                channel_server: self.state.channel_server,
             },
             config: self.config,
         }
     }
 }
 
-impl<B: Backend + 'static> Transitionable<ChannelsListening<B>> for Server<SessionComplete<B>> {
-    type NextStateful = Server<ChannelsListening<B>>;
+impl<B: Backend + 'static> Transitionable<Listening<B>> for Server<SessionComplete<B>> {
+    type NextStateful = Server<Listening<B>>;
 
     fn transition(self) -> Self::NextStateful {
         Server {
-            state: ChannelsListening {
+            state: Listening {
                 backend: self.state.backend.into_root(),
-                cc_server: self.state.cc_server,
-                ec_server: self.state.ec_server,
+                channel_server: self.state.channel_server,
             },
             config: self.config,
         }
@@ -1175,15 +1063,15 @@ impl<B: Backend + 'static> Transitionable<ChannelsListening<B>> for Server<Sessi
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::backend::X;
-    use crate::server::*;
 
-    use aperturec_channel::reliable::tcp;
-    use aperturec_protocol::control::client_to_server as cm_c2s;
-    use aperturec_protocol::control::server_to_client as cm_s2c;
+    use aperturec_channel::{
+        tls, AsyncClientControl, AsyncClientEvent, AsyncClientMedia, AsyncUnifiedClient,
+    };
     use aperturec_protocol::control::*;
-    use aperturec_protocol::media::MediaKeepalive;
-    use serial_test::serial;
+
+    use rand::Rng;
 
     fn client_init_msg(id: u64) -> cm_c2s::Message {
         ClientInitBuilder::default()
@@ -1230,26 +1118,49 @@ mod test {
             .into()
     }
 
-    async fn server_cc_accepted(
-        client_id: u64,
-        cc_port: u16,
-        ec_port: u16,
-        mc_port: u16,
-    ) -> (Server<ControlChannelAccepted<X>>, AsyncClientControlChannel) {
+    async fn raw_client(
+        server_port: u16,
+        cert: &str,
+    ) -> channel::Client<channel::client::states::AsyncReady> {
+        let client = channel::client::Builder::default()
+            .server_addr("127.0.0.1")
+            .server_port(server_port)
+            .additional_tls_pem_certificate(cert)
+            .build_async()
+            .expect("client async build");
+        let client = try_transition_async!(client, channel::client::states::AsyncConnected)
+            .map_err(|r| r.error)
+            .expect("connect");
+        let client =
+            try_transition_async!(client, channel::client::states::AsyncReady).expect("ready");
+        client
+    }
+
+    async fn server_client_connected() -> (
+        Server<Accepted<X>>,
+        AsyncClientControl,
+        AsyncClientEvent,
+        AsyncClientMedia,
+        u64,
+    ) {
+        let tlsdir = tempdir::TempDir::new("").expect("temp dir");
+        let client_id = rand::thread_rng().gen();
         let server_config = ConfigurationBuilder::default()
-            .control_channel_addr(SocketAddr::new("127.0.0.1".parse().unwrap(), cc_port))
-            .event_channel_addr(SocketAddr::new("127.0.0.1".parse().unwrap(), ec_port))
-            .media_channel_addr(SocketAddr::new("127.0.0.1".parse().unwrap(), mc_port))
+            .bind_addr("127.0.0.1:0".to_string())
             .name("test server".into())
+            .tls_configuration(TlsConfiguration::Generated {
+                save_directory: tlsdir.path().to_path_buf(),
+                external_addresses: vec![],
+            })
             .temp_client_id(client_id)
             .max_width(1920)
             .max_height(1080)
             .allow_client_exec(false)
-            .mbps_max(Some(500))
+            .mbps_max(500.into())
             .window_size(None)
             .build()
             .expect("Configuration build");
-        let server: Server<ChannelsListening<X>> = Server::new(server_config.clone())
+        let server: Server<Listening<X>> = Server::new(server_config.clone())
             .expect("Create server instance")
             .try_transition()
             .await
@@ -1257,74 +1168,65 @@ mod test {
             .try_transition()
             .await
             .expect("Failed to listen");
-        let client_cc = client_cc(cc_port).await;
-        let server: Server<ControlChannelAccepted<X>> = server
-            .try_transition()
-            .await
-            .expect("Failed to accept CC client");
-        (server, client_cc)
+
+        let mut cert_path = tlsdir.path().to_path_buf();
+        cert_path.push("cert.pem");
+        let mut pkey_path = tlsdir.path().to_path_buf();
+        pkey_path.push("pkey.pem");
+        let tls_material: tls::PemMaterial = tls::Material::from_pem_files(&cert_path, &pkey_path)
+            .expect("load tls materials")
+            .try_into()
+            .expect("PEM");
+
+        let client = raw_client(
+            server
+                .state
+                .channel_server
+                .local_addr()
+                .expect("local addr")
+                .port(),
+            &tls_material.certificate,
+        )
+        .await;
+        let server = try_transition_async!(server, Accepted<X>).expect("accept");
+        let (cc, ec, mc) = client.split();
+        (server, cc, ec, mc, client_id)
     }
 
-    async fn server_client_authenticated(
-        client_id: u64,
-        cc_port: u16,
-        ec_port: u16,
-        mc_port: u16,
-    ) -> (Server<AuthenticatedClient<X>>, AsyncClientControlChannel) {
-        let (server, mut client_cc) =
-            server_cc_accepted(client_id, cc_port, ec_port, mc_port).await;
+    async fn server_client_authenticated() -> (
+        Server<AuthenticatedClient<X>>,
+        AsyncClientControl,
+        AsyncClientEvent,
+        AsyncClientMedia,
+    ) {
+        let (server, mut client_cc, client_ec, client_mc, client_id) =
+            server_client_connected().await;
         client_cc
             .send(client_init_msg(client_id))
             .await
             .expect("send ClientInit");
         let server = server.try_transition().await.expect("failed to auth");
-        (server, client_cc)
-    }
-
-    async fn tcp_client(port: u16) -> tcp::Client<tcp::AsyncConnected> {
-        try_transition_async!(tcp::Client::new(([127, 0, 0, 1], port))).expect("Failed to connect")
-    }
-
-    async fn udp_client(port: u16) -> udp::Client<udp::AsyncConnected> {
-        try_transition_async!(udp::Client::new(
-            ([127, 0, 0, 1], port),
-            SocketAddr::from(([127, 0, 0, 1], 0)),
-        ))
-        .expect("failed to connect")
-    }
-
-    async fn client_cc(port: u16) -> AsyncClientControlChannel {
-        AsyncClientControlChannel::new(tcp_client(port).await)
-    }
-
-    async fn client_ec(port: u16) -> AsyncClientEventChannel {
-        AsyncClientEventChannel::new(tcp_client(port).await)
-    }
-
-    async fn client_mc(port: u16) -> AsyncClientMediaChannel {
-        AsyncClientMediaChannel::new(udp_client(port).await)
+        (server, client_cc, client_ec, client_mc)
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[serial]
     async fn auth_fail() {
-        let (server, mut cc) = server_cc_accepted(1234, 8000, 8001, 8008).await;
-        cc.send(client_init_msg(5678))
+        let (server, mut client_cc, ..) = server_client_connected().await;
+        client_cc
+            .send(client_init_msg(5678))
             .await
             .expect("send ClientInit");
-        let _server_authed = server.try_transition().await;
+        try_transition_async!(server, AuthenticatedClient<X>).expect_err("client authenticate");
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[serial]
     async fn auth_pass() {
-        let _ = server_client_authenticated(1234, 8002, 8003, 8008).await;
+        let _ = server_client_authenticated().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[serial]
     async fn client_init() {
-        let (server, mut client_cc) = server_client_authenticated(1234, 8004, 8005, 8008).await;
+        let (_, mut client_cc, ..) = server_client_authenticated().await;
         let msg = client_cc.receive().await.expect("receiving server init");
         let server_init = if let cm_s2c::Message::ServerInit(server_init) = msg {
             assert_eq!(server_init.decoder_areas.len(), 2);
@@ -1414,25 +1316,6 @@ mod test {
                 .height,
             768
         );
-        let _client_ec = client_ec(8005).await;
-
-        for i in 0..server_init.decoder_areas.len() {
-            let mut client_decoder = client_mc((8008 + i) as u16).await;
-            let _ = client_decoder
-                .send(mm_c2s::Message::MediaKeepalive(MediaKeepalive::new(
-                    Decoder::new((1337 + i) as u32).into(),
-                )))
-                .await
-                .expect("Send MediaKeepalive");
-        }
-
-        let _running: Server<Running<_>> = server
-            .try_transition()
-            .await
-            .expect("failed to accept EC")
-            .try_transition()
-            .await
-            .expect("failed to start running");
     }
 
     #[test]

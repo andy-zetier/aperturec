@@ -127,7 +127,6 @@ pub mod test {
 
             assert_eq!(cc.receive_with_len().expect("server cc receive"), s_msgs.0);
             cc.send(s_msgs.1 .0).expect("server cc send");
-            let _ = ec.receive_with_len().expect("server ec receive");
             assert_eq!(ec.receive_with_len().expect("server ec receive"), s_msgs.2);
             mc.send(s_msgs.3 .0).expect("server mc send");
 
@@ -154,7 +153,7 @@ pub mod test {
     }
 
     #[tokio::test]
-    async fn async_client_and_server() {
+    async fn async_client_async_server() {
         let (c, s) = unconnected_async_client_async_server();
         let (c_msgs, s_msgs) = (test_messages(), test_messages());
 
@@ -168,7 +167,6 @@ pub mod test {
                 s_msgs.0
             );
             cc.send(s_msgs.1 .0).await.expect("server cc send");
-            let _ = ec.receive_with_len().await.expect("server ec receive");
             assert_eq!(
                 ec.receive_with_len().await.expect("server ec receive"),
                 s_msgs.2
@@ -238,7 +236,6 @@ pub mod test {
                 s_msgs.0
             );
             cc.send(s_msgs.1 .0).await.expect("server cc send");
-            let _ = ec.receive_with_len().await.expect("server ec receive");
             assert_eq!(
                 ec.receive_with_len().await.expect("server ec receive"),
                 s_msgs.2
@@ -268,7 +265,6 @@ pub mod test {
 
             assert_eq!(cc.receive_with_len().expect("server cc receive"), s_msgs.0);
             cc.send(s_msgs.1 .0).expect("server cc send");
-            let _ = ec.receive_with_len().expect("server ec receive");
             assert_eq!(ec.receive_with_len().expect("server ec receive"), s_msgs.2);
             mc.send(s_msgs.3 .0).expect("server mc send");
 
