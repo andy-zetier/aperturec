@@ -290,6 +290,9 @@ impl Backend for X {
                 let size = Size::new(size.width as usize, size.height as usize);
                 self.set_resolution(&size).await?;
             }
+            Event::Noop => {
+                log::warn!("Unexpected no-op event");
+            }
         }
 
         Ok(())
@@ -537,18 +540,9 @@ impl XEventStreamMux {
                     match event_task_rx.recv().await {
                         Some(event) => {
                             let arcd = Arc::new(event);
-                            let mut txs_to_prune = vec![];
 
                             let mut txs = tx_task_txs.lock().expect("lock X mux txs");
-                            for (idx, tx) in txs.iter().enumerate() {
-                                if tx.send(arcd.clone()).is_err() {
-                                    txs_to_prune.push(idx)
-                                }
-                            }
-
-                            for idx in txs_to_prune {
-                                txs.remove(idx);
-                            }
+                            txs.retain(|tx| tx.send(arcd.clone()).is_ok());
                         }
                         None => {
                             bail!("No more X events");

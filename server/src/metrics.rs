@@ -181,7 +181,7 @@ pub fn setup_server_metrics(
     metrics_log: bool,
     metrics_csv: Option<String>,
     metrics_prom: Option<String>,
-    prom_id: u16,
+    prom_id: u32,
 ) {
     if metrics_prom.is_none() {
         log::warn!("Prometheus Pushgateway URL is not set. Use --metrics-prom to resolve");

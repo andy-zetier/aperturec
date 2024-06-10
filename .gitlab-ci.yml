@@ -11,10 +11,10 @@ stages:
 .crates:package:
   - client
   - server
-.crates:no-extra-dependencies: "channel,metrics,protocol,state_machine,trace,quic_metrics,quic_protocol"
-.crates:fips-dependencies: "quic_channel"
-.crates:server-dependencies: "server,quic_server"
-.crates:client-dependencies: "client,quic_client"
+.crates:no-extra-dependencies: "metrics,protocol,state_machine,trace"
+.crates:fips-dependencies: "channel"
+.crates:server-dependencies: "server"
+.crates:client-dependencies: "client"
 
 .images:debian:
   - ubuntu:20.04
@@ -195,15 +195,7 @@ cargo:check-build-test:
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: quic_server
-        IMAGE_BASE: !reference [.images:all]
-        IMAGE_TARGET: server-image
-        ARCHITECTURE: !reference [.architectures:all]
       - CRATES: client
-        IMAGE_BASE: !reference [.images:all]
-        IMAGE_TARGET: client-image
-        ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: quic_client 
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
@@ -236,6 +228,7 @@ cargo:check-build-windows-client:
       optional: true
   artifacts:
     paths: [test_executables, aperturec-$CRATES.exe]
+  allow_failure: true
 
 cargo:doc:
   stage: doc
@@ -274,6 +267,7 @@ package:windows-client:
     - job: cargo:check-build-windows-client
   artifacts:
     paths: [aperturec-client-win.zip]
+  allow_failure: true
 
 package:create-deb:
   stage: package

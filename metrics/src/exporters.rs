@@ -171,7 +171,7 @@ pub struct PushgatewayExporter {
 }
 
 impl PushgatewayExporter {
-    pub fn new(url: String, job_name: String, id: u16) -> Result<Self> {
+    pub fn new(url: String, job_name: String, id: u32) -> Result<Self> {
         // Ensure we can connect to the Pushgateway
         drop(TcpStream::connect(
             Url::parse(&url)?.socket_addrs(|| None).unwrap().as_slice(),
@@ -435,10 +435,11 @@ mod test {
         .expect("fake-pushgateway");
 
         let port = server.server_addr().port();
+        let id = std::process::id();
         let (jh, sender) = server.stoppable();
 
         let mut pge =
-            PushgatewayExporter::new(format!("http://127.0.0.1:{}", port), JOB.to_string(), port)
+            PushgatewayExporter::new(format!("http://127.0.0.1:{}", port), JOB.to_string(), id)
                 .expect("Pushgateway Exporter");
 
         // Generate a PUSH request

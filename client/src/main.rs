@@ -1,4 +1,3 @@
-use aperturec_client::metrics;
 use aperturec_client::{client, gtk3};
 use aperturec_metrics::exporters::{CsvExporter, Exporter, LogExporter, PushgatewayExporter};
 use aperturec_trace::{self as trace, log, Level};
@@ -6,6 +5,9 @@ use aperturec_trace::{self as trace, log, Level};
 use anyhow::Result;
 use clap::Parser;
 use gethostname::gethostname;
+use openssl::x509::X509;
+use std::fs;
+use std::path::PathBuf;
 use std::time::Duration;
 use sysinfo::{CpuRefreshKind, RefreshKind, SystemExt};
 
@@ -62,11 +64,6 @@ struct Args {
     #[arg(short, long, default_value_t = 0)]
     decoder_max: u16,
 
-    /// Initial port to bind for the decoders. A block of decoder_max ports must be available
-    /// starting with this one. A value of 0 will defer port selection to the OS
-    #[arg(short = 'p', long = "port", default_value_t = 0)]
-    decoder_port_start: u16,
-
     /// Maximum frames per second.
     #[arg(long = "fps", default_value_t = 30)]
     fps_max: u16,
@@ -103,6 +100,11 @@ struct Args {
     #[arg(index = 1)]
     server_address: String,
 
+    /// Additional TLS certificates to enable connections to servers that are not serving
+    /// certificates signed by already installed CAs
+    #[arg(short, long, default_values_os_t = Vec::<PathBuf>::new())]
+    additional_tls_certificates: Vec<PathBuf>,
+
     /// Initial ID of the client. Must match the server's --temp-client-id.
     #[arg(short, long, default_value_t = 1234)]
     temp_client_id: u64,
@@ -111,10 +113,6 @@ struct Args {
     /// verbosity. The maximum is 3.
     #[arg(short, action = clap::ArgAction::Count)]
     verbosity: u8,
-
-    /// Maximum downstream rate in whole megabits per second (Mbps).
-    #[arg(long, default_value = None)]
-    mbps_max: Option<u16>,
 }
 
 fn main() -> Result<()> {
@@ -147,15 +145,16 @@ fn main() -> Result<()> {
         .decoder_max(decoder_max)
         .name(gethostname().into_string().unwrap())
         .server_addr(args.server_address)
-        .decoder_port_start(args.decoder_port_start)
         .win_height(height)
         .win_width(width)
-        .id(args.temp_client_id)
+        .temp_id(args.temp_client_id)
         .max_fps(Duration::from_secs_f32(1.0 / (args.fps_max as f32)))
-        .keepalive_timeout(Duration::from_secs(args.keepalive_timeout))
-        .mbps_max(args.mbps_max);
+        .keepalive_timeout(Duration::from_secs(args.keepalive_timeout));
     if let Some(program_cmdline) = args.program_cmdline {
         config_builder.program_cmdline(program_cmdline);
+    }
+    for cert_path in args.additional_tls_certificates {
+        config_builder.additional_tls_certificate(X509::from_pem(&fs::read(cert_path)?)?);
     }
     let config = config_builder.build()?;
 
@@ -180,7 +179,7 @@ fn main() -> Result<()> {
             match PushgatewayExporter::new(
                 url.to_owned(),
                 "aperturec_client".to_owned(),
-                args.decoder_port_start,
+                std::process::id(),
             ) {
                 Ok(pge) => exporters.push(Exporter::Pushgateway(pge)),
                 Err(err) => log::warn!("Failed to setup Pushgateway exporter: {}, disabling", err),
@@ -192,8 +191,6 @@ fn main() -> Result<()> {
             .init()
             .expect("Failed to setup metrics");
         metrics_started = true;
-
-        metrics::setup_client_metrics();
     }
 
     client::run_client(config.clone())?;

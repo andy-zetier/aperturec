@@ -31,12 +31,12 @@ enum Architecture {
 }
 
 message DecoderSequencePair {
-  common.Decoder decoder = 1;
+  uint32 decoder_id = 1;
   uint64 sequence_id = 2;
 }
 
 message DecoderArea {
-  common.Decoder decoder = 1;
+  uint32 decoder_id = 1;
   common.Location location = 2;
   common.Dimension Dimension = 3;
 }
@@ -86,13 +86,8 @@ message HeartbeatResponse {
   repeated DecoderSequencePair last_sequence_ids = 2;
 }
 
-message FramebufferUpdateRequest {
-  common.Location location = 1;
-  common.Dimension dimension = 2;
-}
-
 message MissedFrameReport {
-  common.Decoder decoder = 1;
+  uint32 decoder_id = 1;
   repeated uint64 frame_sequence_ids = 2;
 }
 
@@ -106,8 +101,7 @@ message ClientToServer {
     ClientInit client_init = 1;
     ClientGoodbye client_goodbye = 2;
     HeartbeatResponse heartbeat_response = 3;
-    FramebufferUpdateRequest framebuffer_update_request = 4;
-    MissedFrameReport missed_frame_report = 5;
+    MissedFrameReport missed_frame_report = 4;
     WindowAdvance window_advance = 6;
   }
 }
@@ -115,10 +109,9 @@ message ClientToServer {
 message ServerInit {
   uint64 client_id = 1;
   string server_name = 2;
-  uint32 event_port = 3;
-  common.Dimension display_size = 4;
-  repeated common.CursorBitmap cursor_bitmaps = 5;
-  repeated DecoderArea decoder_areas = 6;
+  common.Dimension display_size = 3;
+  repeated common.CursorBitmap cursor_bitmaps = 4;
+  repeated DecoderArea decoder_areas = 5;
   uint64 window_size = 7;
 }
 

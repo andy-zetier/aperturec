@@ -4,3 +4,4 @@ pub mod encoder;
 pub mod event_channel_handler;
 pub mod flow_control;
 pub mod heartbeat;
+pub mod media_channel_handler;

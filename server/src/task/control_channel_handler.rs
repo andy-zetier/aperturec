@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use aperturec_channel::reliable::tcp;
 use aperturec_channel::*;
 use aperturec_protocol::control as cm;
 use aperturec_protocol::control::client_to_server as cm_c2s;
@@ -23,8 +22,7 @@ pub struct Task<S: State> {
 
 #[derive(State)]
 pub struct Created {
-    cc: AsyncServerControlChannel,
-    fb_update_req_tx: mpsc::UnboundedSender<cm::FramebufferUpdateRequest>,
+    cc: AsyncServerControl,
     hb_resp_tx: mpsc::UnboundedSender<cm::HeartbeatResponse>,
     missed_frame_tx: mpsc::UnboundedSender<cm::MissedFrameReport>,
     flow_control_tx: mpsc::UnboundedSender<cm::WindowAdvance>,
@@ -33,37 +31,32 @@ pub struct Created {
 
 #[derive(State)]
 pub struct Running {
-    tx_subtask: JoinHandle<(AsyncServerControlChannelWriteHalf, Result<()>)>,
+    tx_subtask: JoinHandle<Result<()>>,
     tx_subtask_ct: CancellationToken,
-    rx_subtask: JoinHandle<(AsyncServerControlChannelReadHalf, Result<()>)>,
+    rx_subtask: JoinHandle<Result<()>>,
     rx_subtask_ct: CancellationToken,
     ct: CancellationToken,
 }
 
 #[derive(State, Debug)]
-pub struct Terminated {
-    cc: tcp::Server<tcp::AsyncListening>,
-}
+pub struct Terminated;
 
 pub struct Channels {
     pub to_send_tx: mpsc::Sender<cm_s2c::Message>,
-    pub fb_update_req_rx: mpsc::UnboundedReceiver<cm::FramebufferUpdateRequest>,
     pub hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
     pub missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
     pub flow_control_rx: mpsc::UnboundedReceiver<cm::WindowAdvance>,
 }
 
 impl Task<Created> {
-    pub fn new(cc: AsyncServerControlChannel) -> (Self, Channels) {
+    pub fn new(cc: AsyncServerControl) -> (Self, Channels) {
         let (to_send_tx, to_send_rx) = mpsc::channel(1);
-        let (fb_update_req_tx, fb_update_req_rx) = mpsc::unbounded_channel();
         let (hb_resp_tx, hb_resp_rx) = mpsc::unbounded_channel();
         let (missed_frame_tx, missed_frame_rx) = mpsc::unbounded_channel();
         let (flow_control_tx, flow_control_rx) = mpsc::unbounded_channel();
         let task = Task {
             state: Created {
                 cc,
-                fb_update_req_tx,
                 hb_resp_tx,
                 missed_frame_tx,
                 flow_control_tx,
@@ -74,22 +67,11 @@ impl Task<Created> {
             task,
             Channels {
                 to_send_tx,
-                fb_update_req_rx,
                 hb_resp_rx,
                 flow_control_rx,
                 missed_frame_rx,
             },
         )
-    }
-
-    pub async fn into_control_channel_server(self) -> tcp::Server<tcp::AsyncListening> {
-        transition_async!(self.state.cc.into_inner(), tcp::AsyncListening)
-    }
-}
-
-impl Task<Terminated> {
-    pub fn into_control_channel_server(self) -> tcp::Server<tcp::AsyncListening> {
-        self.state.cc
     }
 }
 
@@ -111,14 +93,14 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let (mut cc_tx, mut cc_rx) = self.state.cc.split();
+        let (mut cc_rx, mut cc_tx) = self.state.cc.split();
 
         let tx_ct = CancellationToken::new();
         let ct = tx_ct.clone();
         let mut stream_closed = false;
         let tx_subtask = tokio::spawn(async move {
             let mut to_send_stream = ReceiverStream::new(self.state.to_send_rx);
-            let loop_res = loop {
+            loop {
                 tokio::select! {
                     biased;
                     _ = ct.cancelled(), if !stream_closed => {
@@ -142,14 +124,13 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                     }
                     else => break Ok(())
                 }
-            };
-            (cc_tx, loop_res)
+            }
         });
 
         let rx_ct = CancellationToken::new();
         let ct = rx_ct.clone();
         let rx_subtask = tokio::spawn(async move {
-            let loop_res = loop {
+            loop {
                 tokio::select! {
                     biased;
                     _ = ct.cancelled() => {
@@ -173,16 +154,10 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                                     break Err(anyhow!("Could not forward HB response: {}", err));
                                 }
                             }
-                            Ok(cm_c2s::Message::FramebufferUpdateRequest(update_req)) => {
-                                if let Err(err) = self.state.fb_update_req_tx.send(update_req) {
-                                    break Err(anyhow!("Could not forward update request to FB update request channel: {}", err));
-                                }
-                            }
                             Ok(cm_c2s::Message::MissedFrameReport(report)) => {
+                                enq!(MISSED_FRAME_QUEUE);
                                 if let Err(err) = self.state.missed_frame_tx.send(report) {
                                     break Err(anyhow!("Could not forward missed frame report to missed frame report channel: {}", err));
-                                } else {
-                                    enq!(MISSED_FRAME_QUEUE);
                                 }
                             }
                             Ok(cm_c2s::Message::WindowAdvance(wa)) => {
@@ -195,8 +170,7 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                     }
                     else => break Err(anyhow!("CC Rx has no more messages but is not cancelled"))
                 }
-            };
-            (cc_rx, loop_res)
+            }
         });
 
         Ok(Task {
@@ -243,32 +217,19 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
             }
         }
 
-        let cc_tx = match tx_subtask_term.expect("tx subtask not recovered") {
-            Ok((cc_tx, Ok(()))) => cc_tx,
-            Ok((cc_tx, Err(e))) => {
-                log::error!("CC Tx subtask failed with error: {}", e);
-                cc_tx
-            }
-            Err(e) => panic!("CC Tx subtask panicked: {}", e),
-        };
+        match tx_subtask_term.expect("tx subtask not recovered") {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => log::error!("CC Tx subtask failed with error: {}", e),
+            Err(e) => log::error!("CC Tx subtask panicked: {}", e),
+        }
 
-        let cc_rx = match rx_subtask_term.expect("rx subtask not recovered") {
-            Ok((cc_rx, Ok(()))) => cc_rx,
-            Ok((cc_rx, Err(e))) => {
-                log::error!("CC Rx subtask failed with error: {}", e);
-                cc_rx
-            }
-            Err(e) => panic!("CC Rx subtask panicked: {}", e),
-        };
+        match rx_subtask_term.expect("rx subtask not recovered") {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => log::error!("CC Rx subtask failed with error: {}", e),
+            Err(e) => log::error!("CC Rx subtask panicked: {}", e),
+        }
 
-        Ok(Task {
-            state: Terminated {
-                cc: transition_async!(
-                    AsyncServerControlChannel::unsplit(cc_tx, cc_rx).into_inner(),
-                    tcp::AsyncListening
-                ),
-            },
-        })
+        Ok(Task { state: Terminated })
     }
 }
 
@@ -277,29 +238,18 @@ impl AsyncTransitionable<Terminated> for Task<Running> {
 
     async fn transition(self) -> Self::NextStateful {
         self.stop();
-        match futures::join!(self.state.tx_subtask, self.state.rx_subtask) {
-            (Ok((cc_tx, tx_res)), Ok((cc_rx, rx_res))) => {
-                if let Err(tx_err) = tx_res {
-                    log::error!("CC Tx subtask encountered error: {}", tx_err);
-                }
-                if let Err(rx_err) = rx_res {
-                    log::error!("CC Rx subtask encountered error: {}", rx_err);
-                }
-                Task {
-                    state: Terminated {
-                        cc: transition_async!(
-                            AsyncServerControlChannel::unsplit(cc_tx, cc_rx).into_inner(),
-                            tcp::AsyncListening
-                        ),
-                    },
-                }
-            }
-            (Err(tx_join_err), _) => {
-                panic!("CC tx subtask panicked: {}", tx_join_err);
-            }
-            (_, Err(rx_join_err)) => {
-                panic!("CC rx subtask panicked: {}", rx_join_err);
-            }
+
+        match self.state.tx_subtask.await {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => log::error!("CC Tx subtask failed with error: {}", e),
+            Err(e) => log::error!("CC Tx subtask panicked: {}", e),
         }
+
+        match self.state.rx_subtask.await {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => log::error!("CC Rx subtask failed with error: {}", e),
+            Err(e) => log::error!("CC Rx subtask panicked: {}", e),
+        }
+        Task { state: Terminated }
     }
 }

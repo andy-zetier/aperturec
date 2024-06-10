@@ -1,10 +1,13 @@
-use anyhow::{anyhow, Result};
-
-use crate::task::encoder;
-use aperturec_protocol::control as cm;
+use aperturec_channel::gate::*;
+use aperturec_channel::transport::datagram;
+use aperturec_protocol::{control as cm, media as mm};
 use aperturec_state_machine::*;
 use aperturec_trace::log;
+use mm::server_to_client as mm_s2c;
+
+use anyhow::{anyhow, Result};
 use futures::StreamExt;
+use prost::Message;
 use socket2::{Domain, Socket, Type};
 use std::cmp::{max, min};
 use std::net::SocketAddr;
@@ -71,6 +74,33 @@ impl FlowControlHandle {
     }
 }
 
+impl AsyncGate for FlowControlHandle {
+    type UnstampedMessage = mm::FramebufferUpdate;
+    type StampedMessage = mm::server_to_client::Message;
+
+    async fn wait_and_stamp(
+        &self,
+        unstamped_msg: Self::UnstampedMessage,
+    ) -> anyhow::Result<Self::StampedMessage> {
+        let stamped = mm_s2c::Message::FramebufferUpdate(unstamped_msg);
+
+        let whole_msg = mm::ServerToClient {
+            message: Some(stamped),
+        };
+        let num_bytes = whole_msg.encoded_len();
+        let (window_id, ts_opt) = self.request_to_send(num_bytes).await?;
+
+        let mut stamped = whole_msg.message.unwrap();
+
+        {
+            let mm_s2c::Message::FramebufferUpdate(fbu) = &mut stamped;
+            fbu.window_id = window_id;
+            fbu.latency_timestamp = ts_opt.map(|ts| ts.into());
+        }
+        Ok(stamped)
+    }
+}
+
 fn get_send_buffer_size(sock_addr: SocketAddr) -> usize {
     let sock =
         Socket::new(Domain::for_address(sock_addr), Type::DGRAM, None).expect("Socket create");
@@ -88,7 +118,6 @@ impl Configuration {
         window_size: Option<usize>,
         server_mbps_max: Option<usize>,
         sock_addr: SocketAddr,
-        decoder_count: usize,
         client_mbps_max: usize,
         client_recv_size: usize,
     ) -> Self {
@@ -101,16 +130,7 @@ impl Configuration {
                 let buffer_size = min(client_recv_size, get_send_buffer_size(sock_addr));
 
                 // We must be able to send at least one message-worth of bytes.
-                let buffer_size = max(buffer_size, encoder::MAX_BYTES_PER_MESSAGE);
-
-                //
-                // Each encoder / decoder pair will have its own socket buffer. However, depending
-                // on workload, not all of the pairs may be active. Therefore, multiply the buffer
-                // size by half the number of available pairs and truncate to the floor to arrive
-                // at initial_window_size.
-                //
-                let multiplier = max(decoder_count, 2) / 2;
-                Some(buffer_size * multiplier)
+                Some(max(buffer_size, datagram::MAX_SIZE))
             }
             _ => window_size,
         };

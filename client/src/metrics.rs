@@ -57,13 +57,13 @@ impl Timer {
 
 #[derive(Debug, Default, PartialEq)]
 struct Idle {
-    idle_timers: BTreeMap<u16, Timer>,
+    idle_timers: BTreeMap<u32, Timer>,
     poll_timer: Timer,
 }
 
 enum IdleUpdate {
-    Working(u16, Instant),
-    Idle(u16, Instant),
+    Working(u32, Instant),
+    Idle(u32, Instant),
 }
 
 impl MetricUpdate for IdleUpdate {}
@@ -184,11 +184,11 @@ mod test {
 aperturec_metrics::create_stats_metric!(WindowFillPercent, "%", 100.0);
 aperturec_metrics::create_stats_metric!(WindowAdvanceLatency, "ms", 1000.0);
 
-pub fn idling(id: u16) {
+pub fn idling(id: u32) {
     aperturec_metrics::update(IdleUpdate::Idle(id, Instant::now()));
 }
 
-pub fn working(id: u16) {
+pub fn working(id: u32) {
     aperturec_metrics::update(IdleUpdate::Working(id, Instant::now()));
 }
 

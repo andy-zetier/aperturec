@@ -1,42 +1,40 @@
 use crate::backend::FramebufferUpdate;
 use crate::metrics::TrackingBufferDamageRatio;
-use crate::metrics::{
-    CompressionRatio, FramebufferUpdatesSent, PixelsCompressed, TimeInCompression,
-};
-use crate::task::flow_control;
+use crate::metrics::{CompressionRatio, PixelsCompressed, TimeInCompression};
 
-use anyhow::{anyhow, Result};
-use aperturec_channel::{AsyncReceiver, AsyncSender};
+use aperturec_channel as channel;
 use aperturec_protocol::common::*;
 use aperturec_protocol::media as mm;
 use aperturec_state_machine::*;
 use aperturec_trace::log;
-use aperturec_trace::queue::{self, deq_group, enq_group, trace_queue_group};
+
+use anyhow::{anyhow, Result};
 use bytes::{Bytes, BytesMut};
 use euclid::{Point2D, Size2D, UnknownUnit};
-use flate2::{Compress, Compression, FlushCompress};
-use futures::{future::join, stream, StreamExt};
-use linear_map::set::LinearSet;
+use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress};
+use futures::{stream, StreamExt};
 use ndarray::{arr0, s, Array2, ArrayView2, AssignElem, Axis, ShapeBuilder, Zip};
-use parking_lot::{Mutex, MutexGuard};
-use std::cmp::{min, Ordering};
-use std::collections::{btree_map::Entry, BTreeMap, LinkedList};
-use std::sync::Arc;
-use std::time::Duration;
+use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::cmp::min;
+use std::collections::{BTreeMap, LinkedList};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tokio_util::sync::CancellationToken;
 
-use mm::client_to_server as mm_c2s;
-use mm::server_to_client as mm_s2c;
-
-const DISPATCH_QUEUE: queue::QueueGroup = trace_queue_group!("encoder:dispatch");
-
 pub const RAW_BYTES_PER_PIXEL: usize = 4;
 const ENC_BYTES_PER_PIXEL: usize = 3;
-pub const MAX_BYTES_PER_MESSAGE: usize = 1400;
+
+// Each mm::FramebufferUpdate has a header associated with it. The contents of that header data are
+// defined in the `protocol` crate's media.proto file. When we try to encode as much pixel data
+// into the datagram as possible, we must reserve some ammount for this header to ensure the entire
+// mm::FramebufferUpdate can fit into the datagram
+const MM_HEADER_RESERVE: usize = 32;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RawPixel {
@@ -79,6 +77,7 @@ fn encode_raw(
     let width = min(MAX_ROW_WIDTH_PIXELS, num_remaining_cols);
 
     let num_remaining_rows = raw_data.len_of(Y_AXIS) - curr_loc.y;
+    let max_bytes_per_msg = max_bytes_per_msg - MM_HEADER_RESERVE;
     let height = min(
         max_bytes_per_msg / (ENC_BYTES_PER_PIXEL * MAX_ROW_WIDTH_PIXELS),
         num_remaining_rows,
@@ -112,7 +111,7 @@ fn encode_zlib(
     curr_loc: &mut Point,
     raw_data: ArrayView2<RawPixel>,
 ) -> (Bytes, Size) {
-    const MAX_ROW_WIDTH_PIXELS: usize = 32;
+    const MAX_ROW_WIDTH_PIXELS: usize = 64;
     const MAX_COL_HEIGHT_PIXELS: usize = 512;
 
     if curr_loc.x >= raw_data.len_of(X_AXIS) || curr_loc.y >= raw_data.len_of(Y_AXIS) {
@@ -132,60 +131,54 @@ fn encode_zlib(
         ])
         .reversed_axes(); // nd-array has x/y reversed
 
+    let max_bytes_per_msg = max_bytes_per_msg - MM_HEADER_RESERVE;
     let mut enc_data = BytesMut::zeroed(max_bytes_per_msg);
-    let mut compressor = Compress::new_with_window_bits(
-        Compression::new(1),
-        false,
-        ((max_bytes_per_msg as f64).log2()).ceil() as u8,
-    );
-    let mut nbytes_consumed = 0;
-    let mut nbytes_produced = 0;
-    let mut row_idx = 0;
+    let mut compressor = Compress::new(Compression::new(7), false);
+    let mut decompressor = Decompress::new(false);
 
-    let finish_reserve = width * ENC_BYTES_PER_PIXEL * 2;
-    let mut raw_row = vec![0_u8; width * ENC_BYTES_PER_PIXEL];
-    while row_idx < height && nbytes_produced < (enc_data.len() - finish_reserve) {
-        let row = raw_data_slice.row(row_idx);
+    let mut raw_rows = vec![0_u8; width * height * ENC_BYTES_PER_PIXEL];
 
-        for (i, &pixel) in row.iter().enumerate() {
-            let start = i * ENC_BYTES_PER_PIXEL;
-            raw_row[start] = pixel.blue;
-            raw_row[start + 1] = pixel.green;
-            raw_row[start + 2] = pixel.red;
-        }
-
-        let output = &mut enc_data[nbytes_produced..max_bytes_per_msg - finish_reserve];
-        compressor
-            .compress(&raw_row, output, FlushCompress::Partial)
-            .expect("zlib compress partial");
-        nbytes_consumed = compressor.total_in() as usize;
-        nbytes_produced = compressor.total_out() as usize;
-        row_idx += 1;
+    for (i, &pixel) in raw_data_slice.iter().enumerate() {
+        let start = i * ENC_BYTES_PER_PIXEL;
+        raw_rows[start] = pixel.blue;
+        raw_rows[start + 1] = pixel.green;
+        raw_rows[start + 2] = pixel.red;
     }
 
-    let complete_rows_consumed = nbytes_consumed / (width * ENC_BYTES_PER_PIXEL);
-    compressor
-        .compress(&[], &mut enc_data[nbytes_produced..], FlushCompress::Finish)
-        .expect("zlib compress finish");
+    let (nbytes_consumed, nbytes_produced) = {
+        compressor
+            .compress(&raw_rows, &mut enc_data, FlushCompress::Full)
+            .expect("zlib compress");
+        enc_data.truncate(compressor.total_out() as usize);
+        decompressor
+            .decompress(&enc_data, &mut raw_rows, FlushDecompress::Finish)
+            .expect("zlib decompress");
+        (
+            decompressor.total_out() as usize,
+            compressor.total_out() as usize,
+        )
+    };
 
-    let ratio = 100_f64 * (nbytes_produced as f64 / nbytes_consumed as f64);
+    let complete_rows = nbytes_consumed / (width * ENC_BYTES_PER_PIXEL);
+    let nbytes_useful_consumed = complete_rows * width * ENC_BYTES_PER_PIXEL;
+
+    let ratio = 100_f64 * (nbytes_produced as f64 / nbytes_useful_consumed as f64);
     CompressionRatio::observe(ratio);
 
-    curr_loc.y += complete_rows_consumed;
+    curr_loc.y += complete_rows;
     if curr_loc.y >= raw_data.len_of(Y_AXIS) {
         curr_loc.y = 0;
         curr_loc.x += width;
     }
 
-    enc_data.truncate(compressor.total_out() as usize);
-    (enc_data.freeze(), Size::new(width, complete_rows_consumed))
+    (enc_data.freeze(), Size::new(width, complete_rows))
 }
 
 fn encode(
     codec: Codec,
     raw_data: ArrayView2<RawPixel>,
     max_bytes_per_msg: usize,
-) -> impl Iterator<Item = (Bytes, Point, Size, Codec)> + '_ {
+) -> impl Iterator<Item = (Bytes, Point, Size, Codec)> + Send + '_ {
     let mut curr_loc = Point::new(0, 0);
 
     std::iter::repeat_with(move || {
@@ -212,20 +205,17 @@ pub struct Encoder<S: State> {
     ct: CancellationToken,
 }
 
-#[derive(State, Debug)]
-pub struct Created<AsyncDuplex>
-where
-    AsyncDuplex: AsyncSender<Message = mm_s2c::Message> + AsyncReceiver<Message = mm_c2s::Message>,
-{
-    send_recv: AsyncDuplex,
+#[derive(State)]
+pub struct Created {
+    id: u32,
     codec: Codec,
-    decoder: Decoder,
     location: Location,
     dimension: Dimension,
     fb_rx: mpsc::UnboundedReceiver<Arc<FramebufferUpdate>>,
-    missed_frame_rx: mpsc::UnboundedReceiver<u64>,
+    missed_frame_rx: mpsc::Receiver<u64>,
     acked_frame_rx: mpsc::Receiver<u64>,
-    fc_handle: flow_control::FlowControlHandle,
+    fbu_tx: mpsc::Sender<Vec<mm::FramebufferUpdate>>,
+    synthetic_missed_frame_rx: mpsc::UnboundedReceiver<u64>,
 }
 
 #[derive(State, Debug)]
@@ -241,36 +231,33 @@ impl SelfTransitionable for Encoder<Terminated> {}
 pub struct Channels {
     pub acked_frame_tx: mpsc::Sender<u64>,
     pub fb_tx: mpsc::UnboundedSender<Arc<FramebufferUpdate>>,
-    pub missed_frame_tx: mpsc::UnboundedSender<u64>,
+    pub missed_frame_tx: mpsc::Sender<u64>,
 }
 
-impl<AsyncDuplex> Encoder<Created<AsyncDuplex>>
-where
-    AsyncDuplex: AsyncSender<Message = mm_s2c::Message> + AsyncReceiver<Message = mm_c2s::Message>,
-{
+impl Encoder<Created> {
     pub fn new(
-        decoder: &Decoder,
+        id: u32,
         location: &Location,
         dimension: &Dimension,
-        send_recv: AsyncDuplex,
         codec: Codec,
-        fc_handle: flow_control::FlowControlHandle,
+        fbu_tx: mpsc::Sender<Vec<mm::FramebufferUpdate>>,
+        synthetic_missed_frame_rx: mpsc::UnboundedReceiver<u64>,
     ) -> (Self, Channels) {
         let (fb_tx, fb_rx) = mpsc::unbounded_channel();
-        let (missed_frame_tx, missed_frame_rx) = mpsc::unbounded_channel();
+        let (missed_frame_tx, missed_frame_rx) = mpsc::channel(1);
         let (acked_frame_tx, acked_frame_rx) = mpsc::channel(1);
 
         let enc = Encoder {
             state: Created {
-                send_recv,
+                id,
                 codec,
-                decoder: decoder.clone(),
                 location: location.clone(),
                 dimension: dimension.clone(),
                 fb_rx,
                 missed_frame_rx,
                 acked_frame_rx,
-                fc_handle,
+                fbu_tx,
+                synthetic_missed_frame_rx,
             },
             ct: CancellationToken::new(),
         };
@@ -314,13 +301,13 @@ mod box2d {
         /// complex case:
         ///
         /// - Simple case 1: `new` does not intersect any existing boxes -> add `new` to the set
-        /// without modification
+        ///   without modification
         /// - Simple case 2: `new` is completely contained within one of the existing boxes -> do
-        /// not add `new` to the set
+        ///   not add `new` to the set
         /// - Simple case 3: `new` completely contains all existing boxes -> remove all existing
-        /// boxes and just retain `new` in the set
+        ///   boxes and just retain `new` in the set
         /// - Complex case: `new` intersects some number of existing boxes, but does not contain
-        /// all of them -> use the following algorithm:
+        ///   all of them -> use the following algorithm:
         ///
         /// Define a set of boxes S which contains only `new`
         /// For each existing box E in the set of existing boxes:
@@ -749,16 +736,16 @@ struct CachedFramebuffer {
     size: Size,
     dirty_tx: watch::Sender<()>,
     front: TrackingBuffer,
-    back: TrackingBuffer,
+    back: Mutex<TrackingBuffer>,
 }
 
 impl CachedFramebuffer {
-    fn new(_decoder: &Decoder, location: &Location, dimension: &Dimension) -> Self {
+    fn new(location: &Location, dimension: &Dimension) -> Self {
         let origin = Point::new(location.x_position as usize, location.y_position as usize);
         let size = Size::new(dimension.width as usize, dimension.height as usize);
         let front = TrackingBuffer::new(size);
-        let mut back = TrackingBuffer::new(size);
-        back.is_fully_damaged = true;
+        let mut back = Mutex::new(TrackingBuffer::new(size));
+        back.get_mut().is_fully_damaged = true;
         let (dirty_tx, _) = watch::channel(());
         CachedFramebuffer {
             origin,
@@ -780,39 +767,39 @@ impl CachedFramebuffer {
         }
     }
 
-    fn update(&mut self, fb_update: Arc<FramebufferUpdate>) {
+    fn update(&self, fb_update: Arc<FramebufferUpdate>) {
         if let Some((screen_relative_loc, new)) = fb_update.get_intersecting_data(&self.rect()) {
             let encoder_relative_loc = (screen_relative_loc - self.origin).to_point();
 
-            self.back.update(encoder_relative_loc, new);
+            self.back.lock().update(encoder_relative_loc, new);
             self.dirty_tx.send_replace(());
         }
     }
 
     fn flip(&mut self) {
+        let back = self.back.get_mut();
         self.front.damaged_areas.clear();
-        self.front.stale_areas = self.back.stale_areas.clone();
-
-        if self.back.is_fully_damaged {
-            self.front.data.assign(&self.back.data);
+        self.front.stale_areas = back.stale_areas.clone();
+        if back.is_fully_damaged {
+            self.front.data.assign(&back.data);
             self.front.is_fully_damaged = true;
         } else {
-            for damaged_area in &self.back.damaged_areas {
+            for damaged_area in &back.damaged_areas {
                 let shape = s![
                     damaged_area.min.x..damaged_area.max.x,
                     damaged_area.min.y..damaged_area.max.y
                 ];
                 let mut front_data = self.front.data.slice_mut(shape);
-                let back_data = self.back.data.slice(shape);
+                let back_data = back.data.slice(shape);
                 front_data.assign(&back_data);
                 self.front.damaged_areas.add(*damaged_area);
             }
             self.front.is_fully_damaged = false;
         }
-        self.back.clear();
+        back.clear();
     }
 
-    fn mark_stale(&mut self, stale: &Box2D) {
+    fn mark_stale(&self, stale: &Box2D) {
         assert!(
             Box2D {
                 min: Point::new(0, 0),
@@ -823,11 +810,11 @@ impl CachedFramebuffer {
             stale,
             self.size
         );
-        self.back.mark_stale(*stale);
+        self.back.lock().mark_stale(*stale);
         self.dirty_tx.send_replace(());
     }
 
-    fn requires_updates(&self) -> impl Iterator<Item = (Point, ArrayView2<RawPixel>)> {
+    fn requires_updates(&self) -> impl Iterator<Item = (Point, ArrayView2<RawPixel>)> + Send {
         let mut set = if self.front.is_fully_damaged {
             box2d::Set::with_initial_box(Rect::new(Point::new(0, 0), self.size).to_box2d())
         } else {
@@ -846,13 +833,7 @@ impl CachedFramebuffer {
     }
 }
 
-impl<AsyncDuplex> AsyncTryTransitionable<Running, Terminated> for Encoder<Created<AsyncDuplex>>
-where
-    AsyncDuplex: AsyncSender<Message = mm_s2c::Message>
-        + AsyncReceiver<Message = mm_c2s::Message>
-        + Send
-        + Sync,
-{
+impl AsyncTryTransitionable<Running, Terminated> for Encoder<Created> {
     type SuccessStateful = Encoder<Running>;
     type FailureStateful = Encoder<Terminated>;
     type Error = anyhow::Error;
@@ -860,78 +841,84 @@ where
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let in_flight = Arc::new(Mutex::new(BTreeMap::<u64, (Point, Size)>::new()));
-        let responsible_sequence_nos = Arc::new(Mutex::new(Array2::<u64>::zeros((
-            self.state.dimension.width as usize,
-            self.state.dimension.height as usize,
-        ))));
-
-        let decoder = self.state.decoder.clone();
         let location = self.state.location.clone();
         let dimension = self.state.dimension.clone();
 
-        let cached_fb = Arc::new(Mutex::new(CachedFramebuffer::new(
-            &decoder, &location, &dimension,
-        )));
-        let (dispatch_tx, dispatch_rx): (
-            mpsc::Sender<Vec<(Location, Codec, Vec<u8>, Dimension)>>,
-            _,
-        ) = mpsc::channel(3);
-        let (synthetic_missed_frame_tx, synthetic_missed_frame_rx) =
-            mpsc::unbounded_channel::<u64>();
+        let in_flight = Arc::new(RwLock::new(BTreeMap::<u64, (Point, Size)>::new()));
+        let responsible_sequences = Arc::new(RwLock::new(Array2::<u64>::zeros((
+            self.state.dimension.width as usize,
+            self.state.dimension.height as usize,
+        ))));
+        let cached_fb = Arc::new(RwLock::new(CachedFramebuffer::new(&location, &dimension)));
 
         let mut ack_subtask: JoinHandle<anyhow::Result<()>> = {
             let mut acked_frame_stream = ReceiverStream::new(self.state.acked_frame_rx).fuse();
-            let missed_frame_stream =
-                UnboundedReceiverStream::new(self.state.missed_frame_rx).fuse();
-            let synthetic_missed_frame_stream =
-                UnboundedReceiverStream::new(synthetic_missed_frame_rx).fuse();
-            let mut mfr_stream = stream::select(missed_frame_stream, synthetic_missed_frame_stream);
-            let cached_fb = cached_fb.clone();
             let in_flight = in_flight.clone();
-            let responsible_sequence_nos = responsible_sequence_nos.clone();
             let ct = self.ct.clone();
             let mut max_acked_so_far = 0;
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
-                        biased;
                         _ = ct.cancelled() => {
                             log::trace!("Ack subtask cancelled");
                             break Ok(())
                         }
                         Some(acked_frame_seq) = acked_frame_stream.next() => {
-                            match acked_frame_seq.cmp(&max_acked_so_far) {
-                                Ordering::Greater => {
-                                    let mut in_flight_locked = in_flight.lock();
-                                    in_flight_locked.remove(&acked_frame_seq);
-                                    MutexGuard::unlock_fair(in_flight_locked);
-                                    max_acked_so_far = acked_frame_seq;
-                                },
-                                Ordering::Less => {
-                                    log::warn!("Received ack for {} before {}", max_acked_so_far, acked_frame_seq);
-                                }
-                                Ordering::Equal => ()
+                            if acked_frame_seq > max_acked_so_far {
+                                let mut in_flight = in_flight.write();
+                                in_flight.remove(&acked_frame_seq);
+                                RwLockWriteGuard::unlock_fair(in_flight);
+                                max_acked_so_far = acked_frame_seq;
+                            } else if acked_frame_seq < max_acked_so_far {
+                                log::warn!("Received ack for {} before {}", max_acked_so_far, acked_frame_seq);
                             }
                         }
+                        else => break Err(anyhow!("Ack subtask futures exhausted"))
+                    }
+                }
+            })
+        };
+
+        let mut mfr_subtask: JoinHandle<anyhow::Result<()>> = {
+            let missed_frame_stream = ReceiverStream::new(self.state.missed_frame_rx).fuse();
+            let synthetic_missed_frame_stream =
+                UnboundedReceiverStream::new(self.state.synthetic_missed_frame_rx).fuse();
+            let mut mfr_stream = stream::select(missed_frame_stream, synthetic_missed_frame_stream);
+            let cached_fb = cached_fb.clone();
+            let in_flight = in_flight.clone();
+            let responsible_sequences = responsible_sequences.clone();
+            let ct = self.ct.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = ct.cancelled() => {
+                            log::trace!("MFR subtask cancelled");
+                            break Ok(())
+                        }
                         Some(missed_frame) = mfr_stream.next() => {
-                            let in_flight_locked = in_flight.lock();
-                            if let Some((loc, dim)) = in_flight_locked.get(&missed_frame) {
-                                let responsible_sequence_nos_locked = responsible_sequence_nos.lock();
-                                if responsible_sequence_nos_locked
+                            let mut in_flight = in_flight.write();
+
+                            if let Some((loc, dim)) = in_flight.get(&missed_frame) {
+                                let responsible_sequences = responsible_sequences.read();
+                                if responsible_sequences
                                     .slice(s![loc.x..loc.x + dim.width, loc.y..loc.y+dim.height])
                                     .iter()
                                     .any(|responsible| responsible == &missed_frame)
                                 {
-                                    let mut cached_fb_locked = cached_fb.lock();
-                                    cached_fb_locked.mark_stale(&Rect::new(*loc, *dim).to_box2d());
-                                    MutexGuard::unlock_fair(cached_fb_locked);
+                                    let cached_fb = cached_fb.read();
+                                    cached_fb.mark_stale(&Rect::new(*loc, *dim).to_box2d());
+                                    RwLockReadGuard::unlock_fair(cached_fb);
+                                    log::debug!("[Encoder {}] MFR causing {:?} to be marked stale", self.state.id, Rect::new(*loc, *dim));
+                                } else {
+                                    in_flight.remove(&missed_frame);
+                                    log::debug!("[Encoder {}] MFR {} being tossed, area already overwritten", self.state.id, missed_frame);
                                 }
-                                MutexGuard::unlock_fair(responsible_sequence_nos_locked);
+                                RwLockReadGuard::unlock_fair(responsible_sequences);
                             }
-                            MutexGuard::unlock_fair(in_flight_locked);
+                            RwLockWriteGuard::unlock_fair(in_flight);
                         }
-                        else => break Err(anyhow!("Ack subtask futures exhausted"))
+                        else => break Err(anyhow!("MFR subtask futures exhausted"))
                     }
                 }
             })
@@ -950,9 +937,9 @@ where
                             break Ok(());
                         }
                         Some(fb_update) = fb_stream.next() => {
-                            let mut cached_fb_locked = cached_fb.lock();
-                            cached_fb_locked.update(fb_update);
-                            MutexGuard::unlock_fair(cached_fb_locked);
+                            let cached_fb = cached_fb.read();
+                            cached_fb.update(fb_update);
+                            RwLockReadGuard::unlock_fair(cached_fb);
                         }
                         else => break Err(anyhow!("Damage subtask futures exhausted"))
                     }
@@ -960,157 +947,13 @@ where
             })
         };
 
-        let mut dispatch_subtask: JoinHandle<anyhow::Result<()>> = {
-            let mut send_recv = self.state.send_recv;
-            let in_flight = in_flight.clone();
-            let responsible_sequence_nos = responsible_sequence_nos.clone();
-            let mut tail_fbu_timeout: JoinHandle<u64> =
-                tokio::task::spawn(futures::future::pending());
-
-            let mut sequence_no = 0_u64;
-
-            let ct = self.ct.clone();
-            let fc_handle = self.state.fc_handle;
-            tokio::spawn(async move {
-                let mut dispatch_stream = ReceiverStream::new(dispatch_rx).fuse();
-
-                'select: loop {
-                    tokio::select! {
-                        biased;
-                        _ = ct.cancelled() => {
-                            log::info!("Dispatch task cancelled");
-                            break Ok(());
-                        }
-                        mc_msg_res = send_recv.receive() => {
-                            match mc_msg_res {
-                                Ok(mm_c2s::Message::MediaKeepalive(mk)) => {
-                                    log::trace!("Received and ignored {:?}", mk);
-                                }
-                                Err(err) => {
-                                    log::error!("Failed to receive message on media channel: {:?}", err);
-                                }
-                            }
-                        }
-                        Some(mut updates) = dispatch_stream.next() => {
-                            while let Some(update) = updates.pop() {
-                                let mut next = update;
-                                let mut rus_raw: Vec<(Location, Codec, Vec<u8>, Dimension)> = vec![];
-                                'collector: loop {
-                                    let next_len = rus_raw.iter()
-                                        .chain(std::iter::once(&next))
-                                        .map(|(_, _, data, _)| data.len())
-                                        .sum::<usize>();
-                                    if next_len <= MAX_BYTES_PER_MESSAGE {
-                                       rus_raw.push(next);
-                                    } else {
-                                       updates.push(next);
-                                       break 'collector;
-                                    }
-
-                                    next = match updates.pop() {
-                                        Some(ru) => ru,
-                                        None => break 'collector,
-                                    };
-                                }
-
-                                let mut in_flight_locked = in_flight.lock();
-                                let mut responsible_sequence_nos_locked = responsible_sequence_nos.lock();
-                                let mut old_sequence_nos = LinearSet::new();
-                                let mut rus = vec![mm::RectangleUpdate::default(); rus_raw.len()];
-
-                                for (ref mut ru, (location, codec, data, dimension)) in rus.iter_mut().zip(rus_raw) {
-                                    let origin = Point::new(location.x_position as usize, location.y_position as usize);
-                                    let size = Size::new(dimension.width as usize, dimension.height as usize);
-                                    let shape = s![
-                                            origin.x..origin.x + size.width,
-                                            origin.y..origin.y + size.height,
-                                        ];
-
-                                    ru.sequence_id = sequence_no;
-                                    ru.location = Some(location);
-                                    ru.rectangle = Some(mm::Rectangle {
-                                        codec: codec.into(),
-                                        data,
-                                        dimension: Some(dimension),
-                                    });
-
-                                    old_sequence_nos.extend(responsible_sequence_nos_locked.slice(shape));
-                                    responsible_sequence_nos_locked.slice_mut(shape).assign(&arr0(sequence_no));
-
-                                    in_flight_locked.insert(sequence_no, (origin, size));
-                                    sequence_no += 1;
-                                }
-
-                                for old_sequence_no in old_sequence_nos {
-                                    if let Entry::Occupied(entry) = in_flight_locked.entry(old_sequence_no) {
-                                        let (origin, size) = entry.get();
-                                        let shape = s![origin.x..origin.x + size.width, origin.y..origin.y+size.height];
-                                        if responsible_sequence_nos_locked
-                                            .slice(shape)
-                                            .iter()
-                                            .all(|responsible| responsible != &old_sequence_no)
-                                        {
-                                            entry.remove();
-                                        }
-                                    }
-                                }
-                                MutexGuard::unlock_fair(responsible_sequence_nos_locked);
-                                MutexGuard::unlock_fair(in_flight_locked);
-                                let rus_count = rus.len();
-
-                                let mut message: mm_s2c::Message = mm::FramebufferUpdate::new(rus, u64::MAX, None).into();
-                                match fc_handle.request_to_send(message.encoded_len()).await {
-                                    Ok((window_id, latency_timestamp)) => match message {
-                                        mm_s2c::Message::FramebufferUpdate(ref mut fbu) => {
-                                            fbu.window_id = window_id;
-                                            fbu.latency_timestamp = latency_timestamp.map(|t| t.into());
-                                        },
-                                    },
-                                    Err(e) => break 'select Err(e),
-                                };
-
-                                if let Err(e) = send_recv.send(message).await {
-                                    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                                        if let Some(raw_os_error) = io_err.raw_os_error() {
-                                            if raw_os_error == 90 { /* Message too big */
-                                                log::warn!("Message too big");
-                                                deq_group!(DISPATCH_QUEUE, id: decoder.port, rus_count);
-                                                continue;
-                                            }
-                                        }
-                                    } else {
-                                        deq_group!(DISPATCH_QUEUE, id: decoder.port, rus_count);
-                                        break 'select Err(e);
-                                    }
-                                } else {
-                                    // Each RectangleUpdate is one "packet sent"
-                                    aperturec_metrics::builtins::packet_sent(rus_count);
-                                    FramebufferUpdatesSent::inc();
-                                    deq_group!(DISPATCH_QUEUE, id: decoder.port, rus_count);
-                                    const TAIL_FBU_RTT: Duration = Duration::from_millis(100);
-                                    tail_fbu_timeout = tokio::spawn(async move {
-                                        tokio::time::sleep(TAIL_FBU_RTT).await;
-                                        sequence_no - 1
-                                    });
-                                }
-                            }
-                        }
-                        Ok(timed_out_seq_no) = &mut tail_fbu_timeout, if !tail_fbu_timeout.is_finished() => {
-                            synthetic_missed_frame_tx.send(timed_out_seq_no)
-                                .expect("Failed to generated synthetic MFR");
-                        }
-                        else => break Err(anyhow!("All futures exhaused in dispatch task"))
-                    }
-                }
-            })
-        };
-
         let mut encoding_subtask: JoinHandle<anyhow::Result<()>> = {
             let cached_fb = cached_fb.clone();
-            let mut dirty_fb_watch = cached_fb.lock().dirty_watch();
+            let mut dirty_fb_watch = cached_fb.read().dirty_watch();
             let ct = self.ct.clone();
 
             tokio::spawn(async move {
+                let sequence = Arc::new(AtomicU64::new(0));
                 loop {
                     tokio::select! {
                         biased;
@@ -1118,31 +961,69 @@ where
                             log::debug!("encoding subtask cancelled");
                             break Ok(());
                         }
-                        (Ok(permit), ..) = join(dispatch_tx.reserve(), dirty_fb_watch.changed()) => {
-                            let mut cached_fb_locked = cached_fb.lock();
-                            cached_fb_locked.flip();
-                            let updates = cached_fb_locked
-                                .requires_updates()
-                                .flat_map(|(damage_origin, data)| {
-                                    encode(self.state.codec, data, MAX_BYTES_PER_MESSAGE)
-                                        .map(move |(bytes, damage_relative_loc, dim, codec)| {
-                                            let encoder_relative_loc = damage_relative_loc + damage_origin.to_vector();
-                                            (bytes, encoder_relative_loc, dim, codec)
-                                        })
-                                    })
-                                .map(|(bytes, encoder_relative_loc, dim, codec)| {
-                                    (
-                                        Location::new(encoder_relative_loc.x as u64, encoder_relative_loc.y as u64),
-                                        codec,
-                                        bytes.to_vec(),
-                                        Dimension::new(dim.width as u64, dim.height as u64)
-                                    )
-                                })
-                                .collect::<Vec<_>>();
-                            MutexGuard::unlock_fair(cached_fb_locked);
+                        (Ok(_), Ok(permit)) = futures::future::join(dirty_fb_watch.changed(), self.state.fbu_tx.reserve()) => {
+                            cached_fb.write().flip();
 
-                            enq_group!(DISPATCH_QUEUE, id: decoder.port, updates.len());
-                            permit.send(updates);
+                            let fbus = {
+                                let cached_fb = cached_fb.clone();
+                                let sequence = sequence.clone();
+                                let fbus_res = tokio::task::spawn_blocking(move || {
+                                    let cached_fb = cached_fb.read();
+                                    let fbus = cached_fb
+                                        .requires_updates()
+                                        .flat_map(|(damage_origin, data)| {
+                                            encode(self.state.codec, data, channel::transport::datagram::MAX_SIZE)
+                                                .map(move |(bytes, damage_relative_loc, dim, codec)| {
+                                                    let encoder_relative_loc = damage_relative_loc + damage_origin.to_vector();
+                                                    (bytes, encoder_relative_loc, dim, codec)
+                                                })
+                                        })
+                                        .map(|(data, encoder_relative_loc, dim, codec)| {
+                                            mm::FramebufferUpdate {
+                                                decoder_id: self.state.id,
+                                                sequence: sequence.fetch_add(1, Ordering::Relaxed),
+                                                window_id: 0,
+                                                latency_timestamp: None,
+                                                codec: codec.into(),
+                                                location:  Some(Location::new(encoder_relative_loc.x as u64, encoder_relative_loc.y as u64)),
+                                                dimension: Some(Dimension::new(dim.width as u64, dim.height as u64)),
+                                                data: data.to_vec()
+                                            }
+                                        })
+                                        .collect::<Vec<_>>();
+                                    RwLockReadGuard::unlock_fair(cached_fb);
+                                    fbus
+                                }).await;
+
+                                match fbus_res {
+                                    Ok(fbus) => fbus,
+                                    Err(e) => break Err(anyhow!("Encoding panicked: {}", e)),
+                                }
+                            };
+
+                            let mut in_flight = in_flight.write();
+                            let mut responsible_sequences = responsible_sequences.write();
+                            for mm::FramebufferUpdate { location, dimension, sequence, .. } in &fbus {
+                                let location = location.as_ref().unwrap();
+                                let dimension = dimension.as_ref().unwrap();
+
+                                let origin = Point::new(location.x_position as usize, location.y_position as usize);
+                                let size = Size::new(dimension.width as usize, dimension.height as usize);
+                                let existing = in_flight.insert(*sequence, (origin, size));
+                                if let Some(existing) = existing {
+                                    log::warn!("[Encoder {}] Existing entry in in_flight! {:?}", self.state.id, existing);
+                                }
+
+                                let shape = s![
+                                    origin.x..origin.x + size.width,
+                                    origin.y..origin.y + size.height,
+                                ];
+                                responsible_sequences.slice_mut(shape).assign(&arr0(*sequence));
+                            }
+                            RwLockWriteGuard::unlock_fair(in_flight);
+                            RwLockWriteGuard::unlock_fair(responsible_sequences);
+
+                            permit.send(fbus);
                         }
                     }
                 }
@@ -1175,17 +1056,6 @@ where
                             ct.cancel();
                         }
                     }
-                    dispatch_subtask_res = &mut dispatch_subtask, if !dispatch_subtask.is_finished() => {
-                        let err = match dispatch_subtask_res {
-                            Ok(Err(e)) => e,
-                            Err(e) => e.into(),
-                            _ => continue,
-                        };
-                        if !ct.is_cancelled() {
-                            log::error!("DISPATCH exited with error: {}", err);
-                            ct.cancel();
-                        }
-                    }
                     encoding_subtask_res = &mut encoding_subtask, if !encoding_subtask.is_finished() => {
                         let err = match encoding_subtask_res {
                             Ok(Err(e)) => e,
@@ -1194,6 +1064,17 @@ where
                         };
                         if !ct.is_cancelled() {
                             log::error!("ENCODING exited with error: {}", err);
+                            ct.cancel();
+                        }
+                    }
+                    mfr_subtask_res = &mut mfr_subtask, if !mfr_subtask.is_finished() => {
+                        let err = match mfr_subtask_res {
+                            Ok(Err(e)) => e,
+                            Err(e) => e.into(),
+                            _ => continue,
+                        };
+                        if !ct.is_cancelled() {
+                            log::error!("MFR exited with error: {}", err);
                             ct.cancel();
                         }
                     }
@@ -1264,13 +1145,7 @@ impl AsyncTransitionable<Terminated> for Encoder<Running> {
     }
 }
 
-impl<AsyncDuplex> AsyncTransitionable<Terminated> for Encoder<Created<AsyncDuplex>>
-where
-    AsyncDuplex: AsyncSender<Message = mm_s2c::Message>
-        + AsyncReceiver<Message = mm_c2s::Message>
-        + Send
-        + Sync,
-{
+impl AsyncTransitionable<Terminated> for Encoder<Created> {
     type NextStateful = Encoder<Terminated>;
 
     async fn transition(self) -> Self::NextStateful {
@@ -1296,8 +1171,9 @@ mod test {
     #[test]
     fn simple_encode_raw() {
         let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
-        let vec: Vec<_> = encode(Codec::Raw, raw_data, MAX_BYTES_PER_MESSAGE).collect();
-        assert_eq!(vec.len(), 10);
+        let vec: Vec<_> =
+            encode(Codec::Raw, raw_data, channel::transport::datagram::MAX_SIZE).collect();
+        assert_eq!(vec.len(), 14);
         let enc_data: Vec<_> = vec.into_iter().flat_map(|(curr, ..)| curr).collect();
         for (i, chunk) in enc_data.chunks(3).enumerate() {
             assert_eq!(chunk[0], DATA[i].blue);
@@ -1309,8 +1185,13 @@ mod test {
     #[test]
     fn simple_encode_zlib() {
         let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
-        let vec: Vec<_> = encode(Codec::Zlib, raw_data, MAX_BYTES_PER_MESSAGE).collect();
-        assert_eq!(vec.len(), 2);
+        let vec: Vec<_> = encode(
+            Codec::Zlib,
+            raw_data,
+            channel::transport::datagram::MAX_SIZE,
+        )
+        .collect();
+        assert_eq!(vec.len(), 1);
 
         let dec_data: Vec<_> = vec
             .into_iter()

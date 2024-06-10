@@ -9,16 +9,31 @@ aperturec-state-machine = { path = "../state_machine" }
 aperturec-metrics = { path = "../metrics" }
 aperturec-trace = { path = "../trace" }
 anyhow = "1.0"
-once_cell = { version = "1.19", optional = true }
-openssl = "0.10"
-prost = "0.12"
+bytes = "1.6"
+derive_builder = "0.12"
 futures = "0.3"
-tokio = { version = "1.29", features = ["full"] }
+once_cell = { version = "1.19", optional = true }
+openssl = { version = "0.10" }
+pin-project = "1.1"
+prost = "0.12"
+prost-types = "0.12"
+s2n-tls-sys = "0.2"
+tokio = { version = "1.37", features = ["full"] }
 trait-variant = "0.1"
+
+[dependencies.s2n-quic]
+version = "1.37"
+default-features = false
+features = ["provider-address-token-default", "provider-tls-s2n", "unstable-provider-datagram"]
+
+[dependencies.s2n-tls]
+version = "0.2"
+features = ["fips"]
 
 [dev-dependencies]
 aperturec-channel = { path = ".", features = ["test-tls-material"] }
 prost-types = "0.12"
+rand = "0.8"
 
 [features]
 test-tls-material = ["once_cell"]

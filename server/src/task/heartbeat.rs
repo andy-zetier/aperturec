@@ -8,7 +8,6 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use linear_map::set::LinearSet;
 use std::time::Duration;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time;
@@ -49,7 +48,7 @@ impl Task<Created> {
         hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
         cc_send_tx: mpsc::Sender<cm_s2c::Message>,
     ) -> Self {
-        let task = Task {
+        Task {
             state: Created {
                 cc_send_tx,
                 hb_req_interval,
@@ -57,8 +56,7 @@ impl Task<Created> {
                 hb_resp_rx,
                 acked_seq_tx,
             },
-        };
-        task
+        }
     }
 }
 
@@ -100,7 +98,21 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                         log::info!("heartbeat task cancelled");
                         break Ok(());
                     }
+                    _ = hb_req_interval.tick() => {
+                        hb_id += 1;
+                        let req = cm::HeartbeatRequest::new(hb_id);
+                        metrics::rtt_outgoing(hb_id);
+                        self.state.cc_send_tx.send(req.into()).await?;
+
+                        unacked_hb_reqs.insert(hb_id);
+                        let task_hb_id = hb_id;
+                        hb_resp_timers.push(tokio::spawn(async move {
+                            time::sleep(self.state.hb_resp_interval).await;
+                            task_hb_id
+                        }));
+                    }
                     Some(hb_resp) = hb_resp_stream.next() => {
+                        log::trace!("Received hb_resp: {:?}", hb_resp);
                         if !unacked_hb_reqs.contains(&hb_resp.heartbeat_id) {
                             log::warn!("Received unsolicied HB response {:?}", hb_resp);
                         } else {
@@ -122,19 +134,6 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                             log::trace!("Sent server goodbye message");
                             break Err(anyhow!("Did not receive heartbeat response for {:?} in required interval {:?}", expired_hb_resp_id, self.state.hb_resp_interval));
                         }
-                    }
-                    _ = hb_req_interval.tick() => {
-                        hb_id += 1;
-                        let req = cm::HeartbeatRequest::new(hb_id);
-                        metrics::rtt_outgoing(hb_id);
-                        self.state.cc_send_tx.send(req.into()).await?;
-
-                        unacked_hb_reqs.insert(hb_id);
-                        let task_hb_id = hb_id;
-                        hb_resp_timers.push(tokio::spawn(async move {
-                            time::sleep(self.state.hb_resp_interval).await;
-                            task_hb_id
-                        }));
                     }
                     else => break Err(anyhow!("All futures exhaused in heartbeat task"))
                 }
@@ -179,10 +178,7 @@ impl AsyncTransitionable<Terminated> for Task<Running> {
 
     async fn transition(self) -> Self::NextStateful {
         self.stop();
-        match Handle::current().block_on(async move {
-            let task = self.state.task;
-            task.await
-        }) {
+        match self.state.task.await {
             Ok(Ok(())) => (),
             Ok(Err(error)) => {
                 log::error!("heartbeat task terminated in failure with error {}", error)
