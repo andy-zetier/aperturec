@@ -1,5 +1,7 @@
 use aperturec_client::{client, gtk3};
-use aperturec_metrics::exporters::{CsvExporter, Exporter, LogExporter, PushgatewayExporter};
+use aperturec_metrics::exporters::{
+    CsvExporter, Exporter, LogExporter, PrometheusExporter, PushgatewayExporter,
+};
 use aperturec_trace::{self as trace, log, Level};
 
 use anyhow::Result;
@@ -81,6 +83,10 @@ struct Args {
     #[arg(long)]
     metrics_log: bool,
 
+    /// Serve Prometheus metrics at the given (optional) bind address. Defaults to 127.0.0.1:8080
+    #[arg(long, num_args = 0..=1, default_value = None, default_missing_value = "127.0.0.1:8080")]
+    metrics_prometheus: Option<String>,
+
     /// Send metric data to Pushgateway instance at the provided URL
     #[arg(long, default_value = None)]
     metrics_pushgateway: Option<String>,
@@ -161,7 +167,12 @@ fn main() -> Result<()> {
     log::debug!("{:#?}", config);
 
     let mut metrics_started = false;
-    if args.metrics_log || args.metrics_csv.is_some() || args.metrics_pushgateway.is_some() {
+
+    if args.metrics_log
+        || args.metrics_csv.is_some()
+        || args.metrics_pushgateway.is_some()
+        || args.metrics_prometheus.is_some()
+    {
         let mut exporters: Vec<Exporter> = vec![];
         if args.metrics_log {
             match LogExporter::new(Level::DEBUG) {
@@ -185,6 +196,13 @@ fn main() -> Result<()> {
                 Err(err) => log::warn!("Failed to setup Pushgateway exporter: {}, disabling", err),
             }
         }
+        if let Some(bind_addr) = args.metrics_prometheus {
+            match PrometheusExporter::new(&bind_addr) {
+                Ok(pe) => exporters.push(Exporter::Prometheus(pe)),
+                Err(err) => log::warn!("Failed to setup Prometheus exporter: {}, disabling", err),
+            }
+        }
+
         aperturec_metrics::MetricsInitializer::default()
             .with_poll_rate_from_secs(3)
             .with_exporters(exporters)

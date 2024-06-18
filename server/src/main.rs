@@ -169,6 +169,10 @@ struct Args {
     #[arg(long, default_value = None)]
     metrics_csv: Option<String>,
 
+    /// Serve Prometheus metrics at the given (optional) bind address. Defaults to 127.0.0.1:8080
+    #[arg(long, num_args = 0..=1, default_value = None, default_missing_value = "127.0.0.1:8080")]
+    metrics_prometheus: Option<String>,
+
     /// Send metric data to Pushgateway instance at the provided URL
     #[arg(long, default_value = None)]
     metrics_pushgateway: Option<String>,
@@ -222,6 +226,7 @@ async fn main() -> Result<()> {
         args.metrics_log,
         args.metrics_csv,
         args.metrics_pushgateway,
+        args.metrics_prometheus,
         std::process::id(),
     );
 

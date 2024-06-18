@@ -7,17 +7,20 @@
 //!
 use crate::Measurement;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use aperturec_trace::{log, Level};
 use chrono::{SecondsFormat, Utc};
-use prometheus::{Gauge, Opts};
+use prometheus::{Encoder, Gauge, Opts, TextEncoder};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, TcpStream};
 use std::str::FromStr;
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, SystemTime};
 use sysinfo::{ProcessExt, System, SystemExt, UserExt};
+use tiny_http::{Response, Server, StatusCode};
 
 use reqwest::blocking::Client;
 use reqwest::{Method, Url};
@@ -33,6 +36,7 @@ pub enum Exporter {
     Log(LogExporter),
     Csv(CsvExporter),
     Pushgateway(PushgatewayExporter),
+    Prometheus(PrometheusExporter),
 }
 
 impl Exporter {
@@ -41,6 +45,7 @@ impl Exporter {
             Exporter::Log(e) => e.do_export(measurements),
             Exporter::Csv(e) => e.do_export(measurements),
             Exporter::Pushgateway(e) => e.do_export(measurements),
+            Exporter::Prometheus(e) => e.do_export(measurements),
         }
     }
 }
@@ -149,6 +154,84 @@ impl CsvExporter {
     }
 }
 
+#[derive(Default)]
+struct PrometheusProxy {
+    gauges: HashMap<String, Gauge>,
+    registration_status: HashMap<String, bool>,
+}
+
+impl PrometheusProxy {
+    fn new() -> Self {
+        Self {
+            gauges: HashMap::new(),
+            registration_status: HashMap::new(),
+        }
+    }
+
+    fn update(&mut self, results: &[Measurement]) -> bool {
+        if self.gauges.is_empty() {
+            self.setup_gauges(results)
+        }
+
+        //
+        // If any of the Measurements backed by Prometheus Gauges have changed in their validity
+        // (ie. r.value.is_none() -> r.value.is_some()), we need to adjust the gauges we have
+        // registered with the registry. There doesn't seem to be a way to see if a gauge is
+        // currently registered, so we keep track of registration_status ourselves.
+        //
+        let mut updated_registrations = false;
+        results.iter().for_each(|r| {
+            let g = self.gauges.get_mut(&r.title);
+
+            if let Some(g) = g {
+                if let Some(r_value) = r.value {
+                    g.set(r_value);
+                }
+
+                let is_registered = *self.registration_status.get(&r.title).unwrap();
+
+                if r.value.is_some() != is_registered {
+                    if !is_registered {
+                        prometheus::default_registry()
+                            .register(Box::new(g.clone()))
+                            .unwrap();
+                    } else {
+                        prometheus::default_registry()
+                            .unregister(Box::new(g.clone()))
+                            .unwrap();
+                    }
+
+                    self.registration_status
+                        .insert(r.title.to_string(), !is_registered);
+                    updated_registrations = true;
+                }
+            }
+        });
+
+        updated_registrations
+    }
+
+    fn setup_gauges(&mut self, ers: &[Measurement]) {
+        ers.iter().for_each(|e| {
+            let gauge_opts = Opts::new(e.title_as_namespaced(), e.help.to_string());
+            let gauge = Gauge::with_opts(gauge_opts).expect("Gauge Create");
+
+            //
+            // This may fail if the Measurement has already been registered with the
+            // default registry. This is expected for macro-generated histogram metrics and allows
+            // native prometheus metrics to be used along with those managed by this crate.
+            //
+            if prometheus::default_registry()
+                .register(Box::new(gauge.clone()))
+                .is_ok()
+            {
+                self.gauges.insert(e.title.to_string(), gauge);
+                self.registration_status.insert(e.title.to_string(), true);
+            }
+        });
+    }
+}
+
 ///
 /// Sends metric data to a Prometheus Pushgateway
 ///
@@ -164,10 +247,9 @@ impl CsvExporter {
 pub struct PushgatewayExporter {
     url: String,
     job_name: String,
-    gauges: HashMap<String, Gauge>,
     groupings: HashMap<String, String>,
-    registration_status: HashMap<String, bool>,
     needs_cleared: bool,
+    prom_proxy: PrometheusProxy,
 }
 
 impl PushgatewayExporter {
@@ -202,55 +284,19 @@ impl PushgatewayExporter {
         Ok(Self {
             url,
             job_name,
-            gauges: HashMap::new(),
             groupings,
-            registration_status: HashMap::new(),
             needs_cleared: false,
+            prom_proxy: PrometheusProxy::new(),
         })
     }
 
     fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
-        if self.gauges.is_empty() {
-            self.setup_gauges(results);
-        }
-
         //
-        // If any of the metrics with gauges have changed in their validity (ie. r.value.is_none()
-        // -> r.value.is_some()), we need to adjust the gauges we have registered with the registry
-        // and clear out the most recently pushed metrics in the Pushgateway before uploading the
-        // adjusted set. There doesn't seem to be a way to see if a gauge is currently registered,
-        // so we keep track of registration_status ourselves.
+        // If any of the Measurements have changed in their validity (ie. r.value.is_none() ->
+        // r.value.is_some()), we need to clear out the most recently pushed metrics in the
+        // Pushgateway before uploading the adjusted set.
         //
-        let mut clear_before_push = false;
-        results.iter().for_each(|r| {
-            let g = self.gauges.get_mut(&r.title);
-
-            if let Some(g) = g {
-                if let Some(r_value) = r.value {
-                    g.set(r_value);
-                }
-
-                let is_registered = *self.registration_status.get(&r.title).unwrap();
-
-                if r.value.is_some() != is_registered {
-                    if !is_registered {
-                        prometheus::default_registry()
-                            .register(Box::new(g.clone()))
-                            .unwrap();
-                    } else {
-                        prometheus::default_registry()
-                            .unregister(Box::new(g.clone()))
-                            .unwrap();
-                    }
-
-                    self.registration_status
-                        .insert(r.title.to_string(), !is_registered);
-                    clear_before_push = true;
-                }
-            }
-        });
-
-        if clear_before_push {
+        if self.prom_proxy.update(results) {
             self.clear_metrics()?;
         }
 
@@ -264,29 +310,6 @@ impl PushgatewayExporter {
 
         self.needs_cleared = true;
         Ok(())
-    }
-
-    //
-    // Called once during the first do_export() to setup the Prometheus gauges and registry
-    //
-    fn setup_gauges(&mut self, ers: &[Measurement]) {
-        ers.iter().for_each(|e| {
-            let gauge_opts = Opts::new(e.title_as_namespaced(), e.help.to_string());
-            let gauge = Gauge::with_opts(gauge_opts).expect("Gauge Create");
-
-            //
-            // This may fail if the Measurement has already been registered with the
-            // default registry. This is expected for macro-generated histogram metrics and allows
-            // native prometheus metrics to be used along with those managed by this crate.
-            //
-            if prometheus::default_registry()
-                .register(Box::new(gauge.clone()))
-                .is_ok()
-            {
-                self.gauges.insert(e.title.to_string(), gauge);
-                self.registration_status.insert(e.title.to_string(), true);
-            }
-        });
     }
 
     fn clear_metrics(&self) -> Result<()> {
@@ -319,12 +342,96 @@ impl Drop for PushgatewayExporter {
     }
 }
 
+///
+/// Hosts metric data for Prometheus
+///
+#[derive(Default)]
+pub struct PrometheusExporter {
+    prom_proxy: PrometheusProxy,
+}
+
+impl PrometheusExporter {
+    pub fn new(bind_addr: &str) -> Result<Self> {
+        const DEFAULT_PORT: u16 = 8080;
+        const DEFAULT_ADDR: Ipv4Addr = Ipv4Addr::LOCALHOST;
+
+        let bind_addr = match bind_addr.rsplit_once(':') {
+            None => format!("{}:{}", bind_addr, DEFAULT_PORT),
+            Some((a, p)) => {
+                if a.is_empty() {
+                    format!("{}:{}", DEFAULT_ADDR, p)
+                } else if p.parse::<u16>().is_err() {
+                    // Presume ipv6 bind address with no port specified
+                    format!("{}:{}", bind_addr, DEFAULT_PORT)
+                } else {
+                    bind_addr.to_string()
+                }
+            }
+        };
+
+        let server = Arc::new(Server::http(bind_addr).map_err(|e| anyhow!(e))?);
+        log::debug!(
+            "Prometheus metrics webserver bound to {}",
+            server.server_addr()
+        );
+
+        thread::spawn(move || {
+            const METRICS_SLUG: &str = "/metrics";
+            let encoder = TextEncoder::new();
+            let header =
+                tiny_http::Header::from_str("Content-Type: text/plain; version=0.0.4").unwrap();
+
+            loop {
+                match server.recv() {
+                    Ok(request) => {
+                        let response = match request.url() {
+                            METRICS_SLUG => {
+                                let mut buffer = vec![];
+                                match encoder
+                                    .encode(&prometheus::default_registry().gather(), &mut buffer)
+                                {
+                                    Ok(()) => Response::from_data(buffer)
+                                        .with_header(header.clone())
+                                        .boxed(),
+                                    Err(e) => {
+                                        log::warn!("Failed to encode Prometheus metrics: {}", e);
+                                        Response::empty(StatusCode(500)).boxed()
+                                    }
+                                }
+                            }
+                            _ => Response::empty(StatusCode(404)).boxed(),
+                        };
+
+                        if let Err(e) = request.respond(response) {
+                            log::warn!("Failed to respond to Prometheus request: {}", e);
+                        }
+                    }
+                    Err(err) => {
+                        log::error!("Prometheus metrics I/O error: {:?}", err);
+                        break;
+                    }
+                }
+            }
+            log::debug!("Prometheus metrics webserver shutting down");
+        });
+
+        Ok(Self {
+            prom_proxy: PrometheusProxy::new(),
+        })
+    }
+
+    fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
+        self.prom_proxy.update(results);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::measurement::Measurement;
-    use rouille::{Response, Server};
     use std::io::Read;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use tempfile::NamedTempFile;
 
@@ -416,27 +523,39 @@ mod test {
 
         let put_request: Arc<Mutex<String>> = Arc::new(Mutex::from(String::new()));
         let delete_request: Arc<Mutex<String>> = Arc::new(Mutex::from(String::new()));
-        let pr_thread = put_request.clone();
-        let dr_thread = delete_request.clone();
+        let server = Arc::new(Server::http("127.0.0.1:0").unwrap());
+        let is_running = Arc::new(AtomicBool::new(true));
 
-        let server = Server::new("127.0.0.1:0", move |request| match request.method() {
-            "PUT" => {
-                let mut s = pr_thread.lock().unwrap();
-                *s = format!("PUT {}", request.url());
-                Response::text("Ok")
-            }
-            "DELETE" => {
-                let mut s = dr_thread.lock().unwrap();
-                *s = format!("DELETE {}", request.url());
-                Response::text("Ok")
-            }
-            _ => Response::empty_404(),
-        })
-        .expect("fake-pushgateway");
+        let _jh = {
+            let server = server.clone();
+            let is_running = is_running.clone();
+            let put_request = put_request.clone();
+            let delete_request = delete_request.clone();
+            thread::spawn(move || {
+                while is_running.load(Ordering::SeqCst) {
+                    if let Ok(Some(request)) = server.recv_timeout(Duration::from_millis(100)) {
+                        let response = match request.method().as_str() {
+                            "PUT" => {
+                                let mut s = put_request.lock().unwrap();
+                                *s = format!("PUT {}", request.url());
+                                Response::from_string("Ok").boxed()
+                            }
+                            "DELETE" => {
+                                let mut s = delete_request.lock().unwrap();
+                                *s = format!("DELETE {}", request.url());
+                                Response::from_string("Ok").boxed()
+                            }
+                            _ => Response::empty(StatusCode(404)).boxed(),
+                        };
 
-        let port = server.server_addr().port();
+                        request.respond(response).unwrap();
+                    }
+                }
+            })
+        };
+
+        let port = server.server_addr().to_ip().unwrap().port();
         let id = std::process::id();
-        let (jh, sender) = server.stoppable();
 
         let mut pge =
             PushgatewayExporter::new(format!("http://127.0.0.1:{}", port), JOB.to_string(), id)
@@ -449,8 +568,7 @@ mod test {
         drop(pge);
 
         // shutdown fake pushgateway
-        let _ = sender.send(());
-        jh.join().expect("join");
+        is_running.store(false, Ordering::SeqCst);
 
         let uri = format!("/metrics/job/{}/", JOB);
         vec!["PUT", "DELETE"]
@@ -466,5 +584,47 @@ mod test {
                     expected
                 );
             });
+    }
+
+    #[test]
+    fn prometheus_exporter() {
+        const URL: &str = "127.0.0.1:8080";
+
+        let mut pe = PrometheusExporter::new(URL).expect("PrometheusExporter");
+        pe.do_export(&generate_measurements()).expect("export");
+
+        let response = Client::builder()
+            .build()
+            .unwrap()
+            .request(
+                Method::GET,
+                Url::from_str(&format!("http://{}/bad_endpoint", URL)).unwrap(),
+            )
+            .send();
+
+        let response = response.unwrap();
+        assert_eq!(response.status().as_str(), "404");
+
+        let response = Client::builder()
+            .build()
+            .unwrap()
+            .request(
+                Method::GET,
+                Url::from_str(&format!("http://{}/metrics", URL)).unwrap(),
+            )
+            .send();
+
+        let response = response.unwrap();
+        let status = response.status();
+        let text = response.text().unwrap();
+
+        assert_eq!(status.as_str(), "200");
+        assert!(
+            text.contains(
+                "# HELP ac_bars All bars available\n# TYPE ac_bars gauge\nac_bars 33.33333"
+            ),
+            "\"{:?}\" ⊉ \"# HELP ac_bars ...\"",
+            text
+        );
     }
 }
