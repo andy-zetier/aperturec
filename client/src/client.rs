@@ -832,12 +832,23 @@ impl Client {
         let window_len = si.window_size as f64;
         let mut window_bytes_recv = 0_usize;
         let mut window_id_current = 0_u64;
+
+        // Window Advance messages are sent after receiving this percentage of window data.
         const WA_TRIGGER_PERCENT: f64 = 0.75;
 
+        //
+        // The window advance timer (wa_timer) ensures a Window Advance message is sent after not
+        // receiving data from the server for a period of time. The timer guards against massive
+        // packet loss where we've received less than WA_TRIGGER_PERCENT but the server has
+        // actually sent the full window length of data. The timer defaults to, and has an upper
+        // bound of, WA_TIMER_MAX. The timer duration is reduced to the most recent Window Advance
+        // Latency measurements as those measurements are made.
+        //
+        const WA_TIMER_MAX: Duration = Duration::from_millis(1000);
+
         self.control_jh = Some(thread::spawn(move || {
-            // Track the last received sequence id for each decoder, this is needed for HBRs
             let mut decoder_seq = BTreeMap::new();
-            let mut wa_timer = CountdownTimer::new(Duration::from_secs(1));
+            let mut wa_timer = CountdownTimer::new(WA_TIMER_MAX);
 
             log::debug!("Control channel started");
             loop {
@@ -927,36 +938,41 @@ impl Client {
                             // Update Flow Control statistics
                             //
                             wa_timer.reset();
-                            if report.window_id >= window_id_current {
-                                window_id_current = report.window_id;
-                                window_bytes_recv += report.update_size;
-                                let fill_percent = window_bytes_recv as f64 / window_len;
 
-                                if let Some(Ok(wa_latency)) = report.latency_timestamp.map(|l| l.elapsed()) {
-                                    wa_timer.reinitialize(min(Duration::from_millis(1000), wa_latency));
-                                }
-
-                                if fill_percent >= WA_TRIGGER_PERCENT {
-                                    let wa = WindowAdvanceBuilder::default()
-                                        .completed_window_id(report.window_id)
-                                        .latency_timestamp(SystemTime::now())
-                                        .build()
-                                        .expect("Failed to build WindowAdvance!");
-                                    match control_tx_tx.send(wa.into()) {
-                                        Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
-                                        _ => {
-                                            log::trace!(
-                                                "Sent WindowAdvance completed {} at {:.2}%",
-                                                report.window_id,
-                                                fill_percent * 100.0);
-                                        }
-                                    };
-
-                                    window_bytes_recv = 0;
-                                    window_id_current += 1;
-                                }
+                            // Ignore data from old windows
+                            if report.window_id < window_id_current {
+                                continue;
                             }
 
+                            window_id_current = report.window_id;
+                            window_bytes_recv += report.update_size;
+                            let fill_percent = window_bytes_recv as f64 / window_len;
+
+                            if let Some(Ok(wa_latency)) = report.latency_timestamp.map(|l| l.elapsed()) {
+                                wa_timer.reinitialize(min(WA_TIMER_MAX, wa_latency));
+                                crate::metrics::WindowAdvanceLatency::update_with(move || {
+                                    wa_latency.as_secs_f64()
+                                });
+                            }
+
+                            if fill_percent >= WA_TRIGGER_PERCENT {
+                                crate::metrics::WindowFillPercent::update(fill_percent);
+                                let wa = WindowAdvanceBuilder::default()
+                                    .completed_window_id(report.window_id)
+                                    .latency_timestamp(SystemTime::now())
+                                    .build()
+                                    .expect("Failed to build WindowAdvance!");
+                                match control_tx_tx.send(wa.into()) {
+                                    Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
+                                    _ => log::trace!(
+                                        "Sent WindowAdvance for window id {}",
+                                        window_id_current
+                                    ),
+                                };
+
+                                window_bytes_recv = 0;
+                                window_id_current = window_id_current.wrapping_add(1);
+                            }
                         },
                         Ok(ControlMessage::UiClosed(gm)) => {
                             control_tx_tx.send(gm.to_client_goodbye(client_id).into())
@@ -988,6 +1004,9 @@ impl Client {
                     },
                     recv(wa_timer.remaining().map(after).unwrap_or(never())) -> _ => {
                         if window_bytes_recv > 0 {
+                            crate::metrics::WindowFillPercent::update_with(move || {
+                                window_bytes_recv as f64 / window_len
+                            });
                             let wa = WindowAdvanceBuilder::default()
                                 .completed_window_id(window_id_current)
                                 .latency_timestamp(SystemTime::now())
@@ -995,16 +1014,15 @@ impl Client {
                                 .expect("Failed to build WindowAdvance!");
                             match control_tx_tx.send(wa.into()) {
                                 Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
-                                _ => {
-                                    log::trace!(
-                                        "Sent WindowAdvance timeout after {:?} at {:.2}%",
-                                        wa_timer.duration,
-                                        (window_bytes_recv as f64 / window_len) * 100.0);
-                                }
+                                _ => log::trace!(
+                                    "Sent WindowAdvance for window id {} TIMEOUT after {:?}",
+                                    window_id_current,
+                                    wa_timer.duration
+                                ),
                             };
 
                             window_bytes_recv = 0;
-                            window_id_current += 1;
+                            window_id_current = window_id_current.wrapping_add(1);
                         }
                     }
 
