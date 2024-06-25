@@ -66,7 +66,6 @@ mod sync_impls {
     ) -> anyhow::Result<()> {
         let nbytes = encode(msg, buf)?;
         transport.write_all(&buf[..nbytes])?;
-        transport.flush()?;
         Ok(())
     }
 }
@@ -111,7 +110,6 @@ mod async_impls {
     ) -> anyhow::Result<()> {
         let nbytes = encode(msg, buf)?;
         transport.write_all(&buf[..nbytes]).await?;
-        transport.flush().await?;
         Ok(())
     }
 }

@@ -1196,6 +1196,9 @@ mod test {
     }
 
     #[test]
+    #[should_panic(
+        expected = "Failed to read ServerInit: The connection was closed because the connection's idle timer expired by the local endpoint"
+    )]
     fn startup() {
         setup();
         let material =
@@ -1225,6 +1228,12 @@ mod test {
         });
 
         let itc = ItcChannels::new(&config);
+
+        //
+        // This call should eventually timeout waiting for a ServerInit. This indicates the Client
+        // successfully generated and sent a ClientInit and failed waiting for a (non-existent)
+        // Server to respond.
+        //
         let _client = Client::startup(&config, &itc);
     }
 }
