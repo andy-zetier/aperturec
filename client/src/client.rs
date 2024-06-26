@@ -1150,6 +1150,8 @@ pub fn run_client(config: Configuration) -> Result<()> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use aperturec_channel::UnifiedServer;
+    use aperturec_protocol::control::ServerInitBuilder;
 
     use std::sync::Once;
 
@@ -1196,9 +1198,6 @@ mod test {
     }
 
     #[test]
-    #[should_panic(
-        expected = "Failed to read ServerInit: The connection was closed because the connection's idle timer expired by the local endpoint"
-    )]
     fn startup() {
         setup();
         let material =
@@ -1224,16 +1223,31 @@ mod test {
             .push(material.certificate);
         let _sthread = thread::spawn(move || {
             let qserver = try_transition!(qserver).expect("server listen");
-            try_transition!(qserver).expect("server ready");
+            let qserver = try_transition!(qserver).expect("server ready");
+            let (mut cc, _ec, _mc, _residual) = qserver.split();
+            let _ = cc.receive().expect("Receive ClientInit");
+            cc.send(
+                ServerInitBuilder::default()
+                    .client_id(7890_u64)
+                    .server_name(String::from("fake quic server"))
+                    .display_size(Dimension::new(800, 600))
+                    .decoder_areas(vec![])
+                    .cursor_bitmaps(vec![])
+                    .build()
+                    .unwrap()
+                    .into(),
+            )
+            .expect("Send ServerInit");
+
+            //
+            // Calling receive() forces the fake quic server thread to block and ensures ServerInit
+            // is delivered to the Client.
+            //
+            let _ = cc.receive().expect("Server receive");
+            panic!("Fake Quic Server Exited!");
         });
 
         let itc = ItcChannels::new(&config);
-
-        //
-        // This call should eventually timeout waiting for a ServerInit. This indicates the Client
-        // successfully generated and sent a ClientInit and failed waiting for a (non-existent)
-        // Server to respond.
-        //
-        let _client = Client::startup(&config, &itc);
+        let _client = Client::startup(&config, &itc).expect("startup");
     }
 }
