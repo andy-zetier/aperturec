@@ -128,6 +128,16 @@ impl Metric for Idle {
 mod test {
     use super::*;
 
+    //
+    // Round Duration to a const number of decimal places
+    //
+    #[inline(always)]
+    fn rd(d: Duration) -> f64 {
+        const DECIMAL_PLACES: u32 = 4;
+        let scale = 10.0_f64.powf(DECIMAL_PLACES as f64);
+        (d.as_secs_f64() * scale).round() / scale
+    }
+
     #[test]
     fn idle_timer() {
         let mut timer = Timer::default();
@@ -143,41 +153,28 @@ mod test {
         assert!(time1.as_secs_f64() > 0.0);
 
         let sleep_duration = Duration::from_millis(1234);
-        timer.start();
-        std::thread::sleep(sleep_duration);
-        let stop_duration = timer.stop();
-        let stop_secs_f64 = (stop_duration.as_secs_f64() * 1000.0).round() / 1000.0;
+        let time0 = Instant::now();
+        timer.start_at(time0);
+        let time1 = timer.stop_at(time0 + sleep_duration);
 
-        // Timer is (roughly (3 decimal places)) equal to the sleep time
-        assert_eq!(sleep_duration.as_secs_f64(), stop_secs_f64);
+        // Timer is equal to sleep_duration
+        assert_eq!(rd(time1), rd(sleep_duration));
 
-        // A stopped timer's elapsed equals stop_duration
-        assert_eq!(timer.elapsed(), stop_duration);
+        // A stopped timer's elapsed equals sleep_duration
+        assert_eq!(rd(timer.elapsed()), rd(sleep_duration));
 
-        timer.start();
-        std::thread::sleep(sleep_duration);
-        let check_duration = timer.elapsed();
-        let check_secs_f64 = (check_duration.as_secs_f64() * 1000.0).round() / 1000.0;
+        let time0 = Instant::now();
+        timer.start_at(time0);
+        let time1 = timer.elapsed_at(&(time0 + sleep_duration));
 
-        // Timer.elapsed() returns the correct time
-        assert_eq!(check_secs_f64, stop_secs_f64 + sleep_duration.as_secs_f64());
+        // Timer elapsed() returns the correct time
+        assert_eq!(rd(time1), rd(sleep_duration));
 
         timer.stop();
         timer.reset();
 
         // Timer.reset() clears the timer
         assert_eq!(Timer::default(), timer);
-
-        timer.start();
-        std::thread::sleep(sleep_duration);
-        let mark = Instant::now();
-        std::thread::sleep(sleep_duration);
-        let elapsed =
-            ((timer.elapsed() - timer.elapsed_at(&mark)).as_secs_f64() * 1000.0).round() / 1000.0;
-
-        // Check elapsed_at correctly calculates the elapsed time up till mark
-        assert_eq!(elapsed, sleep_duration.as_secs_f64());
-        timer.start();
     }
 }
 
