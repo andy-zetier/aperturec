@@ -9,6 +9,89 @@ use openssl::x509::{X509NameBuilder, X509};
 use std::fs;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
+use std::sync::Arc;
+
+use rustls::client::danger::*;
+use rustls::pki_types::*;
+use rustls::Error;
+#[allow(deprecated)]
+use s2n_quic::provider::tls::rustls::rustls;
+
+/// Custom certificate verifier allowing built-in and user-provided certificates
+#[derive(Debug, Default)]
+pub(crate) struct CertVerifier {
+    pub(crate) user_provided: Option<Arc<dyn ServerCertVerifier>>,
+    platform: rustls_platform_verifier::Verifier,
+}
+
+impl ServerCertVerifier for CertVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, Error> {
+        let up_res = self.user_provided.as_ref().map(|v| {
+            v.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+        });
+        if let Some(Ok(up_res)) = up_res {
+            Ok(up_res)
+        } else {
+            self.platform.verify_server_cert(
+                end_entity,
+                intermediates,
+                server_name,
+                ocsp_response,
+                now,
+            )
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        let up_res = self
+            .user_provided
+            .as_ref()
+            .map(|v| v.verify_tls12_signature(message, cert, dss));
+        if let Some(Ok(up_res)) = up_res {
+            Ok(up_res)
+        } else {
+            self.platform.verify_tls12_signature(message, cert, dss)
+        }
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        let up_res = self
+            .user_provided
+            .as_ref()
+            .map(|v| v.verify_tls12_signature(message, cert, dss));
+        if let Some(Ok(up_res)) = up_res {
+            Ok(up_res)
+        } else {
+            self.platform.verify_tls12_signature(message, cert, dss)
+        }
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        let mut schemes = self.platform.supported_verify_schemes();
+        if let Some(user_provided) = self.user_provided.as_ref() {
+            schemes.extend(user_provided.supported_verify_schemes());
+        }
+        schemes.dedup();
+        schemes
+    }
+}
 
 /// TLS material stored in DER form
 pub struct DerMaterial {

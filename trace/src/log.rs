@@ -222,7 +222,7 @@ where
     }
 
     let fmt = tracing_subscriber::fmt::format()
-        .with_ansi(!log_config.is_simple)
+        .with_ansi(!log_config.is_simple && !cfg!(windows))
         .with_level(!log_config.is_simple)
         .with_source_location(!log_config.is_simple)
         .with_line_number(!log_config.is_simple)

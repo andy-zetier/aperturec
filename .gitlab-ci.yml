@@ -228,7 +228,6 @@ cargo:check-build-windows-client:
       optional: true
   artifacts:
     paths: [test_executables, aperturec-$CRATES.exe]
-  allow_failure: true
 
 cargo:doc:
   stage: doc
@@ -267,7 +266,6 @@ package:windows-client:
     - job: cargo:check-build-windows-client
   artifacts:
     paths: [aperturec-client-win.zip]
-  allow_failure: true
 
 package:create-deb:
   stage: package

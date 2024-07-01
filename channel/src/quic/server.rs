@@ -1,16 +1,25 @@
 //! QUIC server types
+use aperturec_protocol as protocol;
 use aperturec_state_machine::*;
+#[cfg(any(test, debug_assertions))]
+use aperturec_trace::log;
 
 use crate::quic::*;
 use crate::transport::{datagram, stream};
-use crate::util::{common_tls_config_builder, new_async_rt, Syncify};
+use crate::util::{new_async_rt, Syncify};
 use crate::*;
 
 use anyhow::{anyhow, Result};
-use s2n_quic::provider::tls::default::Server as TlsProvider;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
+
+#[cfg(any(test, debug_assertions))]
+use rustls::KeyLogFile;
+#[allow(deprecated)]
+use s2n_quic::provider::tls::rustls::{
+    rustls, rustls::ServerConfig as TlsConfig, Server as TlsProvider,
+};
 
 #[derive(Stateful, Debug, SelfTransitionable)]
 #[state(S)]
@@ -123,21 +132,52 @@ impl Builder {
             None => (&*bind_addr, DEFAULT_SERVER_BIND_PORT),
         };
 
-        let mut tls_config_builder = common_tls_config_builder()?;
-        tls_config_builder.load_pem(
-            self.tls_pem_cert
-                .ok_or(anyhow!("no cert provided"))?
-                .as_bytes(),
-            self.tls_pem_private_key
-                .ok_or(anyhow!("no private key provided"))?
-                .as_bytes(),
-        )?;
+        let cert_der = rustls::pki_types::CertificateDer::from(
+            pem::parse(
+                self.tls_pem_cert
+                    .ok_or(anyhow!("no certificate provided"))?,
+            )?
+            .into_contents(),
+        );
+        let key_der = rustls::pki_types::PrivateKeyDer::try_from(
+            pem::parse(
+                self.tls_pem_private_key
+                    .ok_or(anyhow!("no private key provided"))?,
+            )?
+            .into_contents(),
+        )
+        .map_err(|s| anyhow!(s))?;
 
-        let tls_provider = TlsProvider::from_loader(tls_config_builder.build()?);
+        let mut tls_config = TlsConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der)?;
+        tls_config
+            .alpn_protocols
+            .push(protocol::MAGIC.as_bytes().to_vec());
+        #[cfg(any(test, debug_assertions))]
+        {
+            tls_config.key_log = Arc::new(KeyLogFile::new());
+            if tls_config.key_log.will_log("") {
+                log::warn!("Key logging enabled! This should never happen in production!");
+            }
+        }
+
+        #[allow(deprecated)]
+        let tls_provider = TlsProvider::new(tls_config);
 
         let datagram_endpoint = provider::datagram::EndpointBuilder::default().build()?;
+        let io = s2n_quic::provider::io::tokio::Provider::builder()
+            .with_gro_disabled()?
+            .with_gso_disabled()?
+            .with_receive_address(
+                (bind_addr, bind_port)
+                    .to_socket_addrs()?
+                    .next()
+                    .ok_or(anyhow!("socket addr"))?,
+            )?
+            .build()?;
         let quic_server_builder = s2n_quic::Server::builder()
-            .with_io((bind_addr, bind_port))?
+            .with_io(io)?
             .with_tls(tls_provider)?
             .with_datagram(datagram_endpoint)?
             .with_event((

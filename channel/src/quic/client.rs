@@ -5,14 +5,20 @@ use aperturec_trace::log;
 
 use super::*;
 use crate::transport::{datagram, stream};
-use crate::util::{common_tls_config_builder, new_async_rt, Syncify};
+use crate::util::{new_async_rt, Syncify};
 use crate::*;
 
 use anyhow::{anyhow, Result};
-use s2n_quic::provider::tls::default::{config::Config as TlsConfig, Client as TlsProvider};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
+
+#[cfg(any(test, debug_assertions))]
+use rustls::KeyLogFile;
+#[allow(deprecated)]
+use s2n_quic::provider::tls::rustls::{
+    rustls, rustls::client::ClientConfig as TlsConfig, Client as TlsProvider,
+};
 
 #[derive(Stateful, Debug, SelfTransitionable)]
 #[state(S)]
@@ -110,18 +116,35 @@ impl Builder {
             None
         };
 
-        let mut tls_config_builder = common_tls_config_builder()?;
-        tls_config_builder.with_system_certs(true)?;
-        for cert in self.additional_pem_certs {
-            tls_config_builder.trust_pem(cert.as_bytes())?;
+        let _guard = async_rt.as_ref().map(TokioRuntime::enter);
+
+        let mut cert_verifier = tls::CertVerifier::default();
+        if !self.additional_pem_certs.is_empty() {
+            let mut roots = rustls::RootCertStore::empty();
+            for pem in self.additional_pem_certs {
+                let certs =
+                    rustls_pemfile::certs(&mut pem.as_bytes()).collect::<Result<Vec<_>, _>>()?;
+                roots.add_parsable_certificates(certs);
+            }
+            cert_verifier.user_provided =
+                Some(rustls::client::WebPkiServerVerifier::builder(Arc::new(roots)).build()?);
+        }
+        let mut tls_config = TlsConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(cert_verifier))
+            .with_no_client_auth();
+        tls_config
+            .alpn_protocols
+            .push(protocol::MAGIC.as_bytes().to_vec());
+        #[cfg(any(test, debug_assertions))]
+        {
+            tls_config.key_log = Arc::new(KeyLogFile::new());
+            if tls_config.key_log.will_log("") {
+                log::warn!("Key logging enabled! This should never happen in production!");
+            }
         }
 
-        Ok((
-            tls_config_builder.build()?,
-            server_addr,
-            server_port,
-            async_rt,
-        ))
+        Ok((tls_config, server_addr, server_port, async_rt))
     }
 
     /// Build a synchronous variant of the client.
@@ -202,9 +225,14 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
             );
         }
 
-        let make_client = |tls, io, async_rt: &TokioRuntime| {
+        let make_client = |tls, local_ip, async_rt: &TokioRuntime| {
             let _guard = async_rt.enter();
             let dg = provider::datagram::EndpointBuilder::default().build()?;
+            let io = s2n_quic::provider::io::tokio::Provider::builder()
+                .with_gro_disabled()?
+                .with_gso_disabled()?
+                .with_receive_address((local_ip, 0).into())?
+                .build()?;
             Ok::<_, anyhow::Error>(
                 s2n_quic::Client::builder()
                     .with_datagram(dg)?
@@ -223,8 +251,9 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
 
             let client = try_recover!(
                 make_client(
-                    TlsProvider::from_loader(self.state.tls_config.clone()),
-                    (local_ip, 0),
+                    #[allow(deprecated)]
+                    TlsProvider::new(self.state.tls_config.clone()),
+                    local_ip,
                     &self.state.async_rt
                 ),
                 self
@@ -381,7 +410,8 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
 
             let client = try_recover!(
                 make_client(
-                    TlsProvider::from_loader(self.state.tls_config.clone()),
+                    #[allow(deprecated)]
+                    TlsProvider::new(self.state.tls_config.clone()),
                     (local_ip, 0)
                 ),
                 self
