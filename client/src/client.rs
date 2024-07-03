@@ -5,10 +5,10 @@ use aperturec_channel::{
 };
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
-    server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder,
-    ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, DecoderArea,
-    DecoderSequencePair, Endianness, HeartbeatResponseBuilder, MissedFrameReportBuilder, Os,
-    WindowAdvanceBuilder,
+    client_to_server as cm_c2s, server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye,
+    ClientGoodbyeBuilder, ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit,
+    ClientInitBuilder, DecoderArea, DecoderSequencePair, Endianness, HeartbeatResponseBuilder,
+    MissedFrameReportBuilder, Os, WindowAdvanceBuilder,
 };
 use aperturec_protocol::event::{
     button, client_to_server as em_c2s, Button, ButtonStateBuilder, KeyEvent, MappedButton,
@@ -281,6 +281,55 @@ impl CountdownTimer {
         self.reset()
     }
 }
+
+#[derive(Clone, Debug)]
+struct Window {
+    length: u64,
+    bytes_recv: u64,
+    id: u64,
+    tx: crossbeam_channel::Sender<cm_c2s::Message>,
+}
+
+impl Window {
+    fn new(length: u64, tx: crossbeam_channel::Sender<cm_c2s::Message>) -> Self {
+        Self {
+            length,
+            bytes_recv: 0,
+            id: 0,
+            tx,
+        }
+    }
+
+    fn advance(&mut self) -> Result<()> {
+        let wa = WindowAdvanceBuilder::default()
+            .completed_window_id(self.id)
+            .latency_timestamp(SystemTime::now())
+            .build()
+            .expect("Failed to build WindowAdvance!");
+
+        self.tx.send(wa.into())?;
+
+        self.bytes_recv = 0;
+        self.id = self.id.wrapping_add(1);
+
+        Ok(())
+    }
+
+    fn fill_percent(&self) -> f64 {
+        self.bytes_recv as f64 / self.length as f64
+    }
+
+    fn update_if_current(&mut self, id: u64, num_bytes: usize) -> bool {
+        if id >= self.id {
+            self.bytes_recv += num_bytes as u64;
+            self.id = id;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct Client {
     config: Configuration,
     id: Option<u64>,
@@ -508,8 +557,12 @@ impl Client {
                     let (fbu, len) = match fbu_rx.recv() {
                         Ok((fbu, len)) => (fbu, len),
                         Err(err) => {
-                            log::warn!("[decoder {}] error receiving FBU: {}", decoder_id, err);
-                            continue;
+                            log::error!(
+                                "[decoder {}] Fatal error receiving FBU: {}",
+                                decoder_id,
+                                err
+                            );
+                            break;
                         }
                     };
 
@@ -828,10 +881,7 @@ impl Client {
         let client_id = self.id.unwrap();
         let should_stop = self.should_stop.clone();
         let control_rx = itc.notify_control_rx.take().unwrap();
-
-        let window_len = si.window_size as f64;
-        let mut window_bytes_recv = 0_usize;
-        let mut window_id_current = 0_u64;
+        let mut window = Window::new(si.window_size, control_tx_tx.clone());
 
         // Window Advance messages are sent after receiving this percentage of window data.
         const WA_TRIGGER_PERCENT: f64 = 0.75;
@@ -940,13 +990,11 @@ impl Client {
                             wa_timer.reset();
 
                             // Ignore data from old windows
-                            if report.window_id < window_id_current {
+                            if ! window.update_if_current(report.window_id, report.update_size) {
                                 continue;
                             }
 
-                            window_id_current = report.window_id;
-                            window_bytes_recv += report.update_size;
-                            let fill_percent = window_bytes_recv as f64 / window_len;
+                            let fill_percent = window.fill_percent();
 
                             if let Some(Ok(wa_latency)) = report.latency_timestamp.map(|l| l.elapsed()) {
                                 wa_timer.reinitialize(min(WA_TIMER_MAX, wa_latency));
@@ -957,21 +1005,13 @@ impl Client {
 
                             if fill_percent >= WA_TRIGGER_PERCENT {
                                 crate::metrics::WindowFillPercent::update(fill_percent);
-                                let wa = WindowAdvanceBuilder::default()
-                                    .completed_window_id(report.window_id)
-                                    .latency_timestamp(SystemTime::now())
-                                    .build()
-                                    .expect("Failed to build WindowAdvance!");
-                                match control_tx_tx.send(wa.into()) {
+                                match window.advance() {
                                     Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
                                     _ => log::trace!(
                                         "Sent WindowAdvance for window id {}",
-                                        window_id_current
+                                        report.window_id
                                     ),
                                 };
-
-                                window_bytes_recv = 0;
-                                window_id_current = window_id_current.wrapping_add(1);
                             }
                         },
                         Ok(ControlMessage::UiClosed(gm)) => {
@@ -1003,29 +1043,23 @@ impl Client {
                         }
                     },
                     recv(wa_timer.remaining().map(after).unwrap_or(never())) -> _ => {
-                        if window_bytes_recv > 0 {
-                            crate::metrics::WindowFillPercent::update_with(move || {
-                                window_bytes_recv as f64 / window_len
-                            });
-                            let wa = WindowAdvanceBuilder::default()
-                                .completed_window_id(window_id_current)
-                                .latency_timestamp(SystemTime::now())
-                                .build()
-                                .expect("Failed to build WindowAdvance!");
-                            match control_tx_tx.send(wa.into()) {
-                                Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
-                                _ => log::trace!(
-                                    "Sent WindowAdvance for window id {} TIMEOUT after {:?}",
-                                    window_id_current,
-                                    wa_timer.duration
-                                ),
-                            };
 
-                            window_bytes_recv = 0;
-                            window_id_current = window_id_current.wrapping_add(1);
+                        if window.bytes_recv == 0 {
+                            continue;
                         }
-                    }
 
+                        let win = window.clone();
+                        crate::metrics::WindowFillPercent::update_with(move || {
+                            win.fill_percent()
+                        });
+                        match window.advance() {
+                            Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
+                            _ => log::trace!(
+                                "Sent WindowAdvance timeout after {:?}",
+                                wa_timer.duration
+                            ),
+                        };
+                    }
                 }
             } // loop
 
@@ -1152,7 +1186,6 @@ mod test {
     use super::*;
     use aperturec_channel::UnifiedServer;
     use aperturec_protocol::control::ServerInitBuilder;
-
     use std::sync::Once;
 
     fn setup() {
