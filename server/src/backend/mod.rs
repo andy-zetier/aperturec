@@ -8,6 +8,7 @@ use futures::stream::Stream;
 use ndarray::{s, Array2, ArrayView2};
 use std::error::Error;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::process::ExitStatus;
 use tokio::process::{Child, Command};
@@ -100,7 +101,6 @@ pub enum Event {
     Display {
         size: Dimension,
     },
-    Noop,
 }
 
 #[derive(Debug)]
@@ -140,8 +140,33 @@ impl TryFrom<em_c2s::Message> for Event {
             em_c2s::Message::DisplayEvent(display_event) => Event::Display {
                 size: display_event.display_size.ok_or(EventError)?,
             },
-            em_c2s::Message::NoopEvent(_) => Event::Noop,
         })
+    }
+}
+
+#[derive(Debug)]
+pub struct CursorChange {
+    pub serial: u32,
+}
+
+#[derive(Debug)]
+pub struct CursorImage {
+    pub serial: u32,
+    pub width: u16,
+    pub height: u16,
+    pub x_hot: u16,
+    pub y_hot: u16,
+    pub data: Vec<u8>,
+}
+
+impl Hash for CursorImage {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Exclude serial
+        self.width.hash(state);
+        self.height.hash(state);
+        self.x_hot.hash(state);
+        self.y_hot.hash(state);
+        self.data.hash(state);
     }
 }
 
@@ -159,11 +184,14 @@ mod backend_trait {
         where
             N: Into<Option<usize>> + Send + Sync;
         async fn notify_event(&mut self, event: Event) -> Result<()>;
-        async fn cursor_bitmaps(&self) -> Result<Vec<CursorBitmap>>;
         async fn set_resolution(&mut self, resolution: &Size) -> Result<()>;
         async fn resolution(&self) -> Result<Size>;
         async fn damage_stream(&self) -> Result<impl Stream<Item = Rect> + Send + Unpin + 'static>;
         async fn capture_area(&self, area: Rect) -> Result<FramebufferUpdate>;
+        async fn cursor_stream(
+            &self,
+        ) -> Result<impl Stream<Item = CursorChange> + Send + Unpin + 'static>;
+        async fn capture_cursor(&self) -> Result<CursorImage>;
         async fn exec_command(&mut self, command: &mut Command) -> Result<Child>;
         async fn wait_root_process(&mut self) -> Result<ExitStatus>;
         fn start_kill_root_process(&mut self) -> Result<()>;

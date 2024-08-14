@@ -28,6 +28,19 @@ message ButtonState {
   bool is_depressed = 2;
 }
 
+message CursorChange {
+  uint64 id = 1;
+}
+
+message CursorImage {
+  uint64 id = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 x_hot = 4;
+  uint32 y_hot = 5;
+  bytes data = 6;
+}
+
 message KeyEvent {
   bool down = 1;
   uint32 key = 2;
@@ -41,13 +54,17 @@ message PointerEvent {
 
 message DisplayEvent { common.Dimension display_size = 1; }
 
-message NoopEvent {}
-
 message ClientToServer {
   oneof message {
     KeyEvent key_event = 1;
     PointerEvent pointer_event = 2;
     DisplayEvent display_event = 3;
-    NoopEvent noop_event = 4;
+  }
+}
+
+message ServerToClient {
+  oneof message {
+    CursorChange cursor_change = 1;
+    CursorImage cursor_image = 2;
   }
 }

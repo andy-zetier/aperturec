@@ -34,7 +34,7 @@ tokio-stream = { version = "0.1", features = ["sync", "fs"] }
 tokio-util = "0.7"
 trait-variant = "0.1"
 which = "6.0"
-xcb = { version = "1.2.2", features = ["damage", "randr", "xtest" ] }
+xcb = { version = "1.2.2", features = ["damage", "randr", "xtest", "xfixes" ] }
 
 [dev-dependencies]
 aperturec-channel = { path = "../channel", features = ["test-tls-material"] }

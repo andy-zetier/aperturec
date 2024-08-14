@@ -1,8 +1,7 @@
-use crate::backend::{Backend, Event, FramebufferUpdate};
+use crate::backend::{Backend, CursorChange, CursorImage, Event, FramebufferUpdate};
 use crate::task::encoder::*;
 
 use anyhow::{anyhow, bail, Result};
-use aperturec_protocol::common::*;
 use aperturec_protocol::event as em;
 use aperturec_trace::log;
 use aperturec_trace::queue::{self, deq, enq, trace_queue};
@@ -21,8 +20,8 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use xcb::damage::{self, Damage};
-use xcb::x::{self, Drawable, GetImage, ImageFormat, ScreenBuf};
-use xcb::{randr, xtest, BaseEvent, Connection, Extension};
+use xcb::x::{self, Drawable, GetImage, ImageFormat, ScreenBuf, Window};
+use xcb::{randr, xfixes, xtest, BaseEvent, Connection, Extension};
 use xcb::{CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply};
 
 const X_DAMAGE_QUEUE: queue::Queue = trace_queue!("x:damage");
@@ -55,6 +54,33 @@ async fn do_exec_command(display_name: &str, command: &mut Command) -> Result<Ch
     let process = command.spawn()?;
     log::debug!("Launched {:?}", process);
     Ok(process)
+}
+
+impl From<xfixes::GetCursorImageReply> for CursorImage {
+    fn from(reply: xfixes::GetCursorImageReply) -> Self {
+        CursorImage {
+            serial: reply.cursor_serial(),
+            width: reply.width(),
+            height: reply.height(),
+            x_hot: reply.xhot(),
+            y_hot: reply.yhot(),
+
+            data: reply
+                .cursor_image()
+                .to_vec()
+                .iter()
+                .flat_map(|&x| x.to_le_bytes())
+                .collect(),
+        }
+    }
+}
+
+impl From<&xfixes::CursorNotifyEvent> for CursorChange {
+    fn from(cn: &xfixes::CursorNotifyEvent) -> Self {
+        CursorChange {
+            serial: cn.cursor_serial(),
+        }
+    }
 }
 
 impl Backend for X {
@@ -128,16 +154,38 @@ impl Backend for X {
                     xcb::Event::Damage(damage::Event::Notify(notify_event)) => {
                         future::ready(Some(notify_event.area()))
                     }
-                    other_event => {
-                        log::warn!("Some unexpected event ignored: {:#?}", other_event);
-                        future::ready(None)
-                    }
+                    _ => future::ready(None),
                 })
                 .map(|xcb_rect| Rect {
                     origin: Point::new(xcb_rect.x as usize, xcb_rect.y as usize),
                     size: Size::new(xcb_rect.width as usize, xcb_rect.height as usize),
                 }),
         ))
+    }
+
+    async fn capture_cursor(&self) -> Result<CursorImage> {
+        let reply = self
+            .connection
+            .checked_request_with_reply(xfixes::GetCursorImage {})
+            .await?;
+
+        Ok(reply.into())
+    }
+
+    async fn cursor_stream(
+        &self,
+    ) -> Result<impl Stream<Item = CursorChange> + Send + Unpin + 'static> {
+        let cursor_change = CursorChange { serial: 0 };
+        Ok(
+            stream::iter([cursor_change]).chain(self.connection.event_stream().filter_map(
+                |event| match &event.0 {
+                    xcb::Event::XFixes(xfixes::Event::CursorNotify(cursor_notify_event)) => {
+                        future::ready(Some(cursor_notify_event.into()))
+                    }
+                    _ => future::ready(None),
+                },
+            )),
+        )
     }
 
     async fn initialize<N>(
@@ -183,13 +231,17 @@ impl Backend for X {
         let connection = XConnection::new(&*display_name)?;
         log::trace!("Querying for damage extension version");
         X::query_damage_version(&connection).await?;
-
+        log::trace!("Querying for xfixes extension version");
+        X::query_xfixes_version(&connection).await?;
         log::trace!("Creating root objects");
-        let (root_damage, root_drawable) = X::create_root_objects(&connection);
+        let (root_damage, root_window) = X::create_root_objects(&connection);
+        let root_drawable = Drawable::Window(root_window);
         log::trace!("Setting up damage monitor");
         X::setup_damage_monitor(&connection, &root_damage, &root_drawable).await?;
         log::trace!("Setting up xtest extension");
         X::setup_xtest_extension(&connection).await?;
+        log::trace!("Setting up xfixes monitor");
+        X::setup_xfixes_monitor(&connection, &root_window).await?;
 
         let root_process = match root_process_cmd {
             None => None,
@@ -290,17 +342,9 @@ impl Backend for X {
                 let size = Size::new(size.width as usize, size.height as usize);
                 self.set_resolution(&size).await?;
             }
-            Event::Noop => {
-                log::warn!("Unexpected no-op event");
-            }
         }
 
         Ok(())
-    }
-
-    async fn cursor_bitmaps(&self) -> Result<Vec<CursorBitmap>> {
-        // TODO actually implement
-        Ok(vec![])
     }
 
     async fn set_resolution(&mut self, resolution: &Size) -> Result<()> {
@@ -466,10 +510,34 @@ impl X {
         Ok(())
     }
 
-    fn create_root_objects(connection: &XConnection) -> (Damage, Drawable) {
+    async fn query_xfixes_version(connection: &XConnection) -> Result<()> {
+        log::trace!("querying xfixes version");
+        let reply = connection
+            .checked_request_with_reply(xfixes::QueryVersion {
+                client_major_version: xfixes::MAJOR_VERSION,
+                client_minor_version: xfixes::MINOR_VERSION,
+            })
+            .await?;
+
+        if reply.major_version() != xfixes::MAJOR_VERSION
+            || reply.minor_version() != xfixes::MINOR_VERSION
+        {
+            bail!(
+                "X Server XFixes {}.{} != X Client XFixes {}.{}",
+                reply.major_version(),
+                reply.minor_version(),
+                xfixes::MAJOR_VERSION,
+                xfixes::MINOR_VERSION,
+            );
+        }
+
+        Ok(())
+    }
+
+    fn create_root_objects(connection: &XConnection) -> (Damage, Window) {
         let root_damage = connection.inner.generate_id();
-        let root_drawable = Drawable::Window(connection.preferred_screen.root());
-        (root_damage, root_drawable)
+        let root_window = connection.preferred_screen.root();
+        (root_damage, root_window)
     }
 
     async fn setup_damage_monitor(
@@ -511,6 +579,15 @@ impl X {
             .await?;
 
         Ok(())
+    }
+
+    async fn setup_xfixes_monitor(connection: &XConnection, window: &Window) -> Result<()> {
+        connection
+            .checked_void_request(xfixes::SelectCursorInput {
+                window: *window,
+                event_mask: xfixes::CursorNotifyMask::all(),
+            })
+            .await
     }
 }
 
@@ -625,8 +702,11 @@ impl XConnection {
     fn new<'s>(name: impl Into<Option<&'s str>>) -> Result<Self> {
         let name = name.into();
         log::trace!("Connecting to display {:?}", name);
-        let (conn, preferred_screen_index) =
-            Connection::connect_with_extensions(name, &[Extension::Damage, Extension::Test], &[])?;
+        let (conn, preferred_screen_index) = Connection::connect_with_extensions(
+            name,
+            &[Extension::Damage, Extension::Test, Extension::XFixes],
+            &[],
+        )?;
         log::trace!("Created X connection");
         let conn_arc = Arc::new(conn);
         let preferred_screen = conn_arc

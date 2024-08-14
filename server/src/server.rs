@@ -661,10 +661,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
             recover_self!(cc, ec, mc, listener, backend.into_inner().0)
         );
         log::trace!("Resolution set to {:?}", resolution);
-        let cursor_bitmaps = try_recover_async!(
-            backend.cursor_bitmaps(),
-            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
-        );
 
         let decoder_areas: Vec<_> = decoders
             .iter()
@@ -688,7 +684,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
             cm::ServerInitBuilder::default()
                 .client_id(client_id)
                 .server_name(self.config.name.clone())
-                .cursor_bitmaps(cursor_bitmaps)
                 .decoder_areas(decoder_areas)
                 .display_size(Dimension::new(
                     resolution.width as u64,
@@ -776,6 +771,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Listening<B>>
             self.state.decoders.clone(),
             cc_handler_channels.missed_frame_rx,
             ec_handler_channels.event_rx,
+            ec_handler_channels.to_send_tx.clone(),
             mc_handler_channels.fbu_tx,
             mc_handler_channels.synthetic_missed_frame_rxs,
         );

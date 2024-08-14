@@ -3,6 +3,7 @@ use crate::task::encoder::{self, Encoder};
 use crate::task::event_channel_handler::EVENT_QUEUE;
 
 use aperturec_protocol::common::*;
+use aperturec_protocol::event::{self as em, server_to_client as em_s2c};
 use aperturec_protocol::{control as cm, media as mm};
 use aperturec_state_machine::*;
 use aperturec_trace::log;
@@ -11,7 +12,9 @@ use aperturec_trace::queue::deq;
 use anyhow::{anyhow, Result};
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
-use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
@@ -32,6 +35,7 @@ pub struct Created<B: Backend + 'static> {
     acked_seq_rx: mpsc::UnboundedReceiver<cm::DecoderSequencePair>,
     missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
     event_rx: mpsc::UnboundedReceiver<Event>,
+    cursor_tx: mpsc::Sender<em_s2c::Message>,
     fbu_tx: mpsc::Sender<Vec<mm::FramebufferUpdate>>,
     synthetic_missed_frame_rxs: BTreeMap<u32, mpsc::UnboundedReceiver<u64>>,
 }
@@ -101,6 +105,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
         decoders: BTreeMap<u32, (Location, Dimension, Codec)>,
         missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
         event_rx: mpsc::UnboundedReceiver<Event>,
+        cursor_tx: mpsc::Sender<em_s2c::Message>,
         fbu_tx: mpsc::Sender<Vec<mm::FramebufferUpdate>>,
         synthetic_missed_frame_rxs: BTreeMap<u32, mpsc::UnboundedReceiver<u64>>,
     ) -> (Task<Created<B>>, Channels) {
@@ -113,6 +118,7 @@ impl<B: Backend + 'static> Task<Created<B>> {
                 acked_seq_rx,
                 missed_frame_rx,
                 event_rx,
+                cursor_tx,
                 fbu_tx,
                 synthetic_missed_frame_rxs,
             },
@@ -200,10 +206,19 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
         let backend_subtask_ct = CancellationToken::new();
         let ct = backend_subtask_ct.clone();
         let backend_subtask = tokio::spawn(async move {
+            let mut cursor_cache = HashMap::new();
+            let mut last_cursor_id = 0;
             let mut damage_stream = match self.state.backend.damage_stream().await {
                 Ok(damage_stream) => damage_stream,
                 Err(e) => {
                     log::error!("Failed getting damage stream from backend: {}", e);
+                    return (self.state.backend, Err(e));
+                }
+            };
+            let mut cursor_stream = match self.state.backend.cursor_stream().await {
+                Ok(cursor_stream) => cursor_stream,
+                Err(e) => {
+                    log::error!("Failed getting cursor stream from backend: {}", e);
                     return (self.state.backend, Err(e));
                 }
             };
@@ -242,7 +257,72 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             }
                         }
                     }
-                    else => break Err(anyhow!("damage stream exhuasted"))
+                    Some(cursor_change) = cursor_stream.next() => {
+                        let (id, msg) = match cursor_cache.get(&cursor_change.serial) {
+                            Some(id) => (*id, em_s2c::Message::CursorChange(em::CursorChange { id: *id })),
+                            None => 'msg: {
+                                match self.state.backend.capture_cursor().await {
+                                    Err(err) => {
+                                        log::error!("Failed to capture cursor: {}", err);
+                                        break 'select Err(err);
+                                    },
+                                    Ok(cursor_image) => {
+
+                                        //
+                                        // Captured cursor may not match the original cursor change
+                                        // notification. Generate CursorChange if the captured
+                                        // cursor has already been sent.
+                                        //
+                                        if cursor_change.serial != cursor_image.serial {
+                                            log::trace!(
+                                                "Captured cursor serial does not match originating serial: {} != {}",
+                                                cursor_image.serial,
+                                                cursor_change.serial
+                                            );
+                                            if let Some(id) = cursor_cache.get(&cursor_image.serial) {
+                                                break 'msg (*id, em_s2c::Message::CursorChange(em::CursorChange { id: *id }));
+                                            }
+                                        }
+
+                                        //
+                                        // Hash cursor data to generate a unique ID
+                                        //
+                                        let mut hasher = DefaultHasher::new();
+                                        cursor_image.hash(&mut hasher);
+                                        let id = hasher.finish();
+
+                                        //
+                                        // Generate CursorChange if ID is not unique
+                                        //
+                                        if cursor_cache.values().any(|&value| value == id) {
+                                            log::trace!("Cursor {} already exists in cache", id);
+                                            cursor_cache.insert(cursor_image.serial, id);
+                                            break 'msg (id, em_s2c::Message::CursorChange(em::CursorChange { id }));
+                                        }
+
+                                        cursor_cache.insert(cursor_image.serial, id);
+
+                                        (id, em_s2c::Message::CursorImage(em::CursorImage {
+                                            id,
+                                            width: cursor_image.width.into(),
+                                            height: cursor_image.height.into(),
+                                            x_hot: cursor_image.x_hot.into(),
+                                            y_hot: cursor_image.y_hot.into(),
+                                            data: cursor_image.data
+                                        }))
+                                    }
+                                }
+                            }
+                        };
+
+                        if id != last_cursor_id {
+                            if let Err(err) = self.state.cursor_tx.send(msg).await {
+                                break 'select Err(err.into())
+                            }
+                            last_cursor_id = id;
+                        }
+                    }
+                    else => break Err(anyhow!("X event streams exhausted"))
                 }
             };
             (self.state.backend, loop_res)

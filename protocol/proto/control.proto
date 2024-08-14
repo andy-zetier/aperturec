@@ -110,9 +110,8 @@ message ServerInit {
   uint64 client_id = 1;
   string server_name = 2;
   common.Dimension display_size = 3;
-  repeated common.CursorBitmap cursor_bitmaps = 4;
-  repeated DecoderArea decoder_areas = 5;
-  uint64 window_size = 7;
+  repeated DecoderArea decoder_areas = 4;
+  uint64 window_size = 5;
 }
 
 enum ServerGoodbyeReason {

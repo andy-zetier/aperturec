@@ -307,12 +307,12 @@ impl TryTransitionable<Ready, Accepted> for Server<Accepted> {
             ),
             self.state.async_rt.clone(),
         ));
-        let mut ec = ServerEvent::new(stream::Receiver::new(
+        let ec = ServerEvent::new(stream::Transceiver::new(
             try_recover!(
                 try_recover!(
                     self.state
                         .connection
-                        .accept_receive_stream()
+                        .accept_bidirectional_stream()
                         .syncify(&self.state.async_rt),
                     self,
                     Accepted
@@ -323,18 +323,6 @@ impl TryTransitionable<Ready, Accepted> for Server<Accepted> {
             ),
             self.state.async_rt.clone(),
         ));
-
-        // First event is not real, but required for QUIC to actually set up a unidirectional
-        // stream
-        match try_recover!(ec.receive(), self, Accepted) {
-            event::client_to_server::Message::NoopEvent(_) => (),
-            _ => {
-                return Err(Recovered {
-                    stateful: transition!(self, Accepted),
-                    error: anyhow!("Non-noop initial EC message"),
-                })
-            }
-        }
 
         let dg_tx = try_recover!(
             try_recover!(
@@ -470,9 +458,9 @@ impl AsyncTryTransitionable<AsyncReady, AsyncAccepted> for Server<AsyncAccepted>
             self,
             AsyncAccepted
         )));
-        let mut ec = AsyncServerEvent::new(stream::AsyncReceiver::new(try_recover!(
+        let ec = AsyncServerEvent::new(stream::AsyncTransceiver::new(try_recover!(
             try_recover!(
-                self.state.connection.accept_receive_stream().await,
+                self.state.connection.accept_bidirectional_stream().await,
                 self,
                 AsyncAccepted
             )
@@ -480,18 +468,6 @@ impl AsyncTryTransitionable<AsyncReady, AsyncAccepted> for Server<AsyncAccepted>
             self,
             AsyncAccepted
         )));
-
-        // First event is not real, but required for QUIC to actually set up a unidirectional
-        // stream
-        match try_recover!(ec.receive().await, self, AsyncAccepted) {
-            event::client_to_server::Message::NoopEvent(_) => (),
-            _ => {
-                return Err(Recovered {
-                    stateful: transition!(self, AsyncAccepted),
-                    error: anyhow!("Non-noop initial EC message"),
-                })
-            }
-        }
 
         let dg_tx = try_recover!(
             try_recover!(

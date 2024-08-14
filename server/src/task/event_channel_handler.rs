@@ -1,12 +1,15 @@
 use crate::backend::Event;
 
 use anyhow::{anyhow, Result};
-use aperturec_channel::{self as channel, AsyncReceiver};
+use aperturec_channel::{self as channel, AsyncReceiver, AsyncSender};
+use aperturec_protocol::event::server_to_client as em_s2c;
 use aperturec_state_machine::*;
 use aperturec_trace::log;
 use aperturec_trace::queue::{self, enq, trace_queue};
+use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const EVENT_QUEUE: queue::Queue = trace_queue!("ec:event");
@@ -21,12 +24,15 @@ pub struct Task<S: State> {
 pub struct Created {
     ec: channel::AsyncServerEvent,
     event_tx: mpsc::UnboundedSender<Event>,
-    ct: CancellationToken,
+    to_send_rx: mpsc::Receiver<em_s2c::Message>,
 }
 
 #[derive(State)]
 pub struct Running {
-    task: JoinHandle<Result<()>>,
+    tx_subtask: JoinHandle<Result<()>>,
+    tx_subtask_ct: CancellationToken,
+    rx_subtask: JoinHandle<Result<()>>,
+    rx_subtask_ct: CancellationToken,
     ct: CancellationToken,
 }
 
@@ -35,20 +41,25 @@ pub struct Terminated;
 
 pub struct Channels {
     pub event_rx: mpsc::UnboundedReceiver<Event>,
+    pub to_send_tx: mpsc::Sender<em_s2c::Message>,
 }
 
 impl Task<Created> {
     pub fn new(ec: channel::AsyncServerEvent) -> (Self, Channels) {
+        let (to_send_tx, to_send_rx) = mpsc::channel(1);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         (
             Task {
                 state: Created {
                     ec,
                     event_tx,
-                    ct: CancellationToken::new(),
+                    to_send_rx,
                 },
             },
-            Channels { event_rx },
+            Channels {
+                event_rx,
+                to_send_tx,
+            },
         )
     }
 }
@@ -69,14 +80,51 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
     type Error = anyhow::Error;
 
     async fn try_transition(
-        mut self,
+        self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let ct = self.state.ct.clone();
+        let (mut ec_rx, mut ec_tx) = self.state.ec.split();
 
-        let task = tokio::spawn(async move {
+        let tx_ct = CancellationToken::new();
+        let ct = tx_ct.clone();
+        let tx_subtask = tokio::spawn(async move {
+            let mut to_send_stream = ReceiverStream::new(self.state.to_send_rx);
+            let mut stream_closed = false;
+
             loop {
                 tokio::select! {
-                    ec_msg_res = self.state.ec.receive() => {
+                    biased;
+                    _ = ct.cancelled(), if !stream_closed => {
+                        log::debug!("EC Tx subtask cancelled");
+                        stream_closed = true;
+                        to_send_stream.close();
+                    }
+                    msg_opt = to_send_stream.next() => {
+                        match msg_opt {
+                            Some(msg) => {
+                                log::trace!("Sending {:?}", msg);
+                                ec_tx.send(msg).await?;
+                            },
+                            None => {
+                                log::trace!("EC messages exhausted");
+                                break Ok(());
+                            },
+                        }
+                    }
+                    else => break Ok(())
+                }
+            }
+        });
+
+        let rx_ct = CancellationToken::new();
+        let ct = rx_ct.clone();
+        let rx_subtask = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = ct.cancelled() => {
+                        log::debug!("EC Rx subtask cancelled");
+                        break Ok(());
+                    },
+                    ec_msg_res = ec_rx.receive() => {
                         let ec_msg = match ec_msg_res {
                             Ok(ec_msg) => ec_msg,
                             Err(err) => break Err(anyhow!("Could not receive event from EC: {}", err)),
@@ -94,27 +142,19 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                             Err(err) => break Err(anyhow!("Could not send event to backend: {}", err)),
                         }
                     }
-                    _ = self.state.ct.cancelled() => {
-                        log::info!("event channel handler internally cancelled");
-                        break Ok(());
-                    }
                 }
             }
         });
 
         Ok(Task {
-            state: Running { task, ct },
+            state: Running {
+                tx_subtask,
+                tx_subtask_ct: tx_ct,
+                rx_subtask,
+                rx_subtask_ct: rx_ct,
+                ct: CancellationToken::new(),
+            },
         })
-    }
-}
-
-impl Task<Running> {
-    async fn complete(self) -> Option<anyhow::Error> {
-        match self.state.task.await {
-            Ok(Ok(())) => None,
-            Ok(Err(e)) => Some(anyhow!("Event channel handler failed with error: {}", e)),
-            Err(e) => Some(anyhow!("Event channel handler panicked: {}", e)),
-        }
     }
 }
 
@@ -124,18 +164,45 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
     type Error = anyhow::Error;
 
     async fn try_transition(
-        self,
+        mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let task = Task { state: Terminated };
-        let error = self.complete().await;
-        if let Some(error) = error {
-            Err(Recovered {
-                stateful: task,
-                error,
-            })
-        } else {
-            Ok(task)
+        let mut top_level_cleanup_executed = false;
+        let mut tx_subtask_term = None;
+        let mut rx_subtask_term = None;
+
+        loop {
+            tokio::select! {
+                _ = self.state.ct.cancelled(), if !top_level_cleanup_executed => {
+                    log::debug!("EC task cancelled");
+                    top_level_cleanup_executed = true;
+                    self.state.tx_subtask_ct.cancel();
+                    self.state.rx_subtask_ct.cancel();
+                }
+                tx_subtask_res = &mut self.state.tx_subtask, if tx_subtask_term.is_none() => {
+                    tx_subtask_term = Some(tx_subtask_res);
+                    self.state.ct.cancel();
+                }
+                rx_subtask_res = &mut self.state.rx_subtask, if rx_subtask_term.is_none() => {
+                    rx_subtask_term = Some(rx_subtask_res);
+                    self.state.ct.cancel();
+                }
+                else => break
+            }
         }
+
+        match tx_subtask_term.expect("tx subtask not recovered") {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => log::error!("EC Tx subtask failed with error: {}", e),
+            Err(e) => log::error!("EC Tx subtask panicked: {}", e),
+        }
+
+        match rx_subtask_term.expect("rx subtask not recovered") {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => log::error!("EC Rx subtask failed with error: {}", e),
+            Err(e) => log::error!("EC Rx subtask panicked: {}", e),
+        }
+
+        Ok(Task { state: Terminated })
     }
 }
 
@@ -144,8 +211,17 @@ impl AsyncTransitionable<Terminated> for Task<Running> {
 
     async fn transition(self) -> Self::NextStateful {
         self.stop();
-        if let Some(error) = self.complete().await {
-            log::error!("Event channel handler task experienced error: {}", error);
+
+        match self.state.tx_subtask.await {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => log::error!("EC Tx subtask failed with error: {}", e),
+            Err(e) => log::error!("EC Tx subtask panicked: {}", e),
+        }
+
+        match self.state.rx_subtask.await {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => log::error!("EC Rx subtask failed with error: {}", e),
+            Err(e) => log::error!("EC Rx subtask panicked: {}", e),
         }
         Task { state: Terminated }
     }

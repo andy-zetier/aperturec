@@ -313,21 +313,16 @@ impl TryTransitionable<Ready, Connected> for Client<Connected> {
             self.state.async_rt.clone(),
         ));
 
-        let mut ec = ClientEvent::new(stream::Transmitter::new(
+        let ec = ClientEvent::new(stream::Transceiver::new(
             try_recover!(
                 self.state
                     .connection
-                    .open_send_stream()
+                    .open_bidirectional_stream()
                     .syncify(&self.state.async_rt),
                 self
             ),
             self.state.async_rt.clone(),
         ));
-
-        // QUIC unidirectional streams are lazy; they do not actually initialize until the sender
-        // sends something. To work around this, immediately send a pointer event on the event
-        // channel, ensuring the stream is initialized
-        try_recover!(ec.send(protocol::event::NoopEvent::default().into()), self);
 
         let dg_rx = try_recover!(
             try_recover!(
@@ -463,18 +458,10 @@ impl AsyncTryTransitionable<AsyncReady, AsyncConnected> for Client<AsyncConnecte
             self
         )));
 
-        let mut ec = AsyncClientEvent::new(stream::AsyncTransmitter::new(try_recover!(
-            self.state.connection.open_send_stream().await,
+        let ec = AsyncClientEvent::new(stream::AsyncTransceiver::new(try_recover!(
+            self.state.connection.open_bidirectional_stream().await,
             self
         )));
-
-        // QUIC unidirectional streams are lazy; they do not actually initialize until the sender
-        // sends something. To work around this, immediately send a pointer event on the event
-        // channel, ensuring the stream is initialized
-        try_recover!(
-            ec.send(protocol::event::NoopEvent::default().into()).await,
-            self
-        );
 
         let dg_rx = try_recover!(
             try_recover!(

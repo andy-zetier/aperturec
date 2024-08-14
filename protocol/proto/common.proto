@@ -50,8 +50,3 @@ enum Cursor {
   CURSOR_S_RESIZE = 20;
   CURSOR_W_RESIZE = 21;
 }
-
-message CursorBitmap {
-  Cursor cursor = 1;
-  bytes data = 2;
-}

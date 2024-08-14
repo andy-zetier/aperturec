@@ -444,7 +444,8 @@ pub type ServerControlChannelReceiveHalf = ReceiverSimplex<
     control::client_to_server::Message,
     control::ClientToServer,
 >;
-pub type ServerControlChannelSendHalf = ReceiverSimplex<
+
+pub type ServerControlChannelSendHalf = SenderSimplex<
     <stream::Transceiver as stream::Splitable>::TransmitHalf,
     control::server_to_client::Message,
     control::ClientToServer,
@@ -457,22 +458,53 @@ pub type ClientControlChannel = Duplex<
     control::ServerToClient,
     control::ClientToServer,
 >;
+
 pub type ClientControlChannelReceiveHalf = ReceiverSimplex<
-    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
     control::server_to_client::Message,
     control::ClientToServer,
 >;
-pub type ClientControlChannelSendHalf = ReceiverSimplex<
+pub type ClientControlChannelSendHalf = SenderSimplex<
     <stream::Transceiver as stream::Splitable>::TransmitHalf,
     control::client_to_server::Message,
     control::ClientToServer,
 >;
 
-pub type ServerEventChannel =
-    ReceiverSimplex<stream::Receiver, event::client_to_server::Message, event::ClientToServer>;
+pub type ServerEventChannel = Duplex<
+    stream::Transceiver,
+    event::client_to_server::Message,
+    event::server_to_client::Message,
+    event::ClientToServer,
+    event::ServerToClient,
+>;
+pub type ServerEventChannelReceiveHalf = ReceiverSimplex<
+    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
+    event::client_to_server::Message,
+    event::ClientToServer,
+>;
+pub type ServerEventChannelSendHalf = SenderSimplex<
+    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    event::server_to_client::Message,
+    event::ServerToClient,
+>;
 
-pub type ClientEventChannel =
-    SenderSimplex<stream::Transmitter, event::client_to_server::Message, event::ClientToServer>;
+pub type ClientEventChannel = Duplex<
+    stream::Transceiver,
+    event::server_to_client::Message,
+    event::client_to_server::Message,
+    event::ServerToClient,
+    event::ClientToServer,
+>;
+pub type ClientEventChannelReceiveHalf = ReceiverSimplex<
+    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
+    event::server_to_client::Message,
+    event::ServerToClient,
+>;
+pub type ClientEventChannelSendHalf = SenderSimplex<
+    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    event::client_to_server::Message,
+    event::ClientToServer,
+>;
 
 pub type AsyncServerControlChannel = AsyncDuplex<
     stream::AsyncTransceiver,
@@ -510,14 +542,38 @@ pub type AsyncClientControlChannelSendHalf = ReceiverSimplex<
     control::ClientToServer,
 >;
 
-pub type AsyncServerEventChannel = AsyncReceiverSimplex<
-    stream::AsyncReceiver,
+pub type AsyncServerEventChannel = AsyncDuplex<
+    stream::AsyncTransceiver,
+    event::client_to_server::Message,
+    event::server_to_client::Message,
+    event::ClientToServer,
+    event::ServerToClient,
+>;
+pub type AsyncServerEventChannelReceiveHalf = ReceiverSimplex<
+    <stream::AsyncTransceiver as stream::Splitable>::ReceiveHalf,
     event::client_to_server::Message,
     event::ClientToServer,
 >;
+pub type AsyncServerEventChannelSendHalf = SenderSimplex<
+    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    event::server_to_client::Message,
+    event::ServerToClient,
+>;
 
-pub type AsyncClientEventChannel = AsyncSenderSimplex<
-    stream::AsyncTransmitter,
+pub type AsyncClientEventChannel = AsyncDuplex<
+    stream::AsyncTransceiver,
+    event::server_to_client::Message,
+    event::client_to_server::Message,
+    event::ServerToClient,
+    event::ClientToServer,
+>;
+pub type AsyncClientEventChannelReceiveHalf = ReceiverSimplex<
+    <stream::AsyncTransceiver as stream::Splitable>::ReceiveHalf,
+    event::server_to_client::Message,
+    event::ServerToClient,
+>;
+pub type AsyncClientEventChannelSendHalf = SenderSimplex<
+    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
     event::client_to_server::Message,
     event::ClientToServer,
 >;

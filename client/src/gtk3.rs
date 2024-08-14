@@ -1,9 +1,9 @@
 mod image;
 
 use crate::client::{
-    ClientDecoder, Configuration, ControlMessage, EventMessage, GoodbyeMessageBuilder,
-    KeyEventMessageBuilder, MouseButtonEventMessageBuilder, Point, PointerEventMessageBuilder,
-    UiMessage,
+    ClientDecoder, Configuration, ControlMessage, CursorData, CursorMessage, EventMessage,
+    GoodbyeMessageBuilder, KeyEventMessageBuilder, MouseButtonEventMessageBuilder, Point,
+    PointerEventMessageBuilder, UiMessage,
 };
 use crate::gtk3::image::Image;
 
@@ -14,6 +14,7 @@ use gtk::prelude::*;
 use gtk::{glib, Adjustment, ApplicationWindow, DrawingArea, ScrolledWindow};
 use keycode::{KeyMap, KeyMapping};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -31,6 +32,9 @@ pub struct ItcChannels {
 
     pub event_from_ui_rx: Cell<Option<Receiver<EventMessage>>>,
     event_from_ui_tx: Sender<EventMessage>,
+
+    cursor_to_ui_rx: Cell<Option<glib::Receiver<CursorMessage>>>,
+    pub cursor_to_ui_tx: glib::Sender<CursorMessage>,
 
     img_from_decoder_rx: Cell<Option<glib::Receiver<Image>>>,
     pub img_from_decoder_tx: glib::Sender<Image>,
@@ -50,6 +54,9 @@ impl ItcChannels {
         let (img_from_decoder_tx, img_from_decoder_rx) =
             glib::MainContext::channel(glib::Priority::default());
 
+        let (cursor_to_ui_tx, cursor_to_ui_rx) =
+            glib::MainContext::channel(glib::Priority::default());
+
         let mut this = Self {
             control_to_ui_rx: Cell::new(Some(control_to_ui_rx)),
             control_to_ui_tx,
@@ -57,6 +64,8 @@ impl ItcChannels {
             notify_control_tx,
             event_from_ui_rx: Cell::new(Some(event_from_ui_rx)),
             event_from_ui_tx,
+            cursor_to_ui_rx: Cell::new(Some(cursor_to_ui_rx)),
+            cursor_to_ui_tx,
             img_from_decoder_rx: Cell::new(Some(img_from_decoder_rx)),
             img_from_decoder_tx,
             img_to_decoder_rxs: Vec::new(),
@@ -351,6 +360,11 @@ fn build_ui(
     let notify_control_tx = itc.notify_control_tx.clone();
 
     //
+    // Setup cursor tracking
+    //
+    let mut cursor_map = HashMap::new();
+
+    //
     // Setup keyboard tracking
     //
     area.connect_key_press_event(glib::clone!(@strong window => move |_, key| {
@@ -524,43 +538,46 @@ fn build_ui(
     itc.img_from_decoder_rx
         .take()
         .expect("GTK failed to attach decoder channel!")
-        .attach(None, move |updated_img| {
-            let (ref images, ref txs) = *workspace;
-            let decoder_id = updated_img.decoder_id;
+        .attach(
+            None,
+            glib::clone!(@strong area => move |updated_img| {
+                let (ref images, ref txs) = *workspace;
+                let decoder_id = updated_img.decoder_id;
 
-            let tx = &txs[decoder_id];
-            let origin = updated_img.origin_signed();
-            let dimension = updated_img.dims_signed();
+                let tx = &txs[decoder_id];
+                let origin = updated_img.origin_signed();
+                let dimension = updated_img.dims_signed();
 
-            //
-            // Replace the stale Image with the new one. The data in the images vector will be used
-            // to render the display at the next redraw event.
-            //
-            let mut stale_img = images[decoder_id].replace(updated_img);
+                //
+                // Replace the stale Image with the new one. The data in the images vector will be used
+                // to render the display at the next redraw event.
+                //
+                let mut stale_img = images[decoder_id].replace(updated_img);
 
-            //
-            // TODO: Drawing requests should be limited to whatever our FPS cap is (passed in as
-            // `_fps`). There is still some work to do here to figure out how best to implement
-            // this. For now, queue drawing requests as fast as we can.
-            //
-            area.queue_draw_area(origin.0, origin.1, dimension.0, dimension.1);
+                //
+                // TODO: Drawing requests should be limited to whatever our FPS cap is (passed in as
+                // `_fps`). There is still some work to do here to figure out how best to implement
+                // this. For now, queue drawing requests as fast as we can.
+                //
+                area.queue_draw_area(origin.0, origin.1, dimension.0, dimension.1);
 
-            // Copy updated areas from the current frame to the stale frame
-            stale_img
-                .copy_updates(&images[decoder_id].borrow())
-                .unwrap_or_else(|err| log::warn!("GTK Failed to copy Image updates: {}", err));
+                // Copy updated areas from the current frame to the stale frame
+                stale_img
+                    .copy_updates(&images[decoder_id].borrow())
+                    .unwrap_or_else(|err| log::warn!("GTK Failed to copy Image updates: {}", err));
 
-            let _ = tx.send(stale_img);
+                let _ = tx.send(stale_img);
 
-            // Image swap logging is *very* noisy
-            /*trace!(
-                "GTK image update from decoder_{} : {:?}",
-                decoder_id,
-                origin
-            );*/
+                // Image swap logging is *very* noisy
+                /*trace!(
+                    "GTK image update from decoder_{} : {:?}",
+                    decoder_id,
+                    origin
+                );*/
 
-            glib::source::Continue(true)
-        });
+                glib::source::Continue(true)
+            }),
+        );
 
     itc.control_to_ui_rx
         .take()
@@ -575,6 +592,45 @@ fn build_ui(
                         }
                     }
                     glib::source::Continue(true)
+            }),
+        );
+    itc.cursor_to_ui_rx
+        .take()
+        .expect("GTK failed to attach cursor channel!")
+        .attach(
+            None,
+            glib::clone!(@strong area => move |mut msg| {
+
+                if msg.cursor_data.is_some() {
+                    let CursorData { data, width, height, x_hot, y_hot } = msg.cursor_data.take().unwrap();
+                    let bytes = gtk::glib::Bytes::from_owned(data);
+
+                    //
+                    // Pixbuf::from_bytes() makes the following assumptions about our data:
+                    //   - Colorspace::Rgb is the only supported colorspace
+                    //   - We have an alpha channel (true)
+                    //   - 8 bits_per_sample is the only supported bitdepth for Pixbufs
+                    //   - Our rowstride is (width * RGBA) where each channel is 1 byte
+                    //
+                    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_bytes(
+                        &bytes,
+                        gtk::gdk_pixbuf::Colorspace::Rgb,
+                        true,
+                        8,
+                        width,
+                        height,
+                        width * 4,
+                    );
+                    let cursor = gtk::gdk::Cursor::from_pixbuf(&Display::default().unwrap(), &pixbuf, x_hot, y_hot);
+                    cursor_map.insert(msg.id, cursor);
+                }
+
+                match cursor_map.get(&msg.id) {
+                    Some(cursor) => area.window().unwrap().set_cursor(Some(cursor)),
+                    None => log::warn!("Cursor id {} not found in cache, ignoring", msg.id),
+                }
+
+                glib::source::Continue(true)
             }),
         );
 

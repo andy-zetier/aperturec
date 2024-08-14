@@ -11,8 +11,8 @@ use aperturec_protocol::control::{
     MissedFrameReportBuilder, Os, WindowAdvanceBuilder,
 };
 use aperturec_protocol::event::{
-    button, client_to_server as em_c2s, Button, ButtonStateBuilder, KeyEvent, MappedButton,
-    PointerEvent, PointerEventBuilder,
+    button, client_to_server as em_c2s, server_to_client as em_s2c, Button, ButtonStateBuilder,
+    KeyEvent, MappedButton, PointerEvent, PointerEventBuilder,
 };
 use aperturec_protocol::media::{self, server_to_client as mm_s2c};
 use aperturec_state_machine::*;
@@ -172,6 +172,41 @@ pub enum EventMessage {
 
 pub enum UiMessage {
     QuitMessage(String),
+}
+
+#[derive(Debug)]
+pub struct CursorData {
+    pub data: Vec<u8>,
+    pub width: i32,
+    pub height: i32,
+    pub x_hot: i32,
+    pub y_hot: i32,
+}
+
+#[derive(Debug)]
+pub struct CursorMessage {
+    pub id: u64,
+    pub cursor_data: Option<CursorData>,
+}
+
+impl TryFrom<em_s2c::Message> for CursorMessage {
+    type Error = anyhow::Error;
+    fn try_from(msg: em_s2c::Message) -> Result<Self, Self::Error> {
+        let (id, cursor_data) = match msg {
+            em_s2c::Message::CursorChange(cc) => (cc.id, None),
+            em_s2c::Message::CursorImage(ci) => (
+                ci.id,
+                Some(CursorData {
+                    data: ci.data,
+                    width: ci.width.try_into()?,
+                    height: ci.height.try_into()?,
+                    x_hot: ci.x_hot.try_into()?,
+                    y_hot: ci.y_hot.try_into()?,
+                }),
+            ),
+        };
+        Ok(CursorMessage { id, cursor_data })
+    }
 }
 
 #[derive(Builder, Debug)]
@@ -1072,10 +1107,41 @@ impl Client {
 
     fn setup_event_channel(
         &mut self,
-        mut client_ec: channel::ClientEvent,
+        client_ec: channel::ClientEvent,
         itc: &ItcChannels,
     ) -> Result<()> {
+        let (mut ec_rx, mut ec_tx) = client_ec.split();
         let event_rx = itc.event_from_ui_rx.take().unwrap();
+        let should_stop = self.should_stop.clone();
+        let cursor_to_ui_tx = itc.cursor_to_ui_tx.clone();
+
+        thread::spawn(move || {
+            log::debug!("Event channel Rx started");
+            loop {
+                match ec_rx.receive() {
+                    Ok(msg) => match msg.try_into() {
+                        Ok(cm) => {
+                            if let Err(err) = cursor_to_ui_tx.send(cm) {
+                                log::error!("Failed to send cursor message: {}", err);
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("Failed to convert event message: {}", err);
+                            break;
+                        }
+                    },
+                    Err(err) => {
+                        log::error!("Failed to receive: {}", err);
+                        break;
+                    }
+                }
+
+                if should_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+        });
 
         let control_tx = itc.notify_control_tx.clone();
         let should_stop = self.should_stop.clone();
@@ -1097,7 +1163,7 @@ impl Client {
                     break;
                 }
 
-                if let Err(err) = client_ec.send(msg) {
+                if let Err(err) = ec_tx.send(msg) {
                     let _ = control_tx.send(ControlMessage::EventChannelDied(
                         GoodbyeMessage::new_network_error(),
                     ));
@@ -1265,7 +1331,6 @@ mod test {
                     .server_name(String::from("fake quic server"))
                     .display_size(Dimension::new(800, 600))
                     .decoder_areas(vec![])
-                    .cursor_bitmaps(vec![])
                     .build()
                     .unwrap()
                     .into(),
