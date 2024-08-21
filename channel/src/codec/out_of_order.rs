@@ -1,11 +1,13 @@
-//! Unreliable, message-oriented API
+//! Reliable, out-of-order, message-oriented API
 //!
 //! Built on-top of the [`crate::transport::datagram`] API, this provides methods for sending and
-//! receiving messages unreliably and out-of-order.
+//! receiving messages reliably and out-of-order.
 
 use crate::gate::*;
 use crate::transport::datagram::{self, AsyncReceive, AsyncTransmit, Receive, Transmit};
 use crate::*;
+
+use aperturec_protocol::media;
 
 use bytes::Bytes;
 use prost::Message;

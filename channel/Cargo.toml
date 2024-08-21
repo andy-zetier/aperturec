@@ -24,12 +24,12 @@ tokio = { version = "1.37", features = ["full"] }
 trait-variant = "0.1"
 
 [target.'cfg(unix)'.dependencies.s2n-quic]
-version = "1.41"
-features = ["provider-tls-fips", "provider-tls-rustls", "unstable-provider-datagram"]
+version = "1.44"
+features = ["provider-tls-fips", "provider-tls-rustls"]
 
 [target.'cfg(windows)'.dependencies.s2n-quic]
-version = "1.41"
-features = ["provider-tls-rustls", "unstable-provider-datagram"]
+version = "1.44"
+features = ["provider-tls-rustls"]
 
 [dev-dependencies]
 aperturec-channel = { path = ".", features = ["test-tls-material"] }

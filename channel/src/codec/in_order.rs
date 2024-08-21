@@ -1,4 +1,4 @@
-//! Reliable, message-oriented API.
+//! Reliable, in-order, message-oriented API.
 //!
 //! Built on-top of the [`crate::transport::stream`] API, this provides methods for sending and
 //! receiving messages reliably and in-order.

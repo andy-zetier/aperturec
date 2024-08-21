@@ -165,7 +165,6 @@ impl Builder {
         #[allow(deprecated)]
         let tls_provider = TlsProvider::new(tls_config);
 
-        let datagram_endpoint = provider::datagram::EndpointBuilder::default().build()?;
         let io = s2n_quic::provider::io::tokio::Provider::builder()
             .with_gro_disabled()?
             .with_gso_disabled()?
@@ -179,7 +178,6 @@ impl Builder {
         let quic_server_builder = s2n_quic::Server::builder()
             .with_io(io)?
             .with_tls(tls_provider)?
-            .with_datagram(datagram_endpoint)?
             .with_event((
                 provider::event::TrxSubscriber,
                 provider::event::MtuSubscriber,
@@ -324,18 +322,10 @@ impl TryTransitionable<Ready, Accepted> for Server<Accepted> {
             self.state.async_rt.clone(),
         ));
 
-        let dg_tx = try_recover!(
-            try_recover!(
-                self.state
-                    .connection
-                    .datagram_mut(|dg_sender: &mut provider::datagram::Sender| dg_sender.handle()),
-                self,
-                Accepted
-            ),
-            self,
-            Accepted
-        );
-        let mc = ServerMedia::new(datagram::Transmitter::new(dg_tx));
+        let mc = ServerMedia::new(datagram::Transmitter::new(
+            self.state.connection,
+            self.state.async_rt.clone(),
+        ));
 
         Ok(Server {
             state: Ready {
@@ -469,18 +459,7 @@ impl AsyncTryTransitionable<AsyncReady, AsyncAccepted> for Server<AsyncAccepted>
             AsyncAccepted
         )));
 
-        let dg_tx = try_recover!(
-            try_recover!(
-                self.state
-                    .connection
-                    .datagram_mut(|dg_sender: &mut provider::datagram::Sender| dg_sender.handle()),
-                self,
-                AsyncAccepted
-            ),
-            self,
-            AsyncAccepted
-        );
-        let mc = AsyncServerMedia::new(datagram::AsyncTransmitter::new(dg_tx));
+        let mc = AsyncServerMedia::new(datagram::AsyncTransmitter::new(self.state.connection));
 
         Ok(Server {
             state: AsyncReady {
