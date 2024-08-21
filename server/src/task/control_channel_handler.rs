@@ -25,7 +25,6 @@ pub struct Created {
     cc: AsyncServerControl,
     hb_resp_tx: mpsc::UnboundedSender<cm::HeartbeatResponse>,
     missed_frame_tx: mpsc::UnboundedSender<cm::MissedFrameReport>,
-    flow_control_tx: mpsc::UnboundedSender<cm::WindowAdvance>,
     to_send_rx: mpsc::Receiver<cm_s2c::Message>,
 }
 
@@ -45,7 +44,6 @@ pub struct Channels {
     pub to_send_tx: mpsc::Sender<cm_s2c::Message>,
     pub hb_resp_rx: mpsc::UnboundedReceiver<cm::HeartbeatResponse>,
     pub missed_frame_rx: mpsc::UnboundedReceiver<cm::MissedFrameReport>,
-    pub flow_control_rx: mpsc::UnboundedReceiver<cm::WindowAdvance>,
 }
 
 impl Task<Created> {
@@ -53,13 +51,11 @@ impl Task<Created> {
         let (to_send_tx, to_send_rx) = mpsc::channel(1);
         let (hb_resp_tx, hb_resp_rx) = mpsc::unbounded_channel();
         let (missed_frame_tx, missed_frame_rx) = mpsc::unbounded_channel();
-        let (flow_control_tx, flow_control_rx) = mpsc::unbounded_channel();
         let task = Task {
             state: Created {
                 cc,
                 hb_resp_tx,
                 missed_frame_tx,
-                flow_control_tx,
                 to_send_rx,
             },
         };
@@ -68,7 +64,6 @@ impl Task<Created> {
             Channels {
                 to_send_tx,
                 hb_resp_rx,
-                flow_control_rx,
                 missed_frame_rx,
             },
         )
@@ -158,11 +153,6 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                                 enq!(MISSED_FRAME_QUEUE);
                                 if let Err(err) = self.state.missed_frame_tx.send(report) {
                                     break Err(anyhow!("Could not forward missed frame report to missed frame report channel: {}", err));
-                                }
-                            }
-                            Ok(cm_c2s::Message::WindowAdvance(wa)) => {
-                                if let Err(err) = self.state.flow_control_tx.send(wa) {
-                                    break Err(anyhow!("Could not forward window advance to flow control channel: {}", err));
                                 }
                             }
                             Err(e) => break Err(anyhow!("Failed to receive on control channel: {}", e)),

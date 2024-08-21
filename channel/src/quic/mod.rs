@@ -97,21 +97,22 @@ pub mod test {
         (control::client_to_server::Message, usize),
         (control::server_to_client::Message, usize),
         (event::client_to_server::Message, usize),
-        (media::server_to_client::Message, usize),
+        media::ServerToClient,
     ) {
         let ci: control::client_to_server::Message = control::ClientInit::default().into();
         let si: control::server_to_client::Message = control::ServerInit::default().into();
         let ke: event::client_to_server::Message = event::KeyEvent::default().into();
-        let fbu: media::server_to_client::Message = media::FramebufferUpdate::default().into();
+        let frag = media::ServerToClient {
+            message: Some(media::FramebufferUpdate::default().into()),
+        };
         let ci_len = ci.encoded_len();
         let si_len = si.encoded_len();
         let ke_len = ke.encoded_len();
-        let fbu_len = fbu.encoded_len();
         (
             (ci, ci_len + prost::length_delimiter_len(ci_len)),
             (si, si_len + prost::length_delimiter_len(si_len)),
             (ke, ke_len + prost::length_delimiter_len(ke_len)),
-            (fbu, fbu_len),
+            frag,
         )
     }
 
@@ -128,7 +129,7 @@ pub mod test {
             assert_eq!(cc.receive_with_len().expect("server cc receive"), s_msgs.0);
             cc.send(s_msgs.1 .0).expect("server cc send");
             assert_eq!(ec.receive_with_len().expect("server ec receive"), s_msgs.2);
-            mc.send(s_msgs.3 .0).expect("server mc send");
+            mc.send(s_msgs.3).expect("server mc send");
 
             <server::Server<_> as UnifiedServer>::unsplit(cc, ec, mc, residual)
         });
@@ -143,7 +144,7 @@ pub mod test {
             cc.send(c_msgs.0 .0).expect("client cc send");
             assert_eq!(cc.receive_with_len().expect("client cc receive"), c_msgs.1);
             ec.send(c_msgs.2 .0).expect("client ec send");
-            assert_eq!(mc.receive_with_len().expect("client mc receive"), c_msgs.3);
+            assert_eq!(mc.receive().expect("client mc receive"), c_msgs.3);
 
             <client::Client<_> as UnifiedClient>::unsplit(cc, ec, mc, ())
         });
@@ -171,7 +172,7 @@ pub mod test {
                 ec.receive_with_len().await.expect("server ec receive"),
                 s_msgs.2
             );
-            mc.send(s_msgs.3 .0).await.expect("server mc send");
+            mc.send(s_msgs.3).await.expect("server mc send");
 
             <server::Server<_> as AsyncUnifiedServer>::unsplit(cc, ec, mc, residual)
         });
@@ -189,10 +190,7 @@ pub mod test {
                 c_msgs.1
             );
             ec.send(c_msgs.2 .0).await.expect("client ec send");
-            assert_eq!(
-                mc.receive_with_len().await.expect("client mc receive"),
-                c_msgs.3
-            );
+            assert_eq!(mc.receive().await.expect("client mc receive"), c_msgs.3);
 
             <client::Client<_> as AsyncUnifiedClient>::unsplit(cc, ec, mc)
         });
@@ -221,7 +219,7 @@ pub mod test {
             cc.send(c_msgs.0 .0).expect("client cc send");
             assert_eq!(cc.receive_with_len().expect("client cc receive"), c_msgs.1);
             ec.send(c_msgs.2 .0).expect("client ec send");
-            assert_eq!(mc.receive_with_len().expect("client mc receive"), c_msgs.3);
+            assert_eq!(mc.receive().expect("client mc receive"), c_msgs.3);
 
             <client::Client<_> as UnifiedClient>::unsplit(cc, ec, mc, ())
         });
@@ -240,7 +238,7 @@ pub mod test {
                 ec.receive_with_len().await.expect("server ec receive"),
                 s_msgs.2
             );
-            mc.send(s_msgs.3 .0).await.expect("server mc send");
+            mc.send(s_msgs.3).await.expect("server mc send");
 
             <server::Server<_> as AsyncUnifiedServer>::unsplit(cc, ec, mc, residual)
         });
@@ -266,7 +264,7 @@ pub mod test {
             assert_eq!(cc.receive_with_len().expect("server cc receive"), s_msgs.0);
             cc.send(s_msgs.1 .0).expect("server cc send");
             assert_eq!(ec.receive_with_len().expect("server ec receive"), s_msgs.2);
-            mc.send(s_msgs.3 .0).expect("server mc send");
+            mc.send(s_msgs.3).expect("server mc send");
 
             <server::Server<_> as UnifiedServer>::unsplit(cc, ec, mc, residual)
         });
@@ -284,10 +282,7 @@ pub mod test {
                 c_msgs.1
             );
             ec.send(c_msgs.2 .0).await.expect("client ec send");
-            assert_eq!(
-                mc.receive_with_len().await.expect("client mc receive"),
-                c_msgs.3
-            );
+            assert_eq!(mc.receive().await.expect("client mc receive"), c_msgs.3);
 
             <client::Client<_> as AsyncUnifiedClient>::unsplit(cc, ec, mc)
         });

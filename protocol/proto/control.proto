@@ -91,18 +91,12 @@ message MissedFrameReport {
   repeated uint64 frame_sequence_ids = 2;
 }
 
-message WindowAdvance {
-    uint64 completed_window_id = 1;
-    google.protobuf.Timestamp latency_timestamp = 2;
-}
-
 message ClientToServer {
   oneof message {
     ClientInit client_init = 1;
     ClientGoodbye client_goodbye = 2;
     HeartbeatResponse heartbeat_response = 3;
     MissedFrameReport missed_frame_report = 4;
-    WindowAdvance window_advance = 6;
   }
 }
 
@@ -111,7 +105,6 @@ message ServerInit {
   string server_name = 2;
   common.Dimension display_size = 3;
   repeated DecoderArea decoder_areas = 4;
-  uint64 window_size = 5;
 }
 
 enum ServerGoodbyeReason {

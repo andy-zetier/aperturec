@@ -1,7 +1,7 @@
 use crate::backend::{Backend, SwapableBackend};
 use crate::task::{
     backend, control_channel_handler as cc_handler, encoder, event_channel_handler as ec_handler,
-    flow_control, heartbeat, media_channel_handler as mc_handler,
+    heartbeat, media_channel_handler as mc_handler, rate_limit,
 };
 
 use anyhow::{anyhow, bail, Result};
@@ -51,7 +51,6 @@ pub struct Configuration {
     root_process_cmdline: Option<String>,
     allow_client_exec: bool,
     mbps_max: Option<usize>,
-    window_size: Option<usize>,
 }
 
 #[derive(Stateful, Debug)]
@@ -98,7 +97,7 @@ pub struct AuthenticatedClient<B: Backend + 'static> {
     client_hb_interval: Duration,
     client_hb_response_interval: Duration,
     decoders: BTreeMap<u32, (Location, Dimension, Codec)>,
-    fc_config: flow_control::Configuration,
+    rl_config: rate_limit::Configuration,
 }
 
 #[derive(State)]
@@ -111,7 +110,7 @@ pub struct Running<B: Backend + 'static> {
     cc_handler_task: cc_handler::Task<cc_handler::Running>,
     ec_handler_task: ec_handler::Task<ec_handler::Running>,
     mc_handler_task: mc_handler::Task<mc_handler::Running>,
-    flow_control_task: flow_control::Task<flow_control::Running>,
+    rate_limit_task: rate_limit::Task<rate_limit::Running>,
 }
 
 #[derive(State)]
@@ -512,8 +511,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
             }};
         }
 
-        let local_addr = try_recover!(self.state.channel_server.local_addr(), self);
-
         let (mut cc, ec, mc, listener): (channel::AsyncServerControl, _, _, _) =
             try_transition_inner_recover_async!(
                 self.state.channel_server,
@@ -559,17 +556,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
                 "client sent invalid decoder max"
             );
         }
-        let client_recv_buffer_size: usize = match client_init
-            .client_info
-            .as_ref()
-            .and_then(|ci| ci.recv_buffer_size.try_into().ok())
-        {
-            Some(recv_buffer_size) => recv_buffer_size,
-            _ => return_recover!(
-                recover_self!(cc, ec, mc, listener),
-                "Client did not provide valid recv buffer size"
-            ),
-        };
         let client_mbps_max: usize = match client_init.mbps_max.try_into().ok() {
             Some(mbps_max) => mbps_max,
             _ => return_recover!(
@@ -672,13 +658,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
             .collect();
         let client_id: u64 = rand::random();
 
-        let fc_config = flow_control::Configuration::new(
-            self.config.window_size,
-            self.config.mbps_max,
-            local_addr,
-            client_mbps_max,
-            client_recv_buffer_size,
-        );
+        let rl_config = rate_limit::Configuration::new(self.config.mbps_max, client_mbps_max);
 
         let server_init = try_recover!(
             cm::ServerInitBuilder::default()
@@ -689,7 +669,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
                     resolution.width as u64,
                     resolution.height as u64,
                 ))
-                .window_size(fc_config.get_initial_window_size())
                 .build(),
             recover_self!(cc, ec, mc, listener, backend.into_inner().0)
         );
@@ -728,7 +707,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
                 client_hb_interval,
                 client_hb_response_interval,
                 decoders,
-                fc_config,
+                rl_config,
             },
             config: self.config,
         })
@@ -760,11 +739,10 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Listening<B>>
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let (cc_handler_task, cc_handler_channels) = cc_handler::Task::new(self.state.cc);
-        let (flow_control_task, fc_handle) =
-            flow_control::Task::new(self.state.fc_config, cc_handler_channels.flow_control_rx);
+        let (rate_limit_task, rl_handle) = rate_limit::Task::new(self.state.rl_config);
         let (ec_handler_task, ec_handler_channels) = ec_handler::Task::new(self.state.ec);
         let (mc_handler_task, mc_handler_channels) =
-            mc_handler::Task::new(self.state.mc.gated(fc_handle), self.state.decoders.len());
+            mc_handler::Task::new(self.state.mc.gated(rl_handle), self.state.decoders.len());
 
         let (backend_task, backend_channels) = backend::Task::<backend::Created<B>>::new(
             self.state.backend,
@@ -801,7 +779,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Listening<B>>
         let cc_handler_task = try_transition_inner_recover_async!(cc_handler_task, recover!());
         let ec_handler_task = try_transition_inner_recover_async!(ec_handler_task, recover!());
         let mc_handler_task = try_transition_inner_recover_async!(mc_handler_task, recover!());
-        let flow_control_task = try_transition_inner_recover_async!(flow_control_task, recover!());
+        let rate_limit_task = transition!(rate_limit_task, rate_limit::Running);
         let backend_task =
             try_transition_inner_recover_async!(backend_task, |be_task: backend::Task<
                 backend::Created<B>,
@@ -825,7 +803,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Listening<B>>
                 cc_handler_task,
                 ec_handler_task,
                 mc_handler_task,
-                flow_control_task,
+                rate_limit_task,
             },
             config: self.config,
         })
@@ -851,14 +829,14 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         let mut cc_handler_terminated = None;
         let mut ec_handler_terminated = None;
         let mut mc_handler_terminated = None;
-        let mut flow_control_terminated = None;
+        let mut rate_limit_terminated = None;
 
         let heartbeat_ct = self.state.heartbeat_task.cancellation_token().clone();
         let backend_ct = self.state.backend_task.cancellation_token().clone();
         let cc_handler_ct = self.state.cc_handler_task.cancellation_token().clone();
         let ec_handler_ct = self.state.ec_handler_task.cancellation_token().clone();
         let mc_handler_ct = self.state.mc_handler_task.cancellation_token().clone();
-        let flow_control_ct = self.state.flow_control_task.cancellation_token().clone();
+        let rate_limit_ct = self.state.rate_limit_task.cancellation_token().clone();
         let client_process_ct = CancellationToken::new();
 
         let mut heartbeat_task = tokio::spawn(async move {
@@ -876,8 +854,8 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         let mut mc_handler_task = tokio::spawn(async move {
             try_transition_async!(self.state.mc_handler_task, mc_handler::Terminated)
         });
-        let mut flow_control_task = tokio::spawn(async move {
-            try_transition_async!(self.state.flow_control_task, flow_control::Terminated)
+        let mut rate_limit_task = tokio::spawn(async move {
+            try_transition_async!(self.state.rate_limit_task, rate_limit::Terminated)
         });
 
         loop {
@@ -891,7 +869,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                     cc_handler_ct.cancel();
                     ec_handler_ct.cancel();
                     mc_handler_ct.cancel();
-                    flow_control_ct.cancel();
+                    rate_limit_ct.cancel();
                     client_process_ct.cancel();
                 }
                 _ = self.state.ct.cancelled(), if server_gb_reason.is_some() && !has_sent_gb => {
@@ -951,12 +929,12 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
                     mc_handler_terminated = Some(mc_term);
                     self.state.ct.cancel();
                 }
-                fc_term = &mut flow_control_task, if flow_control_terminated.is_none() => {
+                rl_term = &mut rate_limit_task, if rate_limit_terminated.is_none() => {
                     log::debug!("Flow Control subtask completed");
-                    if server_gb_reason.is_none() && fc_term.is_err() {
+                    if server_gb_reason.is_none() && rl_term.is_err() {
                         server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
                     }
-                    flow_control_terminated = Some(fc_term);
+                    rate_limit_terminated = Some(rl_term);
                     self.state.ct.cancel();
                 }
                 else => break
@@ -967,7 +945,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         let cc_handler_terminated = cc_handler_terminated.expect("cc handler terminated");
         let ec_handler_terminated = ec_handler_terminated.expect("ec handler terminated");
         let mc_handler_terminated = mc_handler_terminated.expect("mc handler terminated");
-        let flow_control_terminated = flow_control_terminated.expect("flow control terminated");
+        let rate_limit_terminated = rate_limit_terminated.expect("flow control terminated");
 
         let mut errors = vec![];
         let backend = match backend_terminated {
@@ -998,7 +976,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionCom
         if let Err(e) = mc_handler_terminated {
             errors.push(e.into());
         }
-        if let Err(e) = flow_control_terminated {
+        if let Err(e) = rate_limit_terminated {
             errors.push(e.into());
         }
 
@@ -1153,7 +1131,6 @@ mod test {
             .max_height(1080)
             .allow_client_exec(false)
             .mbps_max(500.into())
-            .window_size(None)
             .build()
             .expect("Configuration build");
         let server: Server<Listening<X>> = Server::new(server_config.clone())

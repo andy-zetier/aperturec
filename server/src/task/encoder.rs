@@ -982,8 +982,6 @@ impl AsyncTryTransitionable<Running, Terminated> for Encoder<Created> {
                                             mm::FramebufferUpdate {
                                                 decoder_id: self.state.id,
                                                 sequence: sequence.fetch_add(1, Ordering::Relaxed),
-                                                window_id: 0,
-                                                latency_timestamp: None,
                                                 codec: codec.into(),
                                                 location:  Some(Location::new(encoder_relative_loc.x as u64, encoder_relative_loc.y as u64)),
                                                 dimension: Some(Dimension::new(dim.width as u64, dim.height as u64)),

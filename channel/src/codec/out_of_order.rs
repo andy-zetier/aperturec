@@ -21,26 +21,29 @@ pub struct Gated<S, G> {
 
 impl<S: Sender, G: Gate> Sender for Gated<S, G>
 where
-    <G as Gate>::StampedMessage: Into<<S as Sender>::Message>,
+    S::Message: Message,
 {
-    type Message = <G as Gate>::UnstampedMessage;
+    type Message = S::Message;
 
     fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-        let stamped = self.gate.wait_and_stamp(msg)?;
-        self.ungated.send(stamped.into())
+        let msg_size = msg.encoded_len();
+        self.gate.wait(msg_size)?;
+        self.ungated.send(msg)?;
+        Ok(())
     }
 }
 
 impl<S: AsyncSender, G: AsyncGate + Send> AsyncSender for Gated<S, G>
 where
-    <G as AsyncGate>::StampedMessage: Into<<S as AsyncSender>::Message>,
-    <G as AsyncGate>::UnstampedMessage: Send,
+    S::Message: Message,
 {
-    type Message = <G as AsyncGate>::UnstampedMessage;
+    type Message = S::Message;
 
     async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-        let stamped = self.gate.wait_and_stamp(msg).await?;
-        self.ungated.send(stamped.into()).await
+        let msg_size = msg.encoded_len();
+        self.gate.wait(msg_size).await?;
+        self.ungated.send(msg).await?;
+        Ok(())
     }
 }
 
@@ -406,31 +409,19 @@ where
 }
 
 pub type ClientMediaChannel =
-    ReceiverSimplex<datagram::Receiver, media::server_to_client::Message, media::ServerToClient>;
+    ReceiverSimplex<datagram::Receiver, media::ServerToClient, media::ServerToClient>;
 
-pub type AsyncClientMediaChannel = AsyncReceiverSimplex<
-    datagram::AsyncReceiver,
-    media::server_to_client::Message,
-    media::ServerToClient,
->;
+pub type AsyncClientMediaChannel =
+    AsyncReceiverSimplex<datagram::AsyncReceiver, media::ServerToClient, media::ServerToClient>;
 
 pub type ServerMediaChannel =
-    SenderSimplex<datagram::Transmitter, media::server_to_client::Message, media::ServerToClient>;
-pub type AsyncServerMediaChannel = AsyncSenderSimplex<
-    datagram::AsyncTransmitter,
-    media::server_to_client::Message,
-    media::ServerToClient,
->;
+    SenderSimplex<datagram::Transmitter, media::ServerToClient, media::ServerToClient>;
+pub type AsyncServerMediaChannel =
+    AsyncSenderSimplex<datagram::AsyncTransmitter, media::ServerToClient, media::ServerToClient>;
 
-pub type GatedServerMediaChannel<G> = Gated<
-    SenderSimplex<datagram::Transmitter, media::server_to_client::Message, media::ServerToClient>,
-    G,
->;
+pub type GatedServerMediaChannel<G> =
+    Gated<SenderSimplex<datagram::Transmitter, media::ServerToClient, media::ServerToClient>, G>;
 pub type AsyncGatedServerMediaChannel<G> = Gated<
-    AsyncSenderSimplex<
-        datagram::AsyncTransmitter,
-        media::server_to_client::Message,
-        media::ServerToClient,
-    >,
+    AsyncSenderSimplex<datagram::AsyncTransmitter, media::ServerToClient, media::ServerToClient>,
     G,
 >;

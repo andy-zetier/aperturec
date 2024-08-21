@@ -7,12 +7,10 @@ import "google/protobuf/timestamp.proto";
 message FramebufferUpdate {
   uint32 decoder_id = 1;
   uint64 sequence = 2;
-  uint64 window_id = 3;
-  google.protobuf.Timestamp latency_timestamp = 4;
-  common.Codec codec = 5;
-  common.Location location = 6;
-  common.Dimension dimension = 7;
-  bytes Data = 8;
+  common.Codec codec = 3;
+  common.Location location = 4;
+  common.Dimension dimension = 5;
+  bytes data = 6;
 }
 
 message ServerToClient {

@@ -5,10 +5,9 @@ use aperturec_channel::{
 };
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
-    client_to_server as cm_c2s, server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye,
-    ClientGoodbyeBuilder, ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit,
-    ClientInitBuilder, DecoderArea, DecoderSequencePair, Endianness, HeartbeatResponseBuilder,
-    MissedFrameReportBuilder, Os, WindowAdvanceBuilder,
+    server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder,
+    ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, DecoderArea,
+    DecoderSequencePair, Endianness, HeartbeatResponseBuilder, MissedFrameReportBuilder, Os,
 };
 use aperturec_protocol::event::{
     button, client_to_server as em_c2s, server_to_client as em_s2c, Button, ButtonStateBuilder,
@@ -17,18 +16,17 @@ use aperturec_protocol::event::{
 use aperturec_protocol::media::{self, server_to_client as mm_s2c};
 use aperturec_state_machine::*;
 use aperturec_trace::log;
-use crossbeam_channel::{after, never, select, unbounded};
+use crossbeam_channel::{select, unbounded};
 use derive_builder::Builder;
 use openssl::x509::X509;
 use socket2::{Domain, Socket, Type};
-use std::cmp::min;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Duration;
 use std::{assert, thread};
 use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
 
@@ -214,9 +212,6 @@ pub struct UpdateReport {
     decoder_id: u32,
     sequence_id: u64,
     missing_sequence_ids: Vec<u64>,
-    window_id: u64,
-    update_size: usize,
-    latency_timestamp: Option<SystemTime>,
 }
 
 pub enum ControlMessage {
@@ -287,82 +282,6 @@ fn get_recv_buffer_size(sock_addr: SocketAddr) -> usize {
     let sock =
         Socket::new(Domain::for_address(sock_addr), Type::DGRAM, None).expect("Socket create");
     sock.recv_buffer_size().expect("SO_RCVBUF")
-}
-
-struct CountdownTimer {
-    duration: Duration,
-    start_time: Instant,
-}
-
-impl CountdownTimer {
-    fn new(duration: Duration) -> Self {
-        let start_time = Instant::now();
-        Self {
-            duration,
-            start_time,
-        }
-    }
-
-    fn remaining(&self) -> Option<Duration> {
-        self.duration.checked_sub(self.start_time.elapsed())
-    }
-
-    fn reset(&mut self) {
-        self.start_time = Instant::now();
-    }
-
-    fn reinitialize(&mut self, duration: Duration) {
-        self.duration = duration;
-        self.reset()
-    }
-}
-
-#[derive(Clone, Debug)]
-struct Window {
-    length: u64,
-    bytes_recv: u64,
-    id: u64,
-    tx: crossbeam_channel::Sender<cm_c2s::Message>,
-}
-
-impl Window {
-    fn new(length: u64, tx: crossbeam_channel::Sender<cm_c2s::Message>) -> Self {
-        Self {
-            length,
-            bytes_recv: 0,
-            id: 0,
-            tx,
-        }
-    }
-
-    fn advance(&mut self) -> Result<()> {
-        let wa = WindowAdvanceBuilder::default()
-            .completed_window_id(self.id)
-            .latency_timestamp(SystemTime::now())
-            .build()
-            .expect("Failed to build WindowAdvance!");
-
-        self.tx.send(wa.into())?;
-
-        self.bytes_recv = 0;
-        self.id = self.id.wrapping_add(1);
-
-        Ok(())
-    }
-
-    fn fill_percent(&self) -> f64 {
-        self.bytes_recv as f64 / self.length as f64
-    }
-
-    fn update_if_current(&mut self, id: u64, num_bytes: usize) -> bool {
-        if id >= self.id {
-            self.bytes_recv += num_bytes as u64;
-            self.id = id;
-            true
-        } else {
-            false
-        }
-    }
 }
 
 pub struct Client {
@@ -532,14 +451,18 @@ impl Client {
             decoder_channels_rx.insert(decoder.id, rx);
         }
         thread::spawn::<_, Result<()>>(move || loop {
-            let (mm_s2c::Message::FramebufferUpdate(fbu), len) = mc.receive_with_len()?;
+            let mm = mc.receive()?;
 
-            match decoder_channels_tx.get_mut(&fbu.decoder_id) {
-                Some(channel) => channel.send((fbu, len))?,
-                None => log::warn!(
-                    "Received media message for decoder ID {} which does not exist",
-                    fbu.decoder_id
-                ),
+            if let Some(mm_s2c::Message::FramebufferUpdate(fbu)) = mm.message {
+                match decoder_channels_tx.get_mut(&fbu.decoder_id) {
+                    Some(channel) => channel.send(fbu)?,
+                    None => log::warn!(
+                        "Received media message for decoder ID {} which does not exist",
+                        fbu.decoder_id
+                    ),
+                }
+            } else {
+                log::warn!("empty media message");
             }
         });
 
@@ -589,8 +512,8 @@ impl Client {
                     //
                     // Listen for FramebufferUpdates from the server
                     //
-                    let (fbu, len) = match fbu_rx.recv() {
-                        Ok((fbu, len)) => (fbu, len),
+                    let fbu = match fbu_rx.recv() {
+                        Ok(fbu) => fbu,
                         Err(err) => {
                             log::error!(
                                 "[decoder {}] Fatal error receiving FBU: {}",
@@ -752,18 +675,6 @@ impl Client {
                             .decoder_id(decoder_id)
                             .sequence_id(current_seq_id.unwrap())
                             .missing_sequence_ids(missing_sequences.into_iter().collect())
-                            .window_id(fbu.window_id)
-                            .update_size(len)
-                            .latency_timestamp(
-                                match fbu.latency_timestamp.map(SystemTime::try_from) {
-                                    Some(Ok(systime)) => Some(systime),
-                                    Some(Err(err)) => {
-                                        log::warn!("Failed to read latency timestamp: {:?}", err);
-                                        None
-                                    }
-                                    _ => None,
-                                },
-                            )
                             .build()
                             .expect("Failed to build UpdateReport!"),
                     )) {
@@ -916,24 +827,9 @@ impl Client {
         let client_id = self.id.unwrap();
         let should_stop = self.should_stop.clone();
         let control_rx = itc.notify_control_rx.take().unwrap();
-        let mut window = Window::new(si.window_size, control_tx_tx.clone());
-
-        // Window Advance messages are sent after receiving this percentage of window data.
-        const WA_TRIGGER_PERCENT: f64 = 0.75;
-
-        //
-        // The window advance timer (wa_timer) ensures a Window Advance message is sent after not
-        // receiving data from the server for a period of time. The timer guards against massive
-        // packet loss where we've received less than WA_TRIGGER_PERCENT but the server has
-        // actually sent the full window length of data. The timer defaults to, and has an upper
-        // bound of, WA_TIMER_MAX. The timer duration is reduced to the most recent Window Advance
-        // Latency measurements as those measurements are made.
-        //
-        const WA_TIMER_MAX: Duration = Duration::from_millis(1000);
 
         self.control_jh = Some(thread::spawn(move || {
             let mut decoder_seq = BTreeMap::new();
-            let mut wa_timer = CountdownTimer::new(WA_TIMER_MAX);
 
             log::debug!("Control channel started");
             loop {
@@ -1018,36 +914,6 @@ impl Client {
                                     log::warn!("Failed to send MissedFrameReport: {}", err);
                                 }
                             }
-
-                            //
-                            // Update Flow Control statistics
-                            //
-                            wa_timer.reset();
-
-                            // Ignore data from old windows
-                            if ! window.update_if_current(report.window_id, report.update_size) {
-                                continue;
-                            }
-
-                            let fill_percent = window.fill_percent();
-
-                            if let Some(Ok(wa_latency)) = report.latency_timestamp.map(|l| l.elapsed()) {
-                                wa_timer.reinitialize(min(WA_TIMER_MAX, wa_latency));
-                                crate::metrics::WindowAdvanceLatency::update_with(move || {
-                                    wa_latency.as_secs_f64()
-                                });
-                            }
-
-                            if fill_percent >= WA_TRIGGER_PERCENT {
-                                crate::metrics::WindowFillPercent::update(fill_percent);
-                                match window.advance() {
-                                    Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
-                                    _ => log::trace!(
-                                        "Sent WindowAdvance for window id {}",
-                                        report.window_id
-                                    ),
-                                };
-                            }
                         },
                         Ok(ControlMessage::UiClosed(gm)) => {
                             control_tx_tx.send(gm.to_client_goodbye(client_id).into())
@@ -1077,24 +943,6 @@ impl Client {
                             break;
                         }
                     },
-                    recv(wa_timer.remaining().map(after).unwrap_or(never())) -> _ => {
-
-                        if window.bytes_recv == 0 {
-                            continue;
-                        }
-
-                        let win = window.clone();
-                        crate::metrics::WindowFillPercent::update_with(move || {
-                            win.fill_percent()
-                        });
-                        match window.advance() {
-                            Err(err) => log::warn!("Failed to send WindowAdvance: {}", err),
-                            _ => log::trace!(
-                                "Sent WindowAdvance timeout after {:?}",
-                                wa_timer.duration
-                            ),
-                        };
-                    }
                 }
             } // loop
 

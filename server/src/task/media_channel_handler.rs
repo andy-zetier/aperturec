@@ -1,7 +1,7 @@
-use super::flow_control::FlowControlHandle;
+use super::rate_limit::RateLimitHandle;
 
 use aperturec_channel::{self as channel, AsyncGatedServerMedia, AsyncSender};
-use aperturec_protocol::media::FramebufferUpdate;
+use aperturec_protocol::media::{server_to_client as mm_s2c, FramebufferUpdate};
 use aperturec_state_machine::*;
 use aperturec_trace::log;
 
@@ -26,7 +26,7 @@ pub struct Task<S: State> {
 
 #[derive(State)]
 pub struct Created {
-    mc: channel::AsyncGatedServerMedia<FlowControlHandle>,
+    mc: channel::AsyncGatedServerMedia<RateLimitHandle>,
     fbu_tx: mpsc::Receiver<Vec<FramebufferUpdate>>,
     synthetic_missed_frame_txs: BTreeMap<u32, mpsc::UnboundedSender<u64>>,
     ct: CancellationToken,
@@ -47,10 +47,7 @@ pub struct Channels {
 }
 
 impl Task<Created> {
-    pub fn new(
-        mc: AsyncGatedServerMedia<FlowControlHandle>,
-        n_encoders: usize,
-    ) -> (Self, Channels) {
+    pub fn new(mc: AsyncGatedServerMedia<RateLimitHandle>, n_encoders: usize) -> (Self, Channels) {
         let (fbu_tx, fbu_rx) = mpsc::channel(n_encoders * 2);
         let mut synthetic_missed_frame_txs = BTreeMap::new();
         let mut synthetic_missed_frame_rxs = BTreeMap::new();
@@ -137,7 +134,7 @@ impl AsyncTryTransitionable<Running, Created> for Task<Created> {
                         for fbu in fbus {
                             let sequence = fbu.sequence;
                             let encoder = fbu.decoder_id;
-                            if let Err(e) = self.state.mc.send(fbu).await {
+                            if let Err(e) = self.state.mc.send(mm_s2c::Message::FramebufferUpdate(fbu).into()).await {
                                 break 'outer Err(anyhow!("[Encoder {}] Failed to send FBU {}: {}", encoder, sequence, e));
                             }
                             last_sent_tx.send_if_modified(|curr|

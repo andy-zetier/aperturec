@@ -1,4 +1,3 @@
-use aperturec_channel::transport::datagram;
 use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
@@ -9,7 +8,6 @@ use anyhow::Result;
 use clap::Parser;
 use gethostname::gethostname;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false)]
@@ -42,41 +40,6 @@ struct TlsGroup {
     /// Domain names the server will operate on
     #[arg(short, long = "external-address", requires = "tls_save_directory", conflicts_with_all =  &["private_key", "certificate"], default_value = gethostname())]
     external_addresses: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug)]
-enum WindowSizeOption {
-    Size(usize),
-    Negotiated,
-    Disabled,
-}
-
-impl FromStr for WindowSizeOption {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_uppercase().as_str() {
-            "NONE" => Ok(WindowSizeOption::Disabled),
-            "NEGOTIATED" => Ok(WindowSizeOption::Negotiated),
-            _ => {
-                let val = s.parse()?;
-                if val < datagram::MAX_SIZE {
-                    anyhow::bail!("window size cannot be smaller than {}", datagram::MAX_SIZE)
-                }
-                Ok(WindowSizeOption::Size(val))
-            }
-        }
-    }
-}
-
-impl From<WindowSizeOption> for Option<usize> {
-    fn from(w: WindowSizeOption) -> Option<usize> {
-        match w {
-            WindowSizeOption::Disabled => None,
-            WindowSizeOption::Negotiated => Some(0),
-            WindowSizeOption::Size(sz) => Some(sz),
-        }
-    }
 }
 
 impl From<RootProgramGroup> for Option<String> {
@@ -145,12 +108,6 @@ struct Args {
     /// max bit rate throttling.
     #[arg(long, default_value = "25")]
     mbps_max: String,
-
-    /// Flow control window size in bytes. Leaving this unspecified will negotiate the window size
-    /// between Client and Server. Specifying "none" turns off windowing. The window size cannot be
-    /// smaller than one message.
-    #[arg(long, default_value = "Negotiated", value_parser = clap::value_parser!(WindowSizeOption))]
-    window_size: WindowSizeOption,
 
     #[clap(flatten)]
     tls: TlsGroup,
@@ -241,7 +198,6 @@ async fn main() -> Result<()> {
             "NONE" => None,
             mbps => Some(mbps.parse()?),
         })
-        .window_size(args.window_size.into())
         .tls_configuration(args.tls.into())
         .allow_client_exec(args.allow_client_exec);
 

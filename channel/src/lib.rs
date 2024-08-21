@@ -69,7 +69,7 @@ pub trait UnifiedClient {
         + Sender<Message = control::client_to_server::Message>
         + Receiver<Message = control::server_to_client::Message>;
     type Event: Sender<Message = event::client_to_server::Message>;
-    type Media: Receiver<Message = media::server_to_client::Message>;
+    type Media: Receiver<Message = media::ServerToClient>;
 
     /// A leftover type that may be required to unsplit the channels back into [`Self`]
     type Residual;
@@ -92,7 +92,7 @@ pub trait UnifiedServer {
         + Sender<Message = control::server_to_client::Message>
         + Receiver<Message = control::client_to_server::Message>;
     type Event: Receiver<Message = event::client_to_server::Message>;
-    type Media: Sender<Message = media::server_to_client::Message>;
+    type Media: Sender<Message = media::ServerToClient>;
 
     /// A leftover type that may be required to unsplit the channels back into [`Self`]
     type Residual;
@@ -164,7 +164,7 @@ mod async_variants {
             + Sender<Message = control::client_to_server::Message>
             + Receiver<Message = control::server_to_client::Message>;
         type Event: Sender<Message = event::client_to_server::Message>;
-        type Media: Receiver<Message = media::server_to_client::Message>;
+        type Media: Receiver<Message = media::ServerToClient>;
 
         fn split(self) -> (Self::Control, Self::Event, Self::Media);
         fn unsplit(cc: Self::Control, ec: Self::Event, mc: Self::Media) -> Self;
@@ -178,7 +178,7 @@ mod async_variants {
             + Sender<Message = control::server_to_client::Message>
             + Receiver<Message = control::client_to_server::Message>;
         type Event: Receiver<Message = event::client_to_server::Message>;
-        type Media: Sender<Message = media::server_to_client::Message>;
+        type Media: Sender<Message = media::ServerToClient>;
         type Residual;
 
         fn split(self) -> (Self::Control, Self::Event, Self::Media, Self::Residual);

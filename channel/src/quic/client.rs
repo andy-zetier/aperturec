@@ -379,6 +379,9 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
         let make_client = |tls, io| {
             Ok::<_, anyhow::Error>(
                 s2n_quic::Client::builder()
+                    .with_congestion_controller(
+                        s2n_quic::provider::congestion_controller::Bbr::default(),
+                    )?
                     .with_event(provider::event::TrxSubscriber)?
                     .with_tls(tls)?
                     .with_io(io)?
