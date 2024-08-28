@@ -231,10 +231,6 @@ fn render_image(cr: &Context, image: &ImageSurface) {
     cr.set_source_surface(image, 0_f64, 0_f64)
         .expect("cairo set source");
 
-    // Surfaces use EXTEND_NONE by default, however, we need to coerce the underlying pattern to
-    // use EXTEND_PAD to deal with transparent edge pixels on scaled displays
-    cr.source().set_extend(gtk::cairo::Extend::Pad);
-
     for rect in cr
         .copy_clip_rectangle_list()
         .expect("clip rectangle")
