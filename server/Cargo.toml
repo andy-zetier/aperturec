@@ -5,13 +5,14 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-prost = "0.12"
-anyhow = "1.0"
 aperturec-channel = { path = "../channel" }
+aperturec-graphics = { path = "../graphics" }
 aperturec-protocol = { path = "../protocol" }
 aperturec-state-machine = { path = "../state_machine" }
 aperturec-metrics = { path = "../metrics" }
 aperturec-trace = { path = "../trace", features = ["queue"] }
+
+anyhow = "1.0"
 bytes = "1.4"
 clap = { version = "4.3", features = ["derive", "env", "string"] }
 ctrlc = "3.4.1"
@@ -23,13 +24,15 @@ gethostname = "0.4"
 linear-map = "1.2"
 paste = "1.0.14"
 prometheus = "0.13.3"
+prost = "0.12"
 md5 = "0.7"
-ndarray = "0.15"
+ndarray = "0.16"
 parking_lot = { version = "0.12.3", features = ["send_guard", "hardware-lock-elision", "arc_lock"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
+rayon = "1.10"
 shlex = "1.2"
 socket2 = "0.5"
-tokio = { version = "1.37", features = ["full", "tracing"] }
+tokio = { version = "1.38", features = ["full", "rt", "tracing"] }
 tokio-stream = { version = "0.1", features = ["sync", "fs"] }
 tokio-util = "0.7"
 trait-variant = "0.1"

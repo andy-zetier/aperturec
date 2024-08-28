@@ -159,23 +159,26 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aperturec-channel",
+ "aperturec-graphics",
  "aperturec-metrics",
  "aperturec-protocol",
  "aperturec-state-machine",
  "aperturec-trace",
  "build_id",
  "clap 4.5.16",
- "crossbeam-channel",
+ "crossbeam",
  "ctrlc",
  "derive_builder 0.12.0",
  "flate2",
  "gethostname",
  "gtk",
  "keycode",
+ "ndarray",
  "openssl",
  "paste",
  "prost-types",
  "rand 0.8.5",
+ "range-set-blaze",
  "socket2",
  "sysinfo",
  "windows",
@@ -186,7 +189,7 @@ name = "aperturec-graphics"
 version = "0.1.0"
 dependencies = [
  "euclid",
- "ndarray 0.16.1",
+ "ndarray",
 ]
 
 [[package]]
@@ -226,6 +229,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aperturec-channel",
+ "aperturec-graphics",
  "aperturec-metrics",
  "aperturec-protocol",
  "aperturec-state-machine",
@@ -241,13 +245,14 @@ dependencies = [
  "gethostname",
  "linear-map",
  "md5",
- "ndarray 0.15.6",
+ "ndarray",
  "parking_lot",
  "paste",
  "prometheus",
  "prost",
  "prost-types",
  "rand 0.8.5",
+ "rayon",
  "serial_test",
  "shlex",
  "socket2",
@@ -820,6 +825,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1137cd7e7fc0fb5d3c5a8678be38ec56e819125d8d7907411fe24ccb943faca8"
+dependencies = [
+ "crossbeam-channel",
+ "crossbeam-deque",
+ "crossbeam-epoch",
+ "crossbeam-queue",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -843,6 +861,15 @@ name = "crossbeam-epoch"
 version = "0.9.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-queue"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df0346b5d5e76ac2fe4e327c5fd1118d6be7c51dfb18f9b7922923f287471e35"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1313,6 +1340,12 @@ dependencies = [
  "pkg-config",
  "system-deps",
 ]
+
+[[package]]
+name = "gen_ops"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "304de19db7028420975a296ab0fcbbc8e69438c4ed254a1e41e2a7f37d5f0e0a"
 
 [[package]]
 name = "generic-array"
@@ -2141,19 +2174,6 @@ dependencies = [
 
 [[package]]
 name = "ndarray"
-version = "0.15.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adb12d4e967ec485a5f71c6311fe28158e9d6f4bc4a447b474184d0f91a8fa32"
-dependencies = [
- "matrixmultiply",
- "num-complex",
- "num-integer",
- "num-traits",
- "rawpointer",
-]
-
-[[package]]
-name = "ndarray"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "882ed72dce9365842bf196bdeedf5055305f11fc8c03dee7bb0194a6cad34841"
@@ -2814,6 +2834,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca3129af7b92a17112d59ad498c6f81eaf463253766b90396d39ea7a39d6613c"
 dependencies = [
  "rand_core 0.5.1",
+]
+
+[[package]]
+name = "range-set-blaze"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8421b5d459262eabbe49048d362897ff3e3830b44eac6cfe341d6acb2f0f13d2"
+dependencies = [
+ "gen_ops",
+ "itertools 0.12.1",
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]

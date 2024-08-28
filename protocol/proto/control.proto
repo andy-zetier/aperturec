@@ -30,11 +30,6 @@ enum Architecture {
   ARCHITECTURE_ARM = 2;
 }
 
-message DecoderSequencePair {
-  uint32 decoder_id = 1;
-  uint64 sequence_id = 2;
-}
-
 message DecoderArea {
   uint32 decoder_id = 1;
   common.Location location = 2;
@@ -62,11 +57,9 @@ message ClientInit {
   uint64 temp_id = 1;
   ClientInfo client_info = 2;
   common.ClientCaps client_caps = 3;
-  google.protobuf.Duration client_heartbeat_interval = 4;
-  google.protobuf.Duration client_heartbeat_response_interval = 5;
-  uint32 max_decoder_count = 6;
-  string client_specified_program_cmdline = 7;
-  uint32 mbps_max = 8;
+  uint32 max_decoder_count = 4;
+  string client_specified_program_cmdline = 5;
+  uint32 mbps_max = 6;
 }
 
 enum ClientGoodbyeReason {
@@ -81,22 +74,10 @@ message ClientGoodbye {
   ClientGoodbyeReason reason = 2;
 }
 
-message HeartbeatResponse {
-  uint64 heartbeat_id = 1;
-  repeated DecoderSequencePair last_sequence_ids = 2;
-}
-
-message MissedFrameReport {
-  uint32 decoder_id = 1;
-  repeated uint64 frame_sequence_ids = 2;
-}
-
 message ClientToServer {
   oneof message {
     ClientInit client_init = 1;
     ClientGoodbye client_goodbye = 2;
-    HeartbeatResponse heartbeat_response = 3;
-    MissedFrameReport missed_frame_report = 4;
   }
 }
 
@@ -121,12 +102,9 @@ enum ServerGoodbyeReason {
 
 message ServerGoodbye { ServerGoodbyeReason reason = 1; }
 
-message HeartbeatRequest { uint64 request_id = 1; }
-
 message ServerToClient {
   oneof message {
     ServerInit server_init = 1;
     ServerGoodbye server_goodbye = 2;
-    HeartbeatRequest heartbeat_request = 3;
   }
 }

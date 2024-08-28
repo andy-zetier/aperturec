@@ -135,7 +135,9 @@ fn main() -> anyhow::Result<()> {
 
     fs::create_dir_all(&raw_outdir)?;
     config.out_dir(&raw_outdir);
-    // config.boxed(".");
+
+    // Enable FragmentId type to be used similar to an integer type
+    config.message_attribute("FragmentId", "#[derive(PartialOrd, Ord, Eq)]");
     config.compile_protos(&proto_srcs, &["proto/"])?;
 
     let raw_srcs: Vec<PathBuf> =

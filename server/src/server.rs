@@ -1,8 +1,10 @@
 use crate::backend::{Backend, SwapableBackend};
 use crate::task::{
     backend, control_channel_handler as cc_handler, encoder, event_channel_handler as ec_handler,
-    heartbeat, media_channel_handler as mc_handler, rate_limit,
+    frame_sync, media_channel_handler as mc_handler, rate_limit,
 };
+
+use aperturec_graphics::{partition::partition, prelude::*};
 
 use anyhow::{anyhow, bail, Result};
 use aperturec_channel::{
@@ -16,13 +18,12 @@ use aperturec_protocol::control::server_to_client as cm_s2c;
 use aperturec_state_machine::*;
 use aperturec_trace::log;
 use derive_builder::Builder;
-use futures::future::{self, TryFutureExt};
-use std::cmp::{max, min};
-use std::collections::{BTreeMap, VecDeque};
+use futures::prelude::*;
+use futures::stream::{FuturesUnordered, StreamExt};
+use ndarray::AssignElem;
 use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -68,56 +69,59 @@ pub struct Created {
 impl SelfTransitionable for Server<Created> {}
 
 #[derive(State, Debug)]
-pub struct BackendInitialized<B: Backend + 'static> {
+pub struct BackendInitialized<B: Backend> {
     backend: B,
     tls_material: channel::tls::Material,
 }
-impl<B: Backend + 'static> SelfTransitionable for Server<BackendInitialized<B>> {}
+impl<B: Backend> SelfTransitionable for Server<BackendInitialized<B>> {}
 
 #[derive(State, Debug)]
-pub struct Listening<B: Backend + 'static> {
+pub struct Listening<B: Backend> {
     backend: B,
     channel_server: channel::Server<channel_states::AsyncListening>,
 }
-impl<B: Backend + 'static> SelfTransitionable for Server<Listening<B>> {}
+impl<B: Backend> SelfTransitionable for Server<Listening<B>> {}
 
 #[derive(State, Debug)]
-pub struct Accepted<B: Backend + 'static> {
+pub struct Accepted<B: Backend> {
     backend: B,
     channel_server: channel::Server<channel_states::AsyncAccepted>,
 }
 
 #[derive(State, Debug)]
-pub struct AuthenticatedClient<B: Backend + 'static> {
+pub struct AuthenticatedClient<B: Backend> {
     backend: SwapableBackend<B>,
     cc: channel::AsyncServerControl,
     ec: channel::AsyncServerEvent,
     mc: channel::AsyncServerMedia,
     channel_server: channel::Server<channel_states::AsyncListening>,
-    client_hb_interval: Duration,
-    client_hb_response_interval: Duration,
-    decoders: BTreeMap<u32, (Location, Dimension, Codec)>,
+    encoder_areas: Vec<(Box2D, Codec)>,
+    resolution: Size,
     rl_config: rate_limit::Configuration,
 }
 
 #[derive(State)]
-pub struct Running<B: Backend + 'static> {
-    ct: CancellationToken,
+pub struct Running<B: Backend> {
     channel_server: channel::Server<channel_states::AsyncListening>,
     cc_tx: mpsc::Sender<cm_s2c::Message>,
     backend_task: backend::Task<backend::Running<B>>,
-    heartbeat_task: heartbeat::Task<heartbeat::Running>,
     cc_handler_task: cc_handler::Task<cc_handler::Running>,
     ec_handler_task: ec_handler::Task<ec_handler::Running>,
     mc_handler_task: mc_handler::Task<mc_handler::Running>,
     rate_limit_task: rate_limit::Task<rate_limit::Running>,
+    frame_sync_task: frame_sync::Task<frame_sync::Running>,
+    encoder_tasks: Vec<encoder::Task<encoder::Running>>,
 }
 
-#[derive(State)]
-pub struct SessionComplete<B: Backend + 'static> {
-    backend: SwapableBackend<B>,
+#[derive(State, Debug)]
+pub struct SessionTerminated<B: Backend> {
+    backend: Option<SwapableBackend<B>>,
     channel_server: channel::Server<channel_states::AsyncListening>,
 }
+impl<B: Backend> SelfTransitionable for Server<SessionTerminated<B>> {}
+
+#[derive(State)]
+pub struct SessionUnresumable;
 
 fn parse_create_command(cmdline: &str) -> Result<Command> {
     if let Some(tokens) = shlex::split(cmdline) {
@@ -237,148 +241,7 @@ impl Server<Created> {
     }
 }
 
-impl<B: Backend + 'static> Server<Running<B>> {
-    pub fn stop(&self) {
-        self.state.ct.cancel();
-    }
-}
-
-#[derive(Copy, Clone)]
-struct FactorPair {
-    w: usize,
-    h: usize,
-}
-
-impl FactorPair {
-    fn update<T>(&mut self, width: T, height: T)
-    where
-        T: Into<usize>,
-    {
-        self.w = width.into();
-        self.h = height.into();
-    }
-}
-
-fn partition(
-    client_resolution: &Dimension,
-    max_decoder_count: usize,
-) -> (encoder::Size, Vec<encoder::Rect>) {
-    let n_encoders = if max_decoder_count > 1 {
-        max_decoder_count / 2 * 2
-    } else {
-        max_decoder_count
-    };
-
-    let width = client_resolution.width as usize;
-    let height = client_resolution.height as usize;
-
-    //
-    // Gather a list of factor pairs for the given n_encoders arranged from largest aspect
-    // ratio to the least.
-    //
-    let mut factors: VecDeque<_> = (1..=n_encoders).filter(|&x| n_encoders % x == 0).collect();
-
-    let mut factor_pairs: Vec<FactorPair> = vec![
-        FactorPair { w: 0, h: 0 };
-        (if factors.len() & 0x1 == 1 {
-            factors.len() + 1
-        } else {
-            factors.len()
-        }) / 2
-    ];
-
-    for fp in factor_pairs.iter_mut() {
-        let f0 = factors.pop_front().expect("pop front");
-        if !factors.is_empty() {
-            let f1 = factors.pop_back().expect("pop back");
-            if width >= height {
-                fp.update(max(f0, f1), min(f0, f1));
-            } else {
-                fp.update(min(f0, f1), max(f0, f1));
-            }
-        } else {
-            fp.update(f0, f0);
-        }
-    }
-
-    if !factors.is_empty() {
-        panic!(
-            "{} factors of {} remain! {:#?}",
-            factors.len(),
-            n_encoders,
-            factors
-        );
-    }
-
-    if factor_pairs.is_empty() {
-        panic!("{} {}x{} has no factor pairs!", n_encoders, width, height);
-    }
-
-    //
-    // Define a series of tests for the FactorPairs, in descending order, of how well a
-    // FactorPair divides the requested width and height.
-    //
-    type FactorTest<'a> = dyn Fn(&FactorPair) -> bool + 'a;
-    let tests: Vec<Box<FactorTest>> = vec![
-        Box::new(|fp| width % fp.w == 0 && height % fp.h == 0),
-        Box::new(|fp| width % fp.w == 1 && height % fp.h == 0),
-        Box::new(|fp| width % fp.w == 0 && height % fp.h == 1),
-        Box::new(|fp| width % fp.w == 0 || height % fp.h == 0),
-    ];
-
-    //
-    // Evaluate each test, from best to worst, against the FactorPairs which are arranged in
-    // increasing aspect ratio. Break when we find the best fit. Note the last test and the
-    // FactorPair with the highest aspect ratio form a base case since 1 divides anything.
-    //
-    let mut best_fit = factor_pairs[0];
-    'outer: for test in tests.iter() {
-        for fp in factor_pairs.iter().rev() {
-            if test(fp) {
-                best_fit = *fp;
-                break 'outer;
-            }
-        }
-    }
-
-    let sz = encoder::Size::new(width / best_fit.w, height / best_fit.h);
-
-    let mut partitions = vec![
-        encoder::Rect {
-            size: sz,
-            origin: euclid::Point2D::new(0, 0)
-        };
-        best_fit.h * best_fit.w
-    ];
-
-    let mut i = 0;
-    for y in 0..best_fit.h {
-        for x in 0..best_fit.w {
-            partitions[i].origin.x = x * sz.width;
-            partitions[i].origin.y = y * sz.height;
-            i += 1;
-        }
-    }
-
-    let server_width = partitions
-        .iter()
-        .max_by_key(|rect| rect.origin.x)
-        .map(|rect| rect.origin.x)
-        .expect("partition server width")
-        + partitions[0].size.width;
-    let server_height = partitions
-        .iter()
-        .max_by_key(|rect| rect.origin.y)
-        .map(|rect| rect.origin.y)
-        .expect("partition server width")
-        + partitions[0].size.height;
-    let server_resolution = encoder::Size::new(server_width, server_height);
-    (server_resolution, partitions)
-}
-
-impl<B: Backend + 'static> AsyncTryTransitionable<BackendInitialized<B>, Created>
-    for Server<Created>
-{
+impl<B: Backend> AsyncTryTransitionable<BackendInitialized<B>, Created> for Server<Created> {
     type SuccessStateful = Server<BackendInitialized<B>>;
     type FailureStateful = Server<Created>;
     type Error = anyhow::Error;
@@ -386,13 +249,12 @@ impl<B: Backend + 'static> AsyncTryTransitionable<BackendInitialized<B>, Created
     async fn try_transition(
         mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let backend = try_recover!(
+        let backend = try_recover_async!(
             B::initialize(
                 self.config.max_width,
                 self.config.max_height,
                 self.state.root_process_cmd.as_mut(),
-            )
-            .await,
+            ),
             self
         );
         Ok(Server {
@@ -405,14 +267,14 @@ impl<B: Backend + 'static> AsyncTryTransitionable<BackendInitialized<B>, Created
     }
 }
 
-impl<B: Backend + 'static> AsyncTryTransitionable<Listening<B>, BackendInitialized<B>>
+impl<B: Backend> TryTransitionable<Listening<B>, BackendInitialized<B>>
     for Server<BackendInitialized<B>>
 {
     type SuccessStateful = Server<Listening<B>>;
     type FailureStateful = Server<BackendInitialized<B>>;
     type Error = anyhow::Error;
 
-    async fn try_transition(
+    fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let pem_material: channel::tls::PemMaterial =
@@ -435,11 +297,11 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Listening<B>, BackendInitializ
     }
 }
 
-impl<B: Backend + 'static> AsyncTryTransitionable<Accepted<B>, Listening<B>>
+impl<B: Backend> AsyncTryTransitionable<Accepted<B>, SessionTerminated<B>>
     for Server<Listening<B>>
 {
     type SuccessStateful = Server<Accepted<B>>;
-    type FailureStateful = Server<Listening<B>>;
+    type FailureStateful = Server<SessionTerminated<B>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
@@ -450,8 +312,8 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Accepted<B>, Listening<B>>
             channel_states::AsyncListening,
             |channel_server| async {
                 Server {
-                    state: Listening {
-                        backend: self.state.backend,
+                    state: SessionTerminated {
+                        backend: Some(self.state.backend.into()),
                         channel_server,
                     },
                     config: self.config,
@@ -468,15 +330,15 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Accepted<B>, Listening<B>>
     }
 }
 
-impl<B: Backend + 'static> Transitionable<Listening<B>> for Server<Accepted<B>> {
-    type NextStateful = Server<Listening<B>>;
+impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<Accepted<B>> {
+    type NextStateful = Server<SessionTerminated<B>>;
 
     fn transition(self) -> Self::NextStateful {
         let channel_server = transition!(self.state.channel_server, channel_states::AsyncListening);
 
         Server {
-            state: Listening {
-                backend: self.state.backend,
+            state: SessionTerminated {
+                backend: Some(self.state.backend.into()),
                 channel_server,
             },
             config: self.config,
@@ -484,11 +346,11 @@ impl<B: Backend + 'static> Transitionable<Listening<B>> for Server<Accepted<B>> 
     }
 }
 
-impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listening<B>>
+impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminated<B>>
     for Server<Accepted<B>>
 {
     type SuccessStateful = Server<AuthenticatedClient<B>>;
-    type FailureStateful = Server<Listening<B>>;
+    type FailureStateful = Server<SessionTerminated<B>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
@@ -502,8 +364,8 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
                 let server: channel::Server<channel_states::AsyncReady> =
                     AsyncUnifiedServer::unsplit($cc, $ec, $mc, $listener);
                 Server {
-                    state: Listening {
-                        backend: $backend,
+                    state: SessionTerminated {
+                        backend: Some($backend.into()),
                         channel_server: transition!(server, channel_states::AsyncListening),
                     },
                     config: self.config,
@@ -511,48 +373,59 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
             }};
         }
 
-        let (mut cc, ec, mc, listener): (channel::AsyncServerControl, _, _, _) =
-            try_transition_inner_recover_async!(
-                self.state.channel_server,
-                channel_states::AsyncReady,
-                channel_states::AsyncAccepted,
-                |channel_server: channel::Server<channel_states::AsyncAccepted>| future::ready(
-                    Server {
-                        state: Listening {
-                            backend: self.state.backend,
-                            channel_server: transition!(
-                                channel_server,
-                                channel_states::AsyncListening
-                            ),
-                        },
-                        config: self.config
-                    }
-                )
+        let (mut cc, ec, mc, listener) = try_transition_inner_recover_async!(
+            self.state.channel_server,
+            channel_states::AsyncReady,
+            channel_states::AsyncAccepted,
+            |channel_server: channel::Server<channel_states::AsyncAccepted>| future::ready(
+                Server {
+                    state: SessionTerminated {
+                        backend: Some(self.state.backend.into()),
+                        channel_server: transition!(channel_server, channel_states::AsyncListening),
+                    },
+                    config: self.config
+                }
             )
-            .split();
+        )
+        .split();
 
-        let msg = try_recover_async!(cc.receive(), recover_self!(cc, ec, mc, listener));
+        let msg = try_recover_async!(
+            cc.receive(),
+            recover_self!(cc, ec, mc, listener),
+            SessionTerminated::<B>
+        );
         let client_init = match msg {
             cm_c2s::Message::ClientInit(client_init) => client_init,
-            _ => return_recover_async!(
+            _ => return_recover!(
                 recover_self!(cc, ec, mc, listener),
+                SessionTerminated::<B>,
                 "non client init message received"
             ),
         };
         log::trace!("Client init: {:#?}", client_init);
         if client_init.temp_id != self.config.temp_client_id {
             let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::AuthenticationFailure);
-            try_recover_async!(cc.send(msg.into()), recover_self!(cc, ec, mc, listener));
-            return_recover_async!(
+            try_recover_async!(
+                cc.send(msg.into()),
                 recover_self!(cc, ec, mc, listener),
+                SessionTerminated::<B>
+            );
+            return_recover!(
+                recover_self!(cc, ec, mc, listener),
+                SessionTerminated::<B>,
                 "mismatched temporary ID"
             );
         }
         if client_init.max_decoder_count < 1 {
             let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::InvalidConfiguration);
-            try_recover_async!(cc.send(msg.into()), recover_self!(cc, ec, mc, listener));
-            return_recover_async!(
+            try_recover_async!(
+                cc.send(msg.into()),
                 recover_self!(cc, ec, mc, listener),
+                SessionTerminated::<B>
+            );
+            return_recover!(
+                recover_self!(cc, ec, mc, listener),
+                SessionTerminated::<B>,
                 "client sent invalid decoder max"
             );
         }
@@ -560,6 +433,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
             Some(mbps_max) => mbps_max,
             _ => return_recover!(
                 recover_self!(cc, ec, mc, listener),
+                SessionTerminated::<B>,
                 "Client provided invalid mbps max"
             ),
         };
@@ -567,6 +441,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
             Some(display_size) => display_size,
             _ => return_recover!(
                 recover_self!(cc, ec, mc, listener),
+                SessionTerminated::<B>,
                 "Client did not provide display size"
             ),
         };
@@ -579,10 +454,12 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
                 let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::ClientExecDisallowed);
                 try_recover!(
                     cc.send(msg.into()).await,
-                    recover_self!(cc, ec, mc, listener, backend.into_inner().0)
+                    recover_self!(cc, ec, mc, listener, backend.into_root()),
+                    SessionTerminated::<B>
                 );
                 return_recover!(
-                    recover_self!(cc, ec, mc, listener, backend.into_inner().0),
+                    recover_self!(cc, ec, mc, listener, backend.into_root()),
+                    SessionTerminated::<B>,
                     "Client attempted to exec '{}', but client exec is disallowed",
                     cmdline
                 );
@@ -607,11 +484,16 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
                     });
                     recover_self!(cc, ec, mc, listener, backend.into_inner().0)
                 }
-                .await
+                .await,
+                SessionTerminated::<B>
             );
             backend.set_client_specified(client_backend);
         }
 
+        let client_resolution = Size::new(
+            client_resolution.width as usize,
+            client_resolution.height as usize,
+        );
         let (resolution, partitions) = partition(
             &client_resolution,
             client_init.max_decoder_count.try_into().unwrap(),
@@ -628,32 +510,24 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
             None => Codec::Raw,
         };
 
-        let decoders: BTreeMap<_, _> = partitions
+        let encoder_areas = partitions
             .into_iter()
-            .enumerate()
-            .map(|(id, rect)| {
-                (
-                    id as u32,
-                    (
-                        Location::new(rect.origin.x as u64, rect.origin.y as u64),
-                        Dimension::new(rect.size.width as u64, rect.size.height as u64),
-                        preferred_codec,
-                    ),
-                )
-            })
-            .collect();
+            .map(|rect| (rect, preferred_codec))
+            .collect::<Vec<_>>();
         try_recover_async!(
             backend.set_resolution(&resolution),
-            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
+            recover_self!(cc, ec, mc, listener, backend.into_root()),
+            SessionTerminated::<B>
         );
         log::trace!("Resolution set to {:?}", resolution);
 
-        let decoder_areas: Vec<_> = decoders
+        let decoder_areas: Vec<_> = encoder_areas
             .iter()
-            .map(|(id, (location, dimension, ..))| cm::DecoderArea {
-                decoder_id: *id,
-                location: Some(location.clone()),
-                dimension: Some(dimension.clone()),
+            .enumerate()
+            .map(|(id, (b, ..))| cm::DecoderArea {
+                decoder_id: id as u32,
+                location: Some(Location::new(b.min.x as u64, b.min.y as u64)),
+                dimension: Some(Dimension::new(b.width() as u64, b.height() as u64)),
             })
             .collect();
         let client_id: u64 = rand::random();
@@ -670,33 +544,17 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
                     resolution.height as u64,
                 ))
                 .build(),
-            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
+            recover_self!(cc, ec, mc, listener, backend.into_root()),
+            SessionTerminated::<B>
         );
         log::trace!("Server init: {:#?}", server_init);
 
         try_recover_async!(
             cc.send(server_init.into()),
-            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
+            recover_self!(cc, ec, mc, listener, backend.into_root()),
+            SessionTerminated::<B>
         );
 
-        let client_hb_interval = try_recover!(
-            client_init
-                .client_heartbeat_interval
-                .map(|d| {
-                    Duration::from_secs(d.seconds as u64) + Duration::from_nanos(d.nanos as u64)
-                })
-                .ok_or(anyhow!("No client HB interval")),
-            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
-        );
-        let client_hb_response_interval = try_recover!(
-            client_init
-                .client_heartbeat_response_interval
-                .map(|d| {
-                    Duration::from_secs(d.seconds as u64) + Duration::from_nanos(d.nanos as u64)
-                })
-                .ok_or(anyhow!("No client HB response interval")),
-            recover_self!(cc, ec, mc, listener, backend.into_inner().0)
-        );
         Ok(Server {
             state: AuthenticatedClient {
                 backend,
@@ -704,9 +562,8 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
                 ec,
                 mc,
                 channel_server: listener,
-                client_hb_interval,
-                client_hb_response_interval,
-                decoders,
+                encoder_areas,
+                resolution,
                 rl_config,
             },
             config: self.config,
@@ -714,323 +571,299 @@ impl<B: Backend + 'static> AsyncTryTransitionable<AuthenticatedClient<B>, Listen
     }
 }
 
-impl<B: Backend + 'static> Transitionable<Listening<B>> for Server<AuthenticatedClient<B>> {
-    type NextStateful = Server<Listening<B>>;
-
-    fn transition(self) -> Self::NextStateful {
-        Server {
-            state: Listening {
-                backend: self.state.backend.into_root(),
-                channel_server: self.state.channel_server,
-            },
-            config: self.config,
-        }
-    }
-}
-
-impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Listening<B>>
+impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, SessionTerminated<B>>
     for Server<AuthenticatedClient<B>>
+where
+    for<'p> &'p mut Pixel24: AssignElem<<B::PixelMap as PixelMap>::Pixel>,
 {
     type SuccessStateful = Server<Running<B>>;
-    type FailureStateful = Server<Listening<B>>;
+    type FailureStateful = Server<SessionTerminated<B>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let (cc_handler_task, cc_handler_channels) = cc_handler::Task::new(self.state.cc);
-        let (rate_limit_task, rl_handle) = rate_limit::Task::new(self.state.rl_config);
         let (ec_handler_task, ec_handler_channels) = ec_handler::Task::new(self.state.ec);
+        let (rate_limit_task, rl_handle) = rate_limit::Task::new(self.state.rl_config);
+        let (frame_sync_task, frame_sync_channels) =
+            frame_sync::Task::<frame_sync::Created<B>>::new(
+                self.state.resolution,
+                self.state.encoder_areas.len(),
+            );
         let (mc_handler_task, mc_handler_channels) =
-            mc_handler::Task::new(self.state.mc.gated(rl_handle), self.state.decoders.len());
+            mc_handler::Task::new(self.state.mc, rl_handle);
 
-        let (backend_task, backend_channels) = backend::Task::<backend::Created<B>>::new(
+        let encoder_tasks = self
+            .state
+            .encoder_areas
+            .iter()
+            .zip(frame_sync_channels.frame_rxs.into_iter())
+            .enumerate()
+            .map(|(enc_id, ((area, codec), frame_sync_rx))| {
+                encoder::Task::new(
+                    enc_id,
+                    *area,
+                    *codec,
+                    frame_sync_rx,
+                    mc_handler_channels.mm_tx.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let backend_task = backend::Task::<backend::Created<B>>::new(
             self.state.backend,
-            self.state.decoders.clone(),
-            cc_handler_channels.missed_frame_rx,
             ec_handler_channels.event_rx,
+            frame_sync_channels.damage_tx,
             ec_handler_channels.to_send_tx.clone(),
-            mc_handler_channels.fbu_tx,
-            mc_handler_channels.synthetic_missed_frame_rxs,
-        );
-        let heartbeat_task = heartbeat::Task::<heartbeat::Created>::new(
-            self.state.client_hb_interval,
-            self.state.client_hb_response_interval,
-            backend_channels.acked_seq_tx.clone(),
-            cc_handler_channels.hb_resp_rx,
-            cc_handler_channels.to_send_tx.clone(),
         );
 
-        macro_rules! recover {
-            () => {{
-                |_| {
-                    future::ready(Server {
-                        state: Listening {
-                            backend: backend_task.into_backend().into_root(),
-                            channel_server: self.state.channel_server,
-                        },
-                        config: self.config,
-                    })
-                }
-            }};
-        }
-
-        let heartbeat_task = try_transition_inner_recover_async!(heartbeat_task, recover!());
-        let cc_handler_task = try_transition_inner_recover_async!(cc_handler_task, recover!());
-        let ec_handler_task = try_transition_inner_recover_async!(ec_handler_task, recover!());
-        let mc_handler_task = try_transition_inner_recover_async!(mc_handler_task, recover!());
-        let rate_limit_task = transition!(rate_limit_task, rate_limit::Running);
-        let backend_task =
-            try_transition_inner_recover_async!(backend_task, |be_task: backend::Task<
-                backend::Created<B>,
-            >| future::ready(
+        let backend_task = try_transition_inner_recover_async!(
+            backend_task,
+            backend::Running::<B>,
+            backend::Created::<B>,
+            |backend_created: backend::Task<backend::Created::<B>>| async {
                 Server {
-                    state: Listening {
-                        backend: be_task.into_backend().into_root(),
-                        channel_server: self.state.channel_server
+                    state: SessionTerminated {
+                        backend: Some(backend_created.into_backend()),
+                        channel_server: self.state.channel_server,
                     },
-                    config: self.config
+                    config: self.config,
                 }
-            ));
+            }
+        );
+
+        let cc_handler_task = transition!(cc_handler_task, cc_handler::Running);
+        let ec_handler_task = transition!(ec_handler_task, ec_handler::Running);
+        let mc_handler_task = transition!(mc_handler_task, mc_handler::Running);
+        let rate_limit_task = transition!(rate_limit_task, rate_limit::Running);
+        let frame_sync_task = transition!(frame_sync_task, frame_sync::Running);
+        let encoder_tasks = encoder_tasks
+            .into_iter()
+            .map(|task| transition!(task, encoder::Running))
+            .collect();
 
         Ok(Server {
             state: Running {
-                ct: CancellationToken::new(),
                 channel_server: self.state.channel_server,
                 cc_tx: cc_handler_channels.to_send_tx.clone(),
                 backend_task,
-                heartbeat_task,
                 cc_handler_task,
                 ec_handler_task,
                 mc_handler_task,
                 rate_limit_task,
+                frame_sync_task,
+                encoder_tasks,
             },
             config: self.config,
         })
     }
 }
 
-impl<B: Backend + 'static> AsyncTryTransitionable<SessionComplete<B>, SessionComplete<B>>
+impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<AuthenticatedClient<B>> {
+    type NextStateful = Server<SessionTerminated<B>>;
+
+    fn transition(self) -> Self::NextStateful {
+        Server {
+            config: self.config,
+            state: SessionTerminated {
+                backend: Some(self.state.backend),
+                channel_server: self.state.channel_server,
+            },
+        }
+    }
+}
+
+impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<B>>
     for Server<Running<B>>
 {
-    type SuccessStateful = Server<SessionComplete<B>>;
-    type FailureStateful = Server<SessionComplete<B>>;
+    type SuccessStateful = Server<SessionTerminated<B>>;
+    type FailureStateful = Server<SessionTerminated<B>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let mut top_level_cleanup_executed = false;
-        let mut has_sent_gb = false;
-        let mut server_gb_reason: Option<cm::ServerGoodbyeReason> = None;
+        let mut cts = vec![
+            self.state.backend_task.cancellation_token().clone(),
+            self.state.cc_handler_task.cancellation_token().clone(),
+            self.state.ec_handler_task.cancellation_token().clone(),
+            self.state.mc_handler_task.cancellation_token().clone(),
+            self.state.rate_limit_task.cancellation_token().clone(),
+            self.state.frame_sync_task.cancellation_token().clone(),
+        ];
+        cts.extend(
+            self.state
+                .encoder_tasks
+                .iter()
+                .map(|task| task.cancellation_token().clone()),
+        );
 
-        let mut backend_terminated = None;
-        let mut heartbeat_terminated = None;
-        let mut cc_handler_terminated = None;
-        let mut ec_handler_terminated = None;
-        let mut mc_handler_terminated = None;
-        let mut rate_limit_terminated = None;
+        macro_rules! result_task {
+            ($task:expr, $success_map:expr, $failure_map:expr) => {
+                $task.map_err($failure_map).map_ok($success_map).boxed()
+            };
+            ($task:expr, $success_map:expr) => {
+                $task
+                    .map_err(|recovered| recovered.error)
+                    .map_ok($success_map)
+                    .boxed()
+            };
+            ($task:expr) => {
+                result_task!($task, |_| ())
+            };
+        }
 
-        let heartbeat_ct = self.state.heartbeat_task.cancellation_token().clone();
-        let backend_ct = self.state.backend_task.cancellation_token().clone();
-        let cc_handler_ct = self.state.cc_handler_task.cancellation_token().clone();
-        let ec_handler_ct = self.state.ec_handler_task.cancellation_token().clone();
-        let mc_handler_ct = self.state.mc_handler_task.cancellation_token().clone();
-        let rate_limit_ct = self.state.rate_limit_task.cancellation_token().clone();
-        let client_process_ct = CancellationToken::new();
+        let mut backend_stream = result_task!(
+            self.state.backend_task.try_transition(),
+            |terminated| terminated.into_backend(),
+            |recovered| (recovered.stateful.into_backend(), recovered.error)
+        )
+        .into_stream();
+        let mut backend = None;
 
-        let mut heartbeat_task = tokio::spawn(async move {
-            try_transition_async!(self.state.heartbeat_task, heartbeat::Terminated)
-        });
-        let mut backend_task = tokio::spawn(async move {
-            try_transition_async!(self.state.backend_task, backend::Terminated<B>)
-        });
-        let mut cc_handler_task = tokio::spawn(async move {
-            try_transition_async!(self.state.cc_handler_task, cc_handler::Terminated)
-        });
-        let mut ec_handler_task = tokio::spawn(async move {
-            try_transition_async!(self.state.ec_handler_task, ec_handler::Terminated)
-        });
-        let mut mc_handler_task = tokio::spawn(async move {
-            try_transition_async!(self.state.mc_handler_task, mc_handler::Terminated)
-        });
-        let mut rate_limit_task = tokio::spawn(async move {
-            try_transition_async!(self.state.rate_limit_task, rate_limit::Terminated)
-        });
+        let mut task_results = FuturesUnordered::new();
+        task_results.push(result_task!(self.state.cc_handler_task.try_transition()));
+        task_results.push(result_task!(self.state.ec_handler_task.try_transition()));
+        task_results.push(result_task!(self.state.mc_handler_task.try_transition()));
+        task_results.push(result_task!(self.state.rate_limit_task.try_transition()));
+        task_results.push(result_task!(self.state.frame_sync_task.try_transition()));
+        for encoder_task in self.state.encoder_tasks {
+            task_results.push(result_task!(encoder_task.try_transition()));
+        }
 
+        let mut cleanup_started = false;
+
+        let ct = CancellationToken::new();
+        let mut task_error = None;
         loop {
             tokio::select! {
                 biased;
-                _ = self.state.ct.cancelled(), if !top_level_cleanup_executed => {
-                    log::debug!("Server task is cancelled");
-                    top_level_cleanup_executed = true;
-                    heartbeat_ct.cancel();
-                    backend_ct.cancel();
-                    cc_handler_ct.cancel();
-                    ec_handler_ct.cancel();
-                    mc_handler_ct.cancel();
-                    rate_limit_ct.cancel();
-                    client_process_ct.cancel();
-                }
-                _ = self.state.ct.cancelled(), if server_gb_reason.is_some() && !has_sent_gb => {
-                    if let Some(reason) = server_gb_reason {
-                        log::debug!("Sending server goodbye: {:?}", reason);
-                        let msg = cm::ServerGoodbye::from(reason).into();
-                        self.state.cc_tx.send(msg).await
-                            .unwrap_or_else(|e| log::error!("Failed to send server goodbye: {}", e));
+                _ = ct.cancelled(), if !cleanup_started => {
+                    log::debug!("server cancelled");
+                    let gb_reason = if task_error.is_some() {
+                        cm::ServerGoodbyeReason::ShuttingDown
+                    } else {
+                        cm::ServerGoodbyeReason::InternalError
+                    };
+                    self.state.cc_tx
+                        .send(cm::ServerGoodbye::from(gb_reason).into())
+                        .await
+                        .unwrap_or_else(|_| log::warn!("Control Channel closed before server could say goodbye"));
+                    for ct in &cts {
+                        ct.cancel();
                     }
-                    has_sent_gb = true;
-                    cc_handler_ct.cancel();
+                    cleanup_started = true;
                 }
-                be_term = &mut backend_task, if backend_terminated.is_none() => {
-                    log::debug!("Backend subtask completed");
-                    if server_gb_reason.is_none() {
-                        server_gb_reason = match &be_term {
-                            Ok(Err(_)) | Err(_) => Some(cm::ServerGoodbyeReason::InternalError),
-                            Ok(Ok(be_task_terminated)) => if be_task_terminated.root_process_exited() {
-                                Some(cm::ServerGoodbyeReason::ProcessExited)
-                            } else {
-                                None
+                Some(res) = task_results.next() => {
+                    log::trace!("Task finished");
+                    if task_error.is_none() && !cleanup_started {
+                        if let Err(error) = res {
+                            task_error = Some(anyhow!("task error: {}", error));
+                        }
+                    }
+                    ct.cancel()
+                }
+                Some(res) = backend_stream.next(), if backend.is_none() && task_error.is_none() => {
+                    match res {
+                        Ok(be) => backend = Some(be),
+                        Err((be_opt, error)) => {
+                            backend = be_opt;
+                            if task_error.is_none() && !cleanup_started {
+                                task_error = Some(anyhow!("backend task error: {}", error));
                             }
-                        };
+                        }
                     }
-                    backend_terminated = Some(be_term);
-                    self.state.ct.cancel();
+                    ct.cancel();
                 }
-                hb_term = &mut heartbeat_task, if heartbeat_terminated.is_none() => {
-                    log::debug!("Heartbeat subtask completed");
-                    if server_gb_reason.is_none() && hb_term.is_err() {
-                        server_gb_reason = Some(cm::ServerGoodbyeReason::NetworkError);
-                    }
-                    heartbeat_terminated = Some(hb_term);
-                    self.state.ct.cancel();
-                }
-                cc_term = &mut cc_handler_task, if cc_handler_terminated.is_none() => {
-                    log::debug!("CC subtask completed");
-                    if server_gb_reason.is_none() && cc_term.is_err() {
-                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
-                    }
-                    cc_handler_terminated = Some(cc_term);
-                    self.state.ct.cancel();
-                }
-                ec_term = &mut ec_handler_task, if ec_handler_terminated.is_none() => {
-                    log::debug!("EC subtask completed");
-                    if server_gb_reason.is_none() && ec_term.is_err() {
-                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
-                    }
-                    ec_handler_terminated = Some(ec_term);
-                    self.state.ct.cancel();
-                }
-                mc_term = &mut mc_handler_task, if mc_handler_terminated.is_none() => {
-                    log::debug!("MC subtask completed");
-                    if server_gb_reason.is_none() && mc_term.is_err() {
-                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
-                    }
-                    mc_handler_terminated = Some(mc_term);
-                    self.state.ct.cancel();
-                }
-                rl_term = &mut rate_limit_task, if rate_limit_terminated.is_none() => {
-                    log::debug!("Flow Control subtask completed");
-                    if server_gb_reason.is_none() && rl_term.is_err() {
-                        server_gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
-                    }
-                    rate_limit_terminated = Some(rl_term);
-                    self.state.ct.cancel();
-                }
-                else => break
+                else => break,
             }
         }
-        let backend_terminated = backend_terminated.expect("backend terminated");
-        let heartbeat_terminated = heartbeat_terminated.expect("heartbeat terminated");
-        let cc_handler_terminated = cc_handler_terminated.expect("cc handler terminated");
-        let ec_handler_terminated = ec_handler_terminated.expect("ec handler terminated");
-        let mc_handler_terminated = mc_handler_terminated.expect("mc handler terminated");
-        let rate_limit_terminated = rate_limit_terminated.expect("flow control terminated");
 
-        let mut errors = vec![];
-        let backend = match backend_terminated {
-            Ok(Ok(backend_terminated)) => backend_terminated,
-            Ok(Err(Recovered { error, stateful })) => {
-                log::error!("Backend terminated with error: {}", error);
-                errors.push(error);
-                stateful
-            }
-            Err(join_error) => {
-                panic!(
-                    "Backend task panicked leaving backend unrecoverable: {}",
-                    join_error
-                );
-            }
-        }
-        .into_backend();
-
-        if let Err(e) = heartbeat_terminated {
-            errors.push(e.into());
-        }
-        if let Err(e) = cc_handler_terminated {
-            errors.push(e.into());
-        }
-        if let Err(e) = ec_handler_terminated {
-            errors.push(e.into());
-        }
-        if let Err(e) = mc_handler_terminated {
-            errors.push(e.into());
-        }
-        if let Err(e) = rate_limit_terminated {
-            errors.push(e.into());
-        }
+        log::debug!("Server tasks finished");
 
         let stateful = Server {
-            state: SessionComplete {
+            config: self.config,
+            state: SessionTerminated {
                 backend,
                 channel_server: self.state.channel_server,
             },
-            config: self.config,
         };
-        if !errors.is_empty() {
-            let error = anyhow!(
-                "Underlying server tasks failed with errors: {}",
-                errors
-                    .into_iter()
-                    .map(|err| format!("{}", err))
-                    .collect::<Vec<_>>()
-                    .join("\t\n")
-            );
-            Err(Recovered::new(stateful, error))
-        } else {
-            Ok(stateful)
+
+        match task_error {
+            None => Ok(stateful),
+            Some(error) => Err(Recovered {
+                stateful,
+                error: anyhow!("server task error: {}", error),
+            }),
         }
     }
 }
 
-impl<B: Backend + 'static> AsyncTransitionable<SessionComplete<B>> for Server<Running<B>> {
-    type NextStateful = Server<SessionComplete<B>>;
-
-    async fn transition(self) -> Self::NextStateful {
-        self.stop();
-
-        let backend =
-            transition_async!(self.state.backend_task, backend::Terminated<B>).into_backend();
-        Server {
-            state: SessionComplete {
-                backend,
-                channel_server: self.state.channel_server,
-            },
-            config: self.config,
-        }
-    }
-}
-
-impl<B: Backend + 'static> Transitionable<Listening<B>> for Server<SessionComplete<B>> {
-    type NextStateful = Server<Listening<B>>;
+impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<Running<B>> {
+    type NextStateful = Server<SessionTerminated<B>>;
 
     fn transition(self) -> Self::NextStateful {
         Server {
-            state: Listening {
-                backend: self.state.backend.into_root(),
+            config: self.config,
+            state: SessionTerminated {
+                backend: None,
                 channel_server: self.state.channel_server,
             },
+        }
+    }
+}
+
+impl<B: Backend> TryTransitionable<Listening<B>, SessionUnresumable>
+    for Server<SessionTerminated<B>>
+{
+    type SuccessStateful = Server<Listening<B>>;
+    type FailureStateful = Server<SessionUnresumable>;
+    type Error = anyhow::Error;
+
+    fn try_transition(
+        self,
+    ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
+        match self.state.backend {
+            Some(backend) => Ok(Server {
+                config: self.config,
+                state: Listening {
+                    backend: backend.into_root(),
+                    channel_server: self.state.channel_server,
+                },
+            }),
+            None => Err(Recovered {
+                stateful: Server {
+                    config: self.config,
+                    state: SessionUnresumable,
+                },
+                error: anyhow!("backend unrecoverable"),
+            }),
+        }
+    }
+}
+
+impl<B: Backend> Transitionable<SessionUnresumable> for Server<SessionTerminated<B>> {
+    type NextStateful = Server<SessionUnresumable>;
+
+    fn transition(self) -> Self::NextStateful {
+        Server {
             config: self.config,
+            state: SessionUnresumable,
+        }
+    }
+}
+
+impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<Listening<B>> {
+    type NextStateful = Server<SessionTerminated<B>>;
+
+    fn transition(self) -> Self::NextStateful {
+        Server {
+            config: self.config,
+            state: SessionTerminated {
+                backend: Some(self.state.backend.into()),
+                channel_server: self.state.channel_server,
+            },
         }
     }
 }
@@ -1079,12 +912,6 @@ mod test {
                     .supported_codecs(vec![Codec::Zlib.into()])
                     .build()
                     .expect("ClientCaps build"),
-            )
-            .client_heartbeat_interval::<prost_types::Duration>(
-                Duration::from_millis(1000_u64).try_into().unwrap(),
-            )
-            .client_heartbeat_response_interval::<prost_types::Duration>(
-                Duration::from_millis(1000_u64).try_into().unwrap(),
             )
             .max_decoder_count(3_u32)
             .build()
@@ -1139,7 +966,6 @@ mod test {
             .await
             .expect("Failed initialize X backend")
             .try_transition()
-            .await
             .expect("Failed to listen");
 
         let mut cert_path = tlsdir.path().to_path_buf();
@@ -1289,30 +1115,5 @@ mod test {
                 .height,
             768
         );
-    }
-
-    #[test]
-    fn partitions() {
-        let mut dims = vec![];
-
-        dims.push((Dimension::new(800, 600), 8));
-        dims.push((Dimension::new(1470, 956), 8));
-        dims.push((Dimension::new(813, 600), 32));
-
-        for d in dims.iter() {
-            let (_, partitions) = partition(&d.0, d.1);
-            for p in partitions.iter() {
-                assert!(
-                    p.origin.x == 0 || (p.origin.x % p.width()) == 0,
-                    "Invalid x/width {:#?}",
-                    p,
-                );
-                assert!(
-                    p.origin.y == 0 || (p.origin.y % p.height()) == 0,
-                    "Invalid y/height {:#?}",
-                    p,
-                );
-            }
-        }
     }
 }

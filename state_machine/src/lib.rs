@@ -71,7 +71,7 @@ mod async_transitionable {
     use super::*;
 
     /// Async variant of [`Transitionable`]
-    #[trait_variant::make(AsyncTransitionable: Send + Sync)]
+    #[trait_variant::make(AsyncTransitionable: Send)]
     #[allow(dead_code)]
     pub trait LocalAsyncTransitionable<N>: Stateful
     where
@@ -91,7 +91,7 @@ pub use async_transitionable::AsyncTransitionable;
 
 impl<S, N> AsyncTransitionable<N> for S
 where
-    S: Stateful + Transitionable<N> + Send + Sync,
+    S: Stateful + Transitionable<N> + Send,
     N: State,
 {
     type NextStateful = S::NextStateful;
@@ -184,7 +184,7 @@ mod async_try_transitionable {
     use super::*;
 
     /// Async variant of [`TryTransitionable`]
-    #[trait_variant::make(AsyncTryTransitionable: Send + Sync)]
+    #[trait_variant::make(AsyncTryTransitionable: Send)]
     #[allow(dead_code)]
     pub trait LocalAsyncTryTransitionable<N, R>: AsyncTransitionable<R>
     where

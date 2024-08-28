@@ -1,13 +1,13 @@
-mod image;
-
 use crate::client::{
-    ClientDecoder, Configuration, ControlMessage, CursorData, CursorMessage, EventMessage,
-    GoodbyeMessageBuilder, KeyEventMessageBuilder, MouseButtonEventMessageBuilder, Point,
-    PointerEventMessageBuilder, UiMessage,
+    ControlMessage, CursorData, EventMessage, GoodbyeMessageBuilder, KeyEventMessageBuilder,
+    MouseButtonEventMessageBuilder, PointerEventMessageBuilder, UiMessage,
 };
 use crate::gtk3::image::Image;
 
+use aperturec_graphics::prelude::*;
 use aperturec_trace::log;
+
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use gtk::cairo::{Context, ImageSurface};
 use gtk::gdk::{keys, Display, EventMask, ModifierType, ScrollDirection, WindowState};
 use gtk::prelude::*;
@@ -21,65 +21,66 @@ use std::time::Duration;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+pub mod image;
+
+pub struct ClientSideItcChannels {
+    pub ui_tx: glib::Sender<UiMessage>,
+    pub img_tx: glib::Sender<Image>,
+    pub notify_control_rx: Receiver<ControlMessage>,
+    pub notify_control_tx: Sender<ControlMessage>,
+    pub notify_event_rx: Receiver<EventMessage>,
+    pub notify_event_tx: Sender<EventMessage>,
+    pub img_rx: Receiver<Image>,
+}
+
+pub struct GtkSideItcChannels {
+    ui_rx: glib::Receiver<UiMessage>,
+    img_rx: glib::Receiver<Image>,
+    notify_control_tx: Sender<ControlMessage>,
+    notify_event_tx: Sender<EventMessage>,
+    img_tx: Sender<Image>,
+}
 
 pub struct ItcChannels {
-    control_to_ui_rx: Cell<Option<glib::Receiver<UiMessage>>>,
-    pub control_to_ui_tx: glib::Sender<UiMessage>,
+    pub client_half: ClientSideItcChannels,
+    pub gtk_half: GtkSideItcChannels,
+}
 
-    pub notify_control_tx: Sender<ControlMessage>,
-    pub notify_control_rx: Cell<Option<Receiver<ControlMessage>>>,
-
-    pub event_from_ui_rx: Cell<Option<Receiver<EventMessage>>>,
-    event_from_ui_tx: Sender<EventMessage>,
-
-    cursor_to_ui_rx: Cell<Option<glib::Receiver<CursorMessage>>>,
-    pub cursor_to_ui_tx: glib::Sender<CursorMessage>,
-
-    img_from_decoder_rx: Cell<Option<glib::Receiver<Image>>>,
-    pub img_from_decoder_tx: glib::Sender<Image>,
-
-    pub img_to_decoder_rxs: Vec<Cell<Option<Receiver<Image>>>>,
-    img_to_decoder_txs: Vec<Cell<Option<Sender<Image>>>>,
+impl Default for ItcChannels {
+    fn default() -> Self {
+        ItcChannels::new()
+    }
 }
 
 impl ItcChannels {
-    pub fn new(config: &Configuration) -> Self {
-        let (control_to_ui_tx, control_to_ui_rx) =
-            glib::MainContext::channel(glib::Priority::default());
+    pub fn new() -> Self {
+        let (ui_tx, ui_rx) = glib::MainContext::channel(glib::Priority::default());
 
         let (notify_control_tx, notify_control_rx) = unbounded();
-        let (event_from_ui_tx, event_from_ui_rx) = unbounded();
+        let (notify_event_tx, notify_event_rx) = unbounded();
 
-        let (img_from_decoder_tx, img_from_decoder_rx) =
-            glib::MainContext::channel(glib::Priority::default());
+        let (glib_img_tx, glib_img_rx) = glib::MainContext::channel(glib::Priority::default());
 
-        let (cursor_to_ui_tx, cursor_to_ui_rx) =
-            glib::MainContext::channel(glib::Priority::default());
+        let (img_tx, img_rx) = unbounded();
 
-        let mut this = Self {
-            control_to_ui_rx: Cell::new(Some(control_to_ui_rx)),
-            control_to_ui_tx,
-            notify_control_rx: Cell::new(Some(notify_control_rx)),
-            notify_control_tx,
-            event_from_ui_rx: Cell::new(Some(event_from_ui_rx)),
-            event_from_ui_tx,
-            cursor_to_ui_rx: Cell::new(Some(cursor_to_ui_rx)),
-            cursor_to_ui_tx,
-            img_from_decoder_rx: Cell::new(Some(img_from_decoder_rx)),
-            img_from_decoder_tx,
-            img_to_decoder_rxs: Vec::new(),
-            img_to_decoder_txs: Vec::new(),
-        };
-
-        // Generate channels for the decoders
-        for _ in 0..config.decoder_max {
-            let (tx, rx) = unbounded();
-            this.img_to_decoder_rxs.push(Cell::new(Some(rx)));
-            this.img_to_decoder_txs.push(Cell::new(Some(tx)));
+        ItcChannels {
+            client_half: ClientSideItcChannels {
+                ui_tx,
+                img_tx: glib_img_tx,
+                notify_control_rx,
+                notify_control_tx: notify_control_tx.clone(),
+                notify_event_rx,
+                notify_event_tx: notify_event_tx.clone(),
+                img_rx,
+            },
+            gtk_half: GtkSideItcChannels {
+                ui_rx,
+                img_rx: glib_img_rx,
+                notify_control_tx,
+                notify_event_tx,
+                img_tx,
+            },
         }
-
-        this
     }
 }
 
@@ -179,28 +180,31 @@ pub struct GtkUi;
 
 impl GtkUi {
     pub fn run_ui(
-        itc: ItcChannels,
+        itc: GtkSideItcChannels,
         width: i32,
         height: i32,
         fps: Duration,
-        decoders: &[ClientDecoder],
+        decoder_areas: &[Box2D],
     ) {
         let app = gtk::Application::builder()
             .application_id("com.zetier.aperturec.client")
             .build();
 
         // Need to copy decoder vector
-        let decoders = decoders.to_vec();
+        let decoder_areas = decoder_areas.to_vec();
         log::debug!(
             "GTK UI starting with {}x{} window @ {:?} FPS. {:?}",
             width,
             height,
             fps,
-            &decoders
+            &decoder_areas
         );
 
+        let itc = Cell::new(Some(itc));
         app.connect_activate(move |app| {
-            build_ui(app, &itc, width, height, fps, &decoders);
+            if let Some(itc) = itc.take() {
+                build_ui(app, itc, width, height)
+            }
         });
 
         //
@@ -210,8 +214,8 @@ impl GtkUi {
     }
 }
 
-fn init_image(width: i32, height: i32) -> Image {
-    let mut image = Image::new(width.try_into().unwrap(), height.try_into().unwrap());
+fn init_image(size: Size) -> Image {
+    let mut image = Image::new(size);
 
     image.with_surface(|surface| {
         let cr = Context::new(surface).expect("GTK failed to create Cairo ctx!");
@@ -222,45 +226,26 @@ fn init_image(width: i32, height: i32) -> Image {
     image
 }
 
-fn render_image(cr: &Context, image: &ImageSurface, origin: (u32, u32), dimensions: (u32, u32)) {
-    let (x, y) = (origin.0 as f64, origin.1 as f64);
-    let (w, h) = (dimensions.0 as f64, dimensions.1 as f64);
-
-    let (clip_x0, clip_y0, clip_x1, clip_y1) = cr
-        .clip_extents()
-        .expect("GTK failed to get Cairo clip extents!");
-    if clip_x0 >= x + w || clip_y0 >= y + h || clip_x1 <= x || clip_y1 <= y {
-        // No need to re-draw
-        return;
-    }
-
-    cr.set_source_surface(image, x, y)
-        .expect("GTK surface is in an invalid state");
-
-    // Temporarily set clip to the current surface to prevent EXTEND_PAD from interfering with
-    // adjacent Surfaces
-    cr.save().expect("Failed to save cairo context");
-    cr.rectangle(x, y, w, h);
-    cr.clip();
+fn render_image(cr: &Context, image: &ImageSurface) {
+    cr.reset_clip();
+    cr.set_source_surface(image, 0_f64, 0_f64)
+        .expect("cairo set source");
 
     // Surfaces use EXTEND_NONE by default, however, we need to coerce the underlying pattern to
     // use EXTEND_PAD to deal with transparent edge pixels on scaled displays
     cr.source().set_extend(gtk::cairo::Extend::Pad);
 
-    cr.paint().expect("Invalid cairo surface state");
-    cr.restore().expect("Failed to restore cairo context");
-
-    cr.set_source_rgba(0., 0., 0., 0.);
+    for rect in cr
+        .copy_clip_rectangle_list()
+        .expect("clip rectangle")
+        .iter()
+    {
+        cr.rectangle(rect.x(), rect.y(), rect.width(), rect.height());
+    }
+    cr.fill().expect("cairo fill");
 }
 
-fn build_ui(
-    app: &gtk::Application,
-    itc: &ItcChannels,
-    width: i32,
-    height: i32,
-    _fps: Duration,
-    decoders: &[ClientDecoder],
-) {
+fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height: i32) {
     let window = ApplicationWindow::builder()
         .application(app)
         .default_width(width)
@@ -291,43 +276,18 @@ fn build_ui(
     // Setup Images
     //
 
-    //NOTE: This presumes each decoder is the same size
-    let image0 = init_image(
-        decoders[0].width.try_into().unwrap(),
-        decoders[0].height.try_into().unwrap(),
-    );
+    let image = init_image(Size::new(width as usize, height as usize));
+    let _ = itc.img_tx.send(image.clone());
 
-    let mut images = Vec::new();
-    let mut txs = Vec::new();
-
-    for (i, decoder) in decoders.iter().enumerate() {
-        //
-        // Generate two Images for each ClientDecoder: one is pushed on the local image vec to be
-        // displayed at the first (and subsequent) redraw events. The other is sent to the
-        // ClientDecoder over the associated unbounded channel so that new data can be written to
-        // it when a FramebufferUpdate is received. The images are swapped as new data is received
-        // from the ClientDecoder.
-        //
-        let origin = (decoder.origin.0, decoder.origin.1);
-        images.push(RefCell::new(image0.clone_with_decoder_info(i, origin)));
-        let tx = itc.img_to_decoder_txs[i].take().unwrap();
-        let _ = tx.send(image0.clone_with_decoder_info(i, origin));
-        txs.push(tx);
-    }
-
-    let workspace = Rc::new((images, txs));
+    let workspace = Rc::new((RefCell::new(image), itc.img_tx));
 
     area.connect_draw(
         glib::clone!(@weak workspace => @default-return gtk::Inhibit(false), move |_, cr| {
-            let (ref images, _) = *workspace;
+            let (ref image, _) = *workspace;
 
-            for image in images.iter() {
-                let origin = image.borrow().origin();
-                let dimensions = image.borrow().dims();
-                image.borrow_mut().with_surface(|surface| {
-                    render_image(cr, surface, origin, dimensions);
-                });
-            }
+            image.borrow_mut().with_surface(|surface| {
+                render_image(cr, surface);
+            });
             gtk::Inhibit(false)
         }),
     );
@@ -342,7 +302,7 @@ fn build_ui(
     //
     // Setup mouse tracking
     //
-    let last_mouse_pos = Rc::new(Cell::new(Point(0, 0)));
+    let last_mouse_pos = Rc::new(Cell::new(Point::new(0, 0)));
     let lm_motion = last_mouse_pos.clone();
     let lm_button_down = last_mouse_pos.clone();
     let lm_button_up = last_mouse_pos.clone();
@@ -351,12 +311,12 @@ fn build_ui(
     //
     // Setup event channel Senders
     //
-    let key_press_tx = itc.event_from_ui_tx.clone();
-    let key_release_tx = itc.event_from_ui_tx.clone();
-    let button_press_tx = itc.event_from_ui_tx.clone();
-    let button_release_tx = itc.event_from_ui_tx.clone();
-    let scroll_press_tx = itc.event_from_ui_tx.clone();
-    let pointer_motion_tx = itc.event_from_ui_tx.clone();
+    let key_press_tx = itc.notify_event_tx.clone();
+    let key_release_tx = itc.notify_event_tx.clone();
+    let button_press_tx = itc.notify_event_tx.clone();
+    let button_release_tx = itc.notify_event_tx.clone();
+    let scroll_press_tx = itc.notify_event_tx.clone();
+    let pointer_motion_tx = itc.notify_event_tx.clone();
     let notify_control_tx = itc.notify_control_tx.clone();
 
     //
@@ -501,7 +461,7 @@ fn build_ui(
     }));
 
     area.connect_motion_notify_event(move |_, event| {
-        let pos = Point(event.position().0 as u32, event.position().1 as u32);
+        let pos = Point::new(event.position().0 as usize, event.position().1 as usize);
         lm_motion.set(pos);
 
         // Motion logging is *very* noisy
@@ -535,74 +495,61 @@ fn build_ui(
         gtk::Inhibit(false)
     });
 
-    itc.img_from_decoder_rx
-        .take()
-        .expect("GTK failed to attach decoder channel!")
-        .attach(
-            None,
-            glib::clone!(@strong area => move |updated_img| {
-                let (ref images, ref txs) = *workspace;
-                let decoder_id = updated_img.decoder_id;
+    itc.img_rx.attach(
+        None,
+        glib::clone!(@strong area => move |updated_img| {
+            let (ref image, ref tx) = *workspace;
 
-                let tx = &txs[decoder_id];
-                let origin = updated_img.origin_signed();
-                let dimension = updated_img.dims_signed();
+            //
+            // Replace the stale Image with the new one. The data in the images vector will be used
+            // to render the display at the next redraw event.
+            //
+            let mut stale_img = image.replace(updated_img);
 
-                //
-                // Replace the stale Image with the new one. The data in the images vector will be used
-                // to render the display at the next redraw event.
-                //
-                let mut stale_img = images[decoder_id].replace(updated_img);
+            //
+            // TODO: Drawing requests should be limited to whatever our FPS cap is (passed in as
+            // `_fps`). There is still some work to do here to figure out how best to implement
+            // this. For now, queue drawing requests as fast as we can.
+            //
+            for updated_area in &image.borrow().update_history {
+                let rect = updated_area.to_rect();
+                area.queue_draw_area(
+                    rect.origin.x as i32,
+                    rect.origin.y as i32,
+                    rect.size.width as i32,
+                    rect.size.height as i32,
+                );
+            }
 
-                //
-                // TODO: Drawing requests should be limited to whatever our FPS cap is (passed in as
-                // `_fps`). There is still some work to do here to figure out how best to implement
-                // this. For now, queue drawing requests as fast as we can.
-                //
-                area.queue_draw_area(origin.0, origin.1, dimension.0, dimension.1);
+            // Copy updated areas from the current frame to the stale frame
+            stale_img
+                .copy_updates(&image.borrow())
+                .unwrap_or_else(|err| log::warn!("GTK Failed to copy Image updates: {}", err));
 
-                // Copy updated areas from the current frame to the stale frame
-                stale_img
-                    .copy_updates(&images[decoder_id].borrow())
-                    .unwrap_or_else(|err| log::warn!("GTK Failed to copy Image updates: {}", err));
+            tx.send(stale_img)
+                .unwrap_or_else(|err| log::warn!("GTK failed to send image to client: {}", err));
 
-                let _ = tx.send(stale_img);
+            // Image swap logging is *very* noisy
+            /*trace!(
+                "GTK image update from decoder_{} : {:?}",
+                decoder_id,
+                origin
+            );*/
 
-                // Image swap logging is *very* noisy
-                /*trace!(
-                    "GTK image update from decoder_{} : {:?}",
-                    decoder_id,
-                    origin
-                );*/
+            glib::source::Continue(true)
+        }),
+    );
 
-                glib::source::Continue(true)
-            }),
-        );
-
-    itc.control_to_ui_rx
-        .take()
-        .expect("GTK failed to attach control channel!")
-        .attach(
-            None,
-            glib::clone!(@strong window => move |msg| {
-                    match msg {
-                        UiMessage::QuitMessage(msg) => {
-                            log::debug!("GTK received shutdown notification: {}", msg);
-                            window.close();
-                        }
-                    }
-                    glib::source::Continue(true)
-            }),
-        );
-    itc.cursor_to_ui_rx
-        .take()
-        .expect("GTK failed to attach cursor channel!")
-        .attach(
-            None,
-            glib::clone!(@strong area => move |mut msg| {
-
-                if msg.cursor_data.is_some() {
-                    let CursorData { data, width, height, x_hot, y_hot } = msg.cursor_data.take().unwrap();
+    itc.ui_rx.attach(
+        None,
+        glib::clone!(@strong window => move |msg| {
+            match msg {
+                UiMessage::Quit(msg) => {
+                    log::debug!("GTK received shutdown notification: {}", msg);
+                    window.close();
+                }
+                UiMessage::CursorImage { cursor_data, id } => {
+                    let CursorData { data, width, height, x_hot, y_hot } = cursor_data;
                     let bytes = gtk::glib::Bytes::from_owned(data);
 
                     //
@@ -622,17 +569,20 @@ fn build_ui(
                         width * 4,
                     );
                     let cursor = gtk::gdk::Cursor::from_pixbuf(&Display::default().unwrap(), &pixbuf, x_hot, y_hot);
-                    cursor_map.insert(msg.id, cursor);
-                }
+                    cursor_map.insert(id, cursor);
 
-                match cursor_map.get(&msg.id) {
-                    Some(cursor) => area.window().unwrap().set_cursor(Some(cursor)),
-                    None => log::warn!("Cursor id {} not found in cache, ignoring", msg.id),
+                    area.window().unwrap().set_cursor(Some(cursor_map.get(&id).unwrap()))
                 }
-
-                glib::source::Continue(true)
-            }),
-        );
+                UiMessage::CursorChange { id } => {
+                    match cursor_map.get(&id) {
+                        Some(cursor) => area.window().unwrap().set_cursor(Some(cursor)),
+                        None => log::warn!("No cursor for ID {}. Ignoring", id),
+                    }
+                }
+            }
+            glib::source::Continue(true)
+        }),
+    );
 
     //
     // Set to fullscreen

@@ -103,14 +103,23 @@ macro_rules! try_recover_async {
 ///         self,
 ///     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
 ///         return_recover!(self, "We always fail :(")
+///         // We could also specify the target type with the second argument:
+///         // return_recover!(self, Init, "we always fail :(")
 ///     }
 /// }
-///
 /// ```
 #[macro_export]
 macro_rules! return_recover {
-    ($recoverable:expr, $($arg:tt)*) => {{
-        return Err(Recovered::new(<_ as Transitionable<_>>::transition($recoverable), anyhow::anyhow!($($arg)*)));
+    ($recoverable:expr, $fmt:literal $(, $args:tt )*) => {{
+        return_recover!($recoverable, _, $fmt $(, $args )*)
+    }};
+    ($recoverable:expr, $target:ty, $fmt:literal $(, $args:tt )*) => {{
+        return Err(
+            Recovered::new(
+                <_ as Transitionable<$target>>::transition($recoverable),
+                anyhow::anyhow!($fmt, $( $args ),*)
+            )
+        );
     }};
 }
 
@@ -118,8 +127,16 @@ macro_rules! return_recover {
 /// `async` block.
 #[macro_export]
 macro_rules! return_recover_async {
-    ($recoverable:expr, $($arg:tt)*) => {{
-        return Err(Recovered::new(<_ as AsyncTransitionable<_>>::transition($recoverable).await, anyhow::anyhow!($($arg)*)));
+    ($recoverable:expr, $fmt:literal $(, $args:tt )*) => {{
+        return_recover_async!($recoverable, _, $fmt, $(, $args )*)
+    }};
+    ($recoverable:expr, $target:ty, $fmt:literal $(, $args:tt )*) => {{
+        return Err(
+            Recovered::new(
+                <_ as Transitionable<$target>>::transition($recoverable).await,
+                anyhow::anyhow!($fmt, $(, $args )*)
+            )
+        );
     }};
 }
 
@@ -204,10 +221,6 @@ macro_rules! try_transition_continue_async {
 /// Attempt to transition a [`TryTransitionable`](crate::TryTransitionable) within another
 /// [`TryTransitionable`](crate::TryTransitionable) machine, recovering the outer state
 /// machine if the inner transition fails
-///
-/// A recovery expression must be provided as the third argument, which will be used to re-construct
-/// the outer state machine's state during the recovery process
-/// TODO fixup docs
 #[macro_export]
 macro_rules! try_transition_inner_recover {
     ($inner:expr, $recover_constructor:expr) => {{
@@ -245,7 +258,7 @@ macro_rules! try_transition_inner_recover_async {
         try_transition_inner_recover_async!($inner, _, $inner_recovered_state, $recover_constructor)
     }};
     ($inner:expr, $inner_target_state: ty, $inner_recovered_state:ty, $recover_constructor:expr) => {{
-        match <_ as AsyncTryTransitionable<_, $inner_recovered_state>>::try_transition($inner).await
+        match <_ as AsyncTryTransitionable<$inner_target_state, $inner_recovered_state>>::try_transition($inner).await
         {
             Ok(ok) => ok,
             Err(recovered) => {

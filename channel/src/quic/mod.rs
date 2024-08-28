@@ -103,7 +103,7 @@ pub mod test {
         let si: control::server_to_client::Message = control::ServerInit::default().into();
         let ke: event::client_to_server::Message = event::KeyEvent::default().into();
         let frag = media::ServerToClient {
-            message: Some(media::FramebufferUpdate::default().into()),
+            message: Some(media::FrameFragment::default().into()),
         };
         let ci_len = ci.encoded_len();
         let si_len = si.encoded_len();

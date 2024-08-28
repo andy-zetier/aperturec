@@ -1,15 +1,17 @@
-use crate::backend::{Backend, CursorChange, CursorImage, Event, FramebufferUpdate};
-use crate::task::encoder::*;
+use crate::backend::{Backend, CursorChange, CursorImage, Event};
+
+use aperturec_graphics::prelude::*;
 
 use anyhow::{anyhow, bail, Result};
 use aperturec_protocol::event as em;
 use aperturec_trace::log;
 use aperturec_trace::queue::{self, deq, enq, trace_queue};
 use futures::{future, stream, Stream, StreamExt};
-use ndarray::{Array2, ShapeBuilder};
+use ndarray::{prelude::*, AssignElem};
 use rand::distributions::{Alphanumeric, DistString};
 use std::fmt::{self, Debug, Formatter};
 use std::iter::Iterator;
+use std::ops::{Deref, DerefMut};
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -26,6 +28,8 @@ use xcb::{CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply
 
 const X_DAMAGE_QUEUE: queue::Queue = trace_queue!("x:damage");
 const CHILD_STARTUP_WAIT_TIME_MS: Duration = Duration::from_millis(1000);
+
+pub const X_BYTES_PER_PIXEL: usize = 4;
 
 fn u8_for_button(button: &em::Button) -> u8 {
     match button.kind {
@@ -75,6 +79,54 @@ impl From<xfixes::GetCursorImageReply> for CursorImage {
     }
 }
 
+// B-G-R-A format
+#[derive(Clone, Copy)]
+pub struct XPixel([u8; X_BYTES_PER_PIXEL]);
+
+impl Deref for XPixel {
+    type Target = [u8; X_BYTES_PER_PIXEL];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for XPixel {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl PartialEq<Pixel24> for XPixel {
+    #[inline]
+    fn eq(&self, rhs: &Pixel24) -> bool {
+        self[0] == u8::MAX && self[1] == rhs.blue && self[2] == rhs.green && self[3] == rhs.red
+    }
+}
+
+impl AssignElem<XPixel> for &mut Pixel24 {
+    #[inline]
+    fn assign_elem(self, x: XPixel) {
+        self.blue = x[0];
+        self.green = x[1];
+        self.red = x[2];
+    }
+}
+
+pub struct XPixelMap {
+    reply: x::GetImageReply,
+    size: Size,
+}
+
+impl XPixelMap {
+    fn new(area: &Rect, reply: x::GetImageReply) -> Self {
+        XPixelMap {
+            reply,
+            size: area.size,
+        }
+    }
+}
+
 impl From<&xfixes::CursorNotifyEvent> for CursorChange {
     fn from(cn: &xfixes::CursorNotifyEvent) -> Self {
         CursorChange {
@@ -83,7 +135,24 @@ impl From<&xfixes::CursorNotifyEvent> for CursorChange {
     }
 }
 
+impl PixelMap for XPixelMap {
+    type Pixel = XPixel;
+
+    fn as_ndarray(&self) -> ArrayView2<Self::Pixel> {
+        // SAFETY: self.reply.data() returns a slice with a lifetime of self and the
+        // returned ArrayView is guaranteed only live as long as self is borrowed
+        unsafe {
+            ArrayView2::from_shape_ptr(
+                (self.size.height, self.size.width),
+                self.reply.data() as *const [u8] as *const XPixel,
+            )
+        }
+    }
+}
+
 impl Backend for X {
+    type PixelMap = XPixelMap;
+
     fn root_process_exited(&self) -> bool {
         self.root_process_exited
     }
@@ -112,7 +181,7 @@ impl Backend for X {
         do_exec_command(&self.display_name, command).await
     }
 
-    async fn capture_area(&self, area: Rect) -> Result<FramebufferUpdate> {
+    async fn capture_area(&self, area: Rect) -> Result<Self::PixelMap> {
         let get_image_reply = self
             .connection
             .checked_request_with_reply(GetImage {
@@ -125,20 +194,7 @@ impl Backend for X {
                 plane_mask: u32::MAX,
             })
             .await?;
-        let pixels: Vec<RawPixel> = get_image_reply
-            .data()
-            .chunks(RAW_BYTES_PER_PIXEL)
-            .map(|chunk| RawPixel {
-                blue: chunk[0],
-                green: chunk[1],
-                red: chunk[2],
-                alpha: chunk[3],
-            })
-            .collect();
-        Ok(FramebufferUpdate {
-            rect: area,
-            data: Array2::from_shape_vec((area.size.width, area.size.height).f(), pixels)?,
-        })
+        Ok(XPixelMap::new(&area, get_image_reply))
     }
 
     async fn damage_stream(&self) -> Result<impl Stream<Item = Rect> + Send + Unpin + 'static> {

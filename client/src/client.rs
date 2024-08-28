@@ -1,26 +1,30 @@
-use crate::gtk3::{GtkUi, ItcChannels};
-use anyhow::Result;
+use crate::frame::*;
+use crate::gtk3::{image::Image, ClientSideItcChannels, GtkUi, ItcChannels};
+
 use aperturec_channel::{
-    self as channel, client::states as channel_states, Receiver, Sender, UnifiedClient,
+    self as channel, client::states as channel_states, Receiver as _, Sender as _, UnifiedClient,
 };
+use aperturec_graphics::prelude::*;
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
     server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder,
     ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, DecoderArea,
-    DecoderSequencePair, Endianness, HeartbeatResponseBuilder, MissedFrameReportBuilder, Os,
+    Endianness, Os,
 };
 use aperturec_protocol::event::{
     button, client_to_server as em_c2s, server_to_client as em_s2c, Button, ButtonStateBuilder,
     KeyEvent, MappedButton, PointerEvent, PointerEventBuilder,
 };
-use aperturec_protocol::media::{self, server_to_client as mm_s2c};
 use aperturec_state_machine::*;
 use aperturec_trace::log;
-use crossbeam_channel::{select, unbounded};
+
+use anyhow::Result;
+use crossbeam::channel::{select, unbounded, Receiver, Sender};
 use derive_builder::Builder;
+use gtk::glib;
 use openssl::x509::X509;
 use socket2::{Domain, Socket, Type};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::env::consts;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -33,25 +37,6 @@ use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
 const VERSION_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
 const VERSION_MINOR: &str = env!("CARGO_PKG_VERSION_MINOR");
 const VERSION_PATCH: &str = env!("CARGO_PKG_VERSION_PATCH");
-
-//
-// Internal position representation
-//
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Point(pub u32, pub u32);
-
-impl Point {
-    pub fn to_location(&self) -> Location {
-        Location {
-            x_position: self.0 as u64,
-            y_position: self.1 as u64,
-        }
-    }
-
-    pub fn from_location(loc: &Location) -> Self {
-        Self(loc.x_position as u32, loc.y_position as u32)
-    }
-}
 
 //
 // Internal ITC channel messaging
@@ -71,7 +56,10 @@ impl MouseButtonEventMessage {
                 .is_depressed(self.is_pressed)
                 .build()
                 .expect("Failed to build ButtonState")])
-            .location(self.pos.to_location())
+            .location(Location {
+                x_position: self.pos.x as u64,
+                y_position: self.pos.y as u64,
+            })
             .cursor(Cursor::Default)
             .build()
             .expect("Failed to build PointerEvent")
@@ -95,7 +83,10 @@ impl PointerEventMessage {
     pub fn to_pointer_event(&self) -> PointerEvent {
         PointerEventBuilder::default()
             .button_states(vec![])
-            .location(self.pos.to_location())
+            .location(Location {
+                x_position: self.pos.x as u64,
+                y_position: self.pos.y as u64,
+            })
             .cursor(Cursor::Default)
             .build()
             .expect("Failed to build PointerEvent")
@@ -169,7 +160,30 @@ pub enum EventMessage {
 }
 
 pub enum UiMessage {
-    QuitMessage(String),
+    Quit(String),
+    CursorImage { id: usize, cursor_data: CursorData },
+    CursorChange { id: usize },
+}
+
+impl TryFrom<em_s2c::Message> for UiMessage {
+    type Error = anyhow::Error;
+    fn try_from(msg: em_s2c::Message) -> Result<Self> {
+        match msg {
+            em_s2c::Message::CursorChange(cc) => Ok(UiMessage::CursorChange {
+                id: cc.id.try_into()?,
+            }),
+            em_s2c::Message::CursorImage(ci) => Ok(UiMessage::CursorImage {
+                id: ci.id.try_into()?,
+                cursor_data: CursorData {
+                    data: ci.data,
+                    width: ci.width.try_into()?,
+                    height: ci.height.try_into()?,
+                    x_hot: ci.x_hot.try_into()?,
+                    y_hot: ci.y_hot.try_into()?,
+                },
+            }),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -181,41 +195,7 @@ pub struct CursorData {
     pub y_hot: i32,
 }
 
-#[derive(Debug)]
-pub struct CursorMessage {
-    pub id: u64,
-    pub cursor_data: Option<CursorData>,
-}
-
-impl TryFrom<em_s2c::Message> for CursorMessage {
-    type Error = anyhow::Error;
-    fn try_from(msg: em_s2c::Message) -> Result<Self, Self::Error> {
-        let (id, cursor_data) = match msg {
-            em_s2c::Message::CursorChange(cc) => (cc.id, None),
-            em_s2c::Message::CursorImage(ci) => (
-                ci.id,
-                Some(CursorData {
-                    data: ci.data,
-                    width: ci.width.try_into()?,
-                    height: ci.height.try_into()?,
-                    x_hot: ci.x_hot.try_into()?,
-                    y_hot: ci.y_hot.try_into()?,
-                }),
-            ),
-        };
-        Ok(CursorMessage { id, cursor_data })
-    }
-}
-
-#[derive(Builder, Debug)]
-pub struct UpdateReport {
-    decoder_id: u32,
-    sequence_id: u64,
-    missing_sequence_ids: Vec<u64>,
-}
-
 pub enum ControlMessage {
-    UpdateReceivedMessage(UpdateReport),
     UiClosed(GoodbyeMessage),
     EventChannelDied(GoodbyeMessage),
     SigintReceived,
@@ -252,32 +232,6 @@ impl ConfigurationBuilder {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ClientDecoder {
-    pub id: u32,
-    pub origin: Point,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl ClientDecoder {
-    fn new(id: u32) -> Self {
-        Self {
-            id,
-            ..Default::default()
-        }
-    }
-
-    fn set_origin(&mut self, loc: Location) {
-        self.origin = Point::from_location(&loc);
-    }
-
-    fn set_dims(&mut self, dims: Dimension) {
-        self.width = dims.width.try_into().unwrap();
-        self.height = dims.height.try_into().unwrap();
-    }
-}
-
 fn get_recv_buffer_size(sock_addr: SocketAddr) -> usize {
     let sock =
         Socket::new(Domain::for_address(sock_addr), Type::DGRAM, None).expect("Socket create");
@@ -288,51 +242,37 @@ pub struct Client {
     config: Configuration,
     id: Option<u64>,
     server_name: Option<String>,
-    heartbeat_interval: Duration,
-    heartbeat_response_interval: Duration,
     control_jh: Option<thread::JoinHandle<()>>,
     should_stop: Arc<AtomicBool>,
-    decoders: Vec<ClientDecoder>,
+    decoder_areas: Vec<Box2D>,
     local_addr: Option<SocketAddr>,
 }
 
 impl Client {
     fn new(config: &Configuration) -> Self {
-        const HEARTBEAT_RESPONSE_INTERVAL: Duration = Duration::from_secs(10);
         Self {
             config: config.clone(),
             should_stop: Arc::new(AtomicBool::new(false)),
             local_addr: None,
-
-            //
-            // TODO: I'm undecided on initial hearbeat resonse (HBR) timing. Basing HBR interval on
-            // FPS makes sense at first since this may recover missed frame data before the user
-            // notices. However, this is only useful if we've missed the "last" FramebufferUpdate
-            // in a series of updates as we already detect sequence number jumps in a series of
-            // FramebufferUpdates. In all other cases, we're just sending a u64 back and forth at
-            // FPS. This is unnecessary overhead if the visual data is mostly static or if we've
-            // successfully received all outstanding FramebufferUpdates.
-            //
-            // Setting the interval to 10x FPS and hardcoding the response time to 10 until we come
-            // up with something better.
-            //
-            heartbeat_interval: config.max_fps * 10,
-            heartbeat_response_interval: HEARTBEAT_RESPONSE_INTERVAL,
-
             id: None,
             server_name: None,
             control_jh: None,
-            decoders: vec![],
+            decoder_areas: vec![],
         }
     }
 
-    pub fn startup(config: &Configuration, itc: &ItcChannels) -> Result<Self> {
+    pub fn startup(config: &Configuration, itc: ClientSideItcChannels) -> Result<Self> {
         let mut this = Client::new(config);
 
         let (cc, ec, mc) = this.setup_unified_channel()?;
-        this.setup_control_channel(cc, itc)?;
-        this.setup_event_channel(ec, itc)?;
-        this.setup_media_channel(mc, itc)?;
+        this.setup_control_channel(
+            cc,
+            itc.ui_tx.clone(),
+            itc.notify_control_tx.clone(),
+            itc.notify_control_rx,
+        )?;
+        this.setup_event_channel(ec, itc.notify_event_rx, itc.notify_control_tx, itc.ui_tx)?;
+        this.setup_media_channel(mc, itc.img_tx, itc.img_rx)?;
 
         Ok(this)
     }
@@ -410,16 +350,6 @@ impl Client {
             .temp_id(self.config.temp_id)
             .client_info(self.generate_client_info())
             .client_caps(self.generate_client_caps())
-            .client_heartbeat_interval::<prost_types::Duration>(
-                self.heartbeat_interval
-                    .try_into()
-                    .expect("Failed to convert Duration"),
-            )
-            .client_heartbeat_response_interval::<prost_types::Duration>(
-                self.heartbeat_response_interval
-                    .try_into()
-                    .expect("Failed to convert Duration"),
-            )
             .max_decoder_count::<u32>(self.config.decoder_max.into())
             .client_specified_program_cmdline(
                 self.config
@@ -434,263 +364,60 @@ impl Client {
     fn setup_media_channel(
         &mut self,
         mut mc: channel::ClientMedia,
-        itc: &ItcChannels,
+        img_tx: glib::Sender<Image>,
+        img_rx: Receiver<Image>,
     ) -> Result<()> {
-        assert!(
-            itc.img_to_decoder_rxs.len() == self.config.decoder_max.into(),
-            "img_to_decoder_rxs.len() != decoder_max ({} != {})",
-            itc.img_to_decoder_rxs.len(),
-            self.config.decoder_max
-        );
-
-        let mut decoder_channels_tx = BTreeMap::new();
-        let mut decoder_channels_rx = BTreeMap::new();
-        for decoder in &self.decoders {
-            let (tx, rx) = unbounded();
-            decoder_channels_tx.insert(decoder.id, tx);
-            decoder_channels_rx.insert(decoder.id, rx);
-        }
+        let (mm_rx_tx, mm_rx_rx) = unbounded();
         thread::spawn::<_, Result<()>>(move || loop {
-            let mm = mc.receive()?;
-
-            if let Some(mm_s2c::Message::FramebufferUpdate(fbu)) = mm.message {
-                match decoder_channels_tx.get_mut(&fbu.decoder_id) {
-                    Some(channel) => channel.send(fbu)?,
-                    None => log::warn!(
-                        "Received media message for decoder ID {} which does not exist",
-                        fbu.decoder_id
-                    ),
-                }
-            } else {
-                log::warn!("empty media message");
-            }
+            let msg = mc.receive()?;
+            mm_rx_tx.send(msg)?;
         });
 
-        for decoder in &self.decoders {
-            let img_tx = itc.img_from_decoder_tx.clone();
-            let img_rx = itc.img_to_decoder_rxs[decoder.id as usize].take().unwrap();
-            let control_tx = itc.notify_control_tx.clone();
-            let should_stop = self.should_stop.clone();
-            let decoder_id = decoder.id;
+        let mut framer = Framer::new(&self.decoder_areas);
+        thread::spawn::<_, Result<()>>(move || loop {
+            let msg = mm_rx_rx.recv()?;
 
-            let fbu_rx = decoder_channels_rx
-                .remove(&decoder.id)
-                .expect("decoder channel");
+            let msg = match msg.message {
+                Some(msg) => msg,
+                None => {
+                    log::warn!("media message with empty body");
+                    continue;
+                }
+            };
 
-            thread::spawn(move || {
-                let mut current_seq_id = None;
+            if let Err(e) = framer.report_mm(msg) {
+                log::warn!("Error processing media message: {}", e);
+            }
 
-                //
-                // Receive an initial Image from the UI thread
-                //
-                let mut image = match img_rx.recv() {
-                    Ok(img) => {
-                        assert!(
-                            img.decoder_id == decoder_id as usize,
-                            "[decoder {}] Image decoder_id != decoder_id ({} != {})",
-                            decoder_id,
-                            img.decoder_id,
-                            decoder_id
-                        );
-                        img
-                    }
-                    Err(err) => {
-                        log::error!(
-                            "[decoder {}] Fatal error receiving Image from UI: {}",
-                            decoder_id,
-                            err
-                        );
-                        log::debug!("[decoder {}] exiting", decoder_id);
-                        return;
-                    }
-                };
+            if !framer.has_draws() {
+                continue;
+            }
 
-                log::debug!("[decoder {}] Media channel started", decoder_id);
-                loop {
-                    crate::metrics::idling(decoder_id);
-
-                    //
-                    // Listen for FramebufferUpdates from the server
-                    //
-                    let fbu = match fbu_rx.recv() {
-                        Ok(fbu) => fbu,
-                        Err(err) => {
-                            log::error!(
-                                "[decoder {}] Fatal error receiving FBU: {}",
-                                decoder_id,
-                                err
-                            );
-                            break;
-                        }
-                    };
-
-                    crate::metrics::working(decoder_id);
-
-                    if should_stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    // FramebufferUpdate logging is *very* noisy
-                    // log::trace!(
-                    //     "[decoder {}] FramebufferUpdate [{}]",
-                    //     decoder_id,
-                    //     fbu.sequence
-                    // );
-
-                    let mut missing_sequences: BTreeSet<u64> = BTreeSet::new();
-                    //
-                    // Handle out-of-sequence RectangleUpdates
-                    //
-                    // TODO: I'm not sure we should simply drop out of order sequence numbers.
-                    // Its possible out-of-sequence updates represent completely different
-                    // decoder areas, in which case they should not be dropped. However, if
-                    // they contain stale data, we don't want to include it and should drop
-                    // them. Perhaps the safe thing to do here is drop them and add them to
-                    // missing_sequences so the latest data is re-sent? In any case, this doesn't
-                    // seem to happen very often in my ad-hoc testing, so I'll leave them
-                    // dropped for now with a warning.
-                    //
-                    if current_seq_id.map_or(false, |csi: u64| csi >= fbu.sequence) {
-                        log::warn!(
-                            "[decoder {}] Dropping Rectangle {}, already received {}",
-                            decoder_id,
-                            fbu.sequence,
-                            current_seq_id.unwrap()
-                        );
-
-                        continue;
-                    } else if current_seq_id.is_none() && fbu.sequence != 0 {
-                        missing_sequences.extend(0..fbu.sequence)
-                    } else if let Some(current_seq_id) = current_seq_id {
-                        if current_seq_id < fbu.sequence {
-                            missing_sequences.extend(current_seq_id + 1..fbu.sequence);
-                        }
-                    }
-
-                    current_seq_id = Some(fbu.sequence);
-
-                    //
-                    // Write rectangle data to the Image with the appropriate Codec
-                    //
-                    if let media::FramebufferUpdate {
-                        sequence,
-                        codec,
-                        location: Some(location),
-                        dimension: Some(dimension),
-                        data,
-                        ..
-                    } = &fbu
-                    {
-                        match Codec::try_from(*codec) {
-                            Ok(Codec::Raw) => match image.draw_raw(
-                                data,
-                                location.x_position,
-                                location.y_position,
-                                dimension.width,
-                                dimension.height,
-                            ) {
-                                Ok(_) => (),
-                                Err(err) => {
-                                    log::warn!(
-                                        "[decoder {}] Codec::Raw failed: {}",
-                                        decoder_id,
-                                        err
-                                    );
-                                    log::debug!("[decoder {}] {:#?}", decoder_id, &fbu);
-                                }
-                            },
-                            Ok(Codec::Zlib) => match image.draw_raw_zlib(
-                                data,
-                                location.x_position,
-                                location.y_position,
-                                dimension.width,
-                                dimension.height,
-                            ) {
-                                Ok(_) => (),
-                                Err(err) => {
-                                    log::warn!(
-                                        "[decoder {}] Codec::Zlib failed: {}",
-                                        decoder_id,
-                                        err
-                                    );
-                                    log::debug!("[decoder {}] {:#?}", decoder_id, &fbu);
-                                }
-                            },
-                            _ => {
-                                log::warn!(
-                                    "[decoder {}] Dropping Rectangle {}, unsupported codec",
-                                    decoder_id,
-                                    sequence
-                                );
+            loop {
+                select! {
+                    recv(mm_rx_rx) -> msg_res => {
+                        let msg = match msg_res?.message {
+                            Some(msg) => msg,
+                            None => {
+                                log::warn!("media message with empty body");
                                 continue;
                             }
+                        };
+                        if let Err(e) = framer.report_mm(msg) {
+                            log::warn!("Error processing media message: {}", e)
                         }
-                    } else {
-                        log::warn!(
-                            "[decoder {}] Dropping fbu {}, malformed",
-                            decoder_id,
-                            fbu.sequence
-                        );
-                        continue;
+                    },
+                    recv(img_rx) -> img_res => {
+                        let mut img = img_res?;
+                        for draw in framer.get_draws_and_reset() {
+                            img.draw(&draw);
+                        }
+                        img_tx.send(img)?;
+                        break;
                     }
-
-                    //
-                    // Swap Image with the UI thread
-                    //
-                    image = match img_tx.send(image) {
-                        Ok(_) => match img_rx.recv() {
-                            Ok(img) => img,
-                            Err(err) => {
-                                log::error!(
-                                    "[decoder {}] Fatal error receiving Image from UI: {}",
-                                    decoder_id,
-                                    err
-                                );
-                                break;
-                            }
-                        },
-                        Err(err) => {
-                            log::error!(
-                                "[decoder {}] Fatal error sending Image to UI: {}",
-                                decoder_id,
-                                err
-                            );
-                            break;
-                        }
-                    };
-
-                    if !missing_sequences.is_empty() {
-                        log::debug!(
-                            "[decoder {}] MFRs generated for {:?}",
-                            decoder_id,
-                            missing_sequences
-                        );
-                    }
-
-                    //
-                    // Notify Control thread of last SequenceId and missing SequenceIds
-                    //
-                    match control_tx.send(ControlMessage::UpdateReceivedMessage(
-                        UpdateReportBuilder::default()
-                            .decoder_id(decoder_id)
-                            .sequence_id(current_seq_id.unwrap())
-                            .missing_sequence_ids(missing_sequences.into_iter().collect())
-                            .build()
-                            .expect("Failed to build UpdateReport!"),
-                    )) {
-                        Ok(_) => (),
-                        Err(err) => {
-                            if !should_stop.load(Ordering::Relaxed) {
-                                log::error!("[decoder {}] Fatal error sending UpdateReceivedMessage to control thread: {}", decoder_id, err);
-                            }
-                            break;
-                        }
-                    };
-                } // loop receive FramebufferUpdate
-
-                log::debug!("[decoder {}] Media channel exiting", decoder_id);
-            }); // thread::spawn
-        } // for self.decoder
+                }
+            }
+        });
 
         Ok(())
     }
@@ -698,10 +425,10 @@ impl Client {
     fn setup_control_channel(
         &mut self,
         client_cc: channel::ClientControl,
-        itc: &ItcChannels,
+        ui_tx: glib::Sender<UiMessage>,
+        notify_control_tx: Sender<ControlMessage>,
+        notify_control_rx: Receiver<ControlMessage>,
     ) -> Result<()> {
-        let control_to_ui_tx = itc.control_to_ui_tx.clone();
-
         let ci = self.generate_client_init();
         log::debug!("{:#?}", &ci);
 
@@ -712,7 +439,6 @@ impl Client {
         let si = match client_cc_read.receive() {
             Ok(cm_s2c::Message::ServerInit(si)) => si,
             Ok(cm_s2c::Message::ServerGoodbye(gb)) => panic!("Server sent goodbye: {:?}", gb),
-            Ok(_) => panic!("Unexpected message received, expected ServerInit"),
             Err(other) => panic!("Failed to read ServerInit: {:?}", other),
         };
 
@@ -727,26 +453,40 @@ impl Client {
         self.config.win_height = display_size.height;
         self.config.win_width = display_size.width;
 
+        let decoder_ids_valid = si
+            .decoder_areas
+            .iter()
+            .map(|da| da.decoder_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .eq(0..si.decoder_areas.len() as u32);
+        if !decoder_ids_valid {
+            panic!("Decoder IDs are not contiguous from 0..N");
+        }
+
         for decoder_area in si.decoder_areas.into_iter() {
+            log::debug!("Decoder area: {:?}", decoder_area);
             if let DecoderArea {
-                decoder_id,
                 location: Some(location),
                 dimension: Some(dimension),
+                ..
             } = decoder_area
             {
-                let mut d = ClientDecoder::new(decoder_id);
-                d.set_origin(location);
-                d.set_dims(dimension);
-                self.decoders.push(d);
+                let area = Rect {
+                    origin: Point::new(location.x_position as usize, location.y_position as usize),
+                    size: Size::new(dimension.width as usize, dimension.height as usize),
+                }
+                .to_box2d();
+                self.decoder_areas.push(area);
             } else {
                 panic!("Invalid decoder area: {:?}", decoder_area);
             }
         }
 
         assert!(
-            self.decoders.len() <= self.config.decoder_max.into(),
+            self.decoder_areas.len() <= self.config.decoder_max.into(),
             "Server returned {} decoders, but our max is {}",
-            self.decoders.len(),
+            self.decoder_areas.len(),
             self.config.decoder_max
         );
 
@@ -788,19 +528,6 @@ impl Client {
 
         thread::spawn(move || {
             while let Ok(cm_c2s) = control_tx_rx.recv() {
-                if let aperturec_protocol::control::client_to_server::Message::MissedFrameReport(
-                    aperturec_protocol::control::MissedFrameReport {
-                        decoder_id,
-                        frame_sequence_ids,
-                    },
-                ) = &cm_c2s
-                {
-                    log::debug!(
-                        "[decoder {}] Sending MFR {:?}",
-                        decoder_id,
-                        frame_sequence_ids
-                    );
-                }
                 if let Err(err) = client_cc_write.send(cm_c2s) {
                     log::error!("Failed to send: {}", err);
                     break;
@@ -812,10 +539,9 @@ impl Client {
         //
         // Setup SIGINT handler
         //
-        let control_tx = itc.notify_control_tx.clone();
         ctrlc::set_handler(move || {
             log::warn!("SIGINT received, exiting");
-            control_tx
+            notify_control_tx
                 .send(ControlMessage::SigintReceived)
                 .expect("Failed to notify control channel of SIGINT");
         })
@@ -826,39 +552,15 @@ impl Client {
         //
         let client_id = self.id.unwrap();
         let should_stop = self.should_stop.clone();
-        let control_rx = itc.notify_control_rx.take().unwrap();
 
         self.control_jh = Some(thread::spawn(move || {
-            let mut decoder_seq = BTreeMap::new();
-
             log::debug!("Control channel started");
             loop {
                 select! {
                     recv(control_rx_rx) -> msg => match msg {
-                        Ok(Ok(cm_s2c::Message::HeartbeatRequest(hr))) => {
-                            log::trace!("Recv HeartbeatRequest  {}", hr.request_id);
-                            let hbr = HeartbeatResponseBuilder::default()
-                                .heartbeat_id(hr.request_id)
-                                .last_sequence_ids(
-                                    decoder_seq
-                                    .iter()
-                                    .map(|(d, s)| DecoderSequencePair::new(*d, *s))
-                                    .collect::<Vec<_>>(),
-                                    )
-                                .build()
-                                .expect("Failed to generate HeartbeatResponse!");
-                            match control_tx_tx.send(hbr.into()) {
-                                Err(err) => log::warn!(
-                                    "Failed to send HeartbeatResponse {:?}: {}",
-                                    hr.request_id,
-                                    err
-                                    ),
-                                _ => log::trace!("Sent HeartbeatResponse {}", hr.request_id),
-                            };
-                        },
                         Ok(Ok(cm_s2c::Message::ServerGoodbye(_))) => {
                             if let Err(err) =
-                                control_to_ui_tx.send(UiMessage::QuitMessage(String::from("Goodbye!")))
+                                ui_tx.send(UiMessage::Quit(String::from("Goodbye!")))
                                 {
                                     log::warn!("Failed to send QuitMessage: {}", err);
                                 }
@@ -871,8 +573,8 @@ impl Client {
                             Ok(ioe) => match ioe.kind() {
                                 ErrorKind::WouldBlock | ErrorKind::Interrupted => (),
                                 _ => {
-                                    let _ = control_to_ui_tx
-                                        .send(UiMessage::QuitMessage(format!("{:?}", ioe)));
+                                    let _ = ui_tx
+                                        .send(UiMessage::Quit(format!("{:?}", ioe)));
                                     let _ = control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into());
                                     log::trace!("Sent ClientGoodbye: Terminating");
                                     log::error!("Fatal I/O error reading control message: {:?}", ioe);
@@ -880,8 +582,8 @@ impl Client {
                                 }
                             },
                             Err(other) => {
-                                let _ = control_to_ui_tx
-                                    .send(UiMessage::QuitMessage(format!("{:?}", other)));
+                                let _ = ui_tx
+                                    .send(UiMessage::Quit(format!("{:?}", other)));
                                 let _ = control_tx_tx.send(ClientGoodbye::new(
                                             client_id,
                                             ClientGoodbyeReason::Terminating.into(),
@@ -896,25 +598,7 @@ impl Client {
                             break;
                         }
                     },
-                    recv(control_rx) -> msg => match msg {
-                        Ok(ControlMessage::UpdateReceivedMessage(report)) => {
-                            decoder_seq.insert(report.decoder_id, report.sequence_id);
-
-                            //
-                            // Generate MFRs for missing frames
-                            //
-                            if !report.missing_sequence_ids.is_empty() {
-                                let mfr = MissedFrameReportBuilder::default()
-                                    .decoder_id(report.decoder_id)
-                                    .frame_sequence_ids(report.missing_sequence_ids.into_iter().collect::<Vec<_>>())
-                                    .build()
-                                    .expect("Failed to build MissedFrameReport!");
-
-                                if let Err(err) = control_tx_tx.send(mfr.into()) {
-                                    log::warn!("Failed to send MissedFrameReport: {}", err);
-                                }
-                            }
-                        },
+                    recv(notify_control_rx) -> msg => match msg {
                         Ok(ControlMessage::UiClosed(gm)) => {
                             control_tx_tx.send(gm.to_client_goodbye(client_id).into())
                                 .unwrap_or_else(|e| log::error!("Failed to send client goodbye to control channel: {}", e));
@@ -923,7 +607,7 @@ impl Client {
                             break;
                         },
                         Ok(ControlMessage::EventChannelDied(gm)) => {
-                            control_to_ui_tx.send(UiMessage::QuitMessage("Event Channel Died".to_string()))
+                            ui_tx.send(UiMessage::Quit("Event Channel Died".to_string()))
                                 .unwrap_or_else(|e| log::error!("Failed to send QuitMessage to UI: {}", e));
                             control_tx_tx.send(gm.to_client_goodbye(client_id).into())
                                 .unwrap_or_else(|e| log::error!("Failed to send client goodbye to control channel: {}", e));
@@ -931,7 +615,7 @@ impl Client {
                             break;
                         },
                         Ok(ControlMessage::SigintReceived) => {
-                            control_to_ui_tx.send(UiMessage::QuitMessage("SIGINT".to_string()))
+                            ui_tx.send(UiMessage::Quit("SIGINT".to_string()))
                                 .unwrap_or_else(|e| log::error!("Failed to send QuitMessage to UI: {}", e));
                             control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into())
                                 .unwrap_or_else(|e| log::error!("Failed to send client goodbye to control channel: {}", e));
@@ -956,12 +640,12 @@ impl Client {
     fn setup_event_channel(
         &mut self,
         client_ec: channel::ClientEvent,
-        itc: &ItcChannels,
+        notify_event_rx: Receiver<EventMessage>,
+        notify_control_tx: Sender<ControlMessage>,
+        ui_tx: glib::Sender<UiMessage>,
     ) -> Result<()> {
         let (mut ec_rx, mut ec_tx) = client_ec.split();
-        let event_rx = itc.event_from_ui_rx.take().unwrap();
         let should_stop = self.should_stop.clone();
-        let cursor_to_ui_tx = itc.cursor_to_ui_tx.clone();
 
         thread::spawn(move || {
             log::debug!("Event channel Rx started");
@@ -969,7 +653,7 @@ impl Client {
                 match ec_rx.receive() {
                     Ok(msg) => match msg.try_into() {
                         Ok(cm) => {
-                            if let Err(err) = cursor_to_ui_tx.send(cm) {
+                            if let Err(err) = ui_tx.send(cm) {
                                 log::error!("Failed to send cursor message: {}", err);
                                 break;
                             }
@@ -991,12 +675,10 @@ impl Client {
             }
         });
 
-        let control_tx = itc.notify_control_tx.clone();
         let should_stop = self.should_stop.clone();
-
         thread::spawn(move || {
-            log::debug!("Event channel started");
-            for event_msg in event_rx.iter() {
+            log::debug!("Event channel Tx started");
+            for event_msg in notify_event_rx.iter() {
                 let msg = match event_msg {
                     EventMessage::MouseButtonEventMessage(mbem) => {
                         em_c2s::Message::from(mbem.to_pointer_event())
@@ -1012,7 +694,7 @@ impl Client {
                 }
 
                 if let Err(err) = ec_tx.send(msg) {
-                    let _ = control_tx.send(ControlMessage::EventChannelDied(
+                    let _ = notify_control_tx.send(ControlMessage::EventChannelDied(
                         GoodbyeMessage::new_network_error(),
                     ));
                     log::error!("Failed to send Event message: {}", err);
@@ -1072,22 +754,22 @@ pub fn run_client(config: Configuration) -> Result<()> {
     //
     // Create ITC channels
     //
-    let itc = ItcChannels::new(&config);
+    let itc = ItcChannels::new();
 
     //
     // Create Client and start up channels
     //
-    let client = Client::startup(&config, &itc)?;
+    let client = Client::startup(&config, itc.client_half)?;
 
     //
     // Start up the UI on main thread
     //
     GtkUi::run_ui(
-        itc,
+        itc.gtk_half,
         client.get_width(),
         client.get_height(),
         client.get_fps(),
-        &client.decoders,
+        &client.decoder_areas,
     );
 
     client.shutdown();
@@ -1100,6 +782,7 @@ mod test {
     use super::*;
     use aperturec_channel::UnifiedServer;
     use aperturec_protocol::control::ServerInitBuilder;
+
     use std::sync::Once;
 
     fn setup() {
@@ -1193,7 +876,7 @@ mod test {
             panic!("Fake Quic Server Exited!");
         });
 
-        let itc = ItcChannels::new(&config);
-        let _client = Client::startup(&config, &itc).expect("startup");
+        let itc = ItcChannels::new();
+        let _client = Client::startup(&config, itc.client_half).expect("startup");
     }
 }

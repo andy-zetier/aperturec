@@ -6,6 +6,7 @@ use aperturec_trace::{self as trace, log, Level};
 
 use anyhow::Result;
 use clap::Parser;
+use futures::future;
 use gethostname::gethostname;
 use std::path::PathBuf;
 
@@ -207,36 +208,65 @@ async fn main() -> Result<()> {
     let config = config_builder.build()?;
 
     let server = Server::<Created>::new(config)?;
-    let server: Server<BackendInitialized<backend::X>> = server
-        .try_transition()
-        .await
+
+    let backend_init = try_transition_async!(server, BackendInitialized::<backend::X>)
+        .map_err(|recovered| recovered.error)
         .expect("failed initializing X backend");
-    let mut listening = server.try_transition().await.expect("failed listening");
+    let listening = try_transition!(backend_init, Listening::<_>)
+        .map_err(|recovered| recovered.error)
+        .expect("failed listening");
+    let mut session_terminated: Server<SessionTerminated<_>> =
+        transition!(listening, SessionTerminated::<_>);
 
-    loop {
-        let accepted: Server<Accepted<_>> =
-            try_transition_continue_async!(listening, listening, |e| async move {
-                log::error!("Error accepting CC: {}", e)
+    let main_task = tokio::task::spawn(async {
+        loop {
+            let listening = match session_terminated.try_transition() {
+                Ok(listening) => listening,
+                Err(recovered) => {
+                    log::error!("Error preparing the server to listen: {}", recovered.error);
+                    break Err::<(), _>(recovered.error);
+                }
+            };
+
+            let accepted = try_transition_continue_async!(listening, session_terminated, |e| {
+                future::ready(log::error!("Error accepting client: {}", e))
             });
-        let client_authed = try_transition_continue_async!(accepted, listening, |e| async move {
-            log::error!("Error authenticating client: {}", e)
-        });
 
-        let running = try_transition_continue_async!(client_authed, listening, |e| async move {
-            log::error!("Error starting session: {}", e)
-        });
+            let authenticated =
+                try_transition_continue_async!(accepted, session_terminated, |e| future::ready(
+                    log::error!("Error authenticating client: {}", e)
+                ));
 
-        let session_complete = match running.try_transition().await {
-            Ok(session_complete) => {
-                log::info!("Session ended successfully");
-                session_complete
+            let running = try_transition_continue_async!(authenticated, session_terminated, |e| {
+                future::ready(log::error!("Error starting session: {}", e))
+            });
+
+            session_terminated = match running.try_transition().await {
+                Ok(session_complete) => {
+                    log::info!("Session ended successfully");
+                    session_complete
+                }
+                Err(Recovered { stateful, error }) => {
+                    log::error!("Session ended with error: {}", error);
+                    stateful
+                }
+            };
+        }
+    });
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            log::info!("Received Ctrl-C, exiting");
+            aperturec_metrics::stop();
+            Ok(())
+        }
+        main_task_res = main_task => {
+            match main_task_res {
+                Ok(Ok(())) => log::warn!("main task exited naturally"),
+                Ok(Err(e)) => log::error!("main task exited with error: {}", e),
+                Err(e) => log::error!("main task panicked with error: {}", e),
             }
-            Err(Recovered { stateful, error }) => {
-                log::error!("Session ended with error: {}", error);
-                stateful
-            }
-        };
-
-        listening = transition_async!(session_complete, Listening<_>);
+            panic!("main task exited");
+        }
     }
 }
