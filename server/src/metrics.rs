@@ -1,9 +1,7 @@
 use aperturec_metrics::exporters::{
     CsvExporter, Exporter, LogExporter, PrometheusExporter, PushgatewayExporter,
 };
-use aperturec_metrics::{
-    create_histogram_metric_with_buckets, create_metric, create_stats_metric, MetricsInitializer,
-};
+use aperturec_metrics::{create_histogram_metric_with_buckets, create_metric, MetricsInitializer};
 use aperturec_trace::{log, Level};
 
 create_histogram_metric_with_buckets!(
@@ -14,15 +12,14 @@ create_histogram_metric_with_buckets!(
 
 create_metric!(PixelsCompressed);
 create_metric!(TimeInCompression);
-create_metric!(FramebufferUpdatesSent);
+create_metric!(FramesCut);
+create_metric!(EncoderCount);
 
 create_histogram_metric_with_buckets!(
     TrackingBufferDamageRatio,
     "%",
     prometheus::linear_buckets(10., 10., 10).unwrap()
 );
-
-create_stats_metric!(WindowFillPercent, "%", 100.0);
 
 pub fn setup_server_metrics(
     metrics_log: bool,
@@ -82,7 +79,7 @@ pub fn setup_server_metrics(
         TrackingBufferDamageRatio::register();
         PixelsCompressed::register();
         TimeInCompression::register();
-        FramebufferUpdatesSent::register();
-        WindowFillPercent::register();
+        FramesCut::register();
+        EncoderCount::register();
     }
 }

@@ -1,5 +1,5 @@
 use crate::backend::Backend;
-use crate::metrics::TrackingBufferDamageRatio;
+use crate::metrics::{FramesCut, TrackingBufferDamageRatio};
 
 use aperturec_graphics::prelude::*;
 use aperturec_state_machine::*;
@@ -393,6 +393,7 @@ where
         let id = self.curr_frame_id;
         self.curr_frame_id += 1;
 
+        FramesCut::inc();
         Some(Frame { id, buffers })
     }
 

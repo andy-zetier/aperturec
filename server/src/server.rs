@@ -1,4 +1,5 @@
 use crate::backend::{Backend, SwapableBackend};
+use crate::metrics::EncoderCount;
 use crate::task::{
     backend, control_channel_handler as cc_handler, encoder, event_channel_handler as ec_handler,
     frame_sync, media_channel_handler as mc_handler, rate_limit,
@@ -520,6 +521,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             SessionTerminated::<B>
         );
         log::trace!("Resolution set to {:?}", resolution);
+        EncoderCount::update(encoder_areas.len() as f64);
 
         let decoder_areas: Vec<_> = encoder_areas
             .iter()
