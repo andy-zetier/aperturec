@@ -285,7 +285,7 @@ impl Client {
 
     fn generate_client_caps(&self) -> ClientCaps {
         ClientCaps {
-            supported_codecs: vec![Codec::Raw.into(), Codec::Zlib.into()],
+            supported_codecs: vec![Codec::Raw.into(), Codec::Zlib.into(), Codec::Jpegxl.into()],
         }
     }
 

@@ -21,6 +21,7 @@ derive_builder = "0.12.0"
 flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
 gethostname = "0.4.3"
 gtk = "0.17.1"
+jpegxl-rs = { version = "0.10", features = ["vendored"] }
 keycode = "0.4.0"
 ndarray = "0.16"
 openssl = "0.10.64"

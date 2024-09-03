@@ -8,13 +8,13 @@ ENV APT_UPDATE="apt update"
 ENV APT_INSTALL="apt install -y --no-install-recommends --no-install-suggests"
 ENV APT_CLEAN="rm -rf /var/lib/apt/lists/*"
 ENV DEBIAN_FRONTEND=noninteractive
-RUN $APT_UPDATE && $APT_INSTALL curl build-essential cmake pkg-config libssl-dev ca-certificates git protobuf-compiler libprotobuf-dev && $APT_CLEAN
+RUN $APT_UPDATE && $APT_INSTALL clang curl build-essential cmake pkg-config libssl-dev ca-certificates git protobuf-compiler libprotobuf-dev && $APT_CLEAN
 
 FROM --platform=${ARCHITECTURE} ${UPSTREAM_REGISTRY}/${IMAGE_BASE} as base-image-fedora
 ENV DNF_INSTALL="dnf install --setopt=install_weak_deps=False -y"
 ENV DNF_CLEAN="dnf clean all"
 WORKDIR /root
-RUN $DNF_INSTALL -y gcc openssl-devel cmake git protobuf-compiler protobuf-devel && $DNF_CLEAN
+RUN $DNF_INSTALL -y clang gcc openssl-devel cmake git protobuf-compiler protobuf-devel && $DNF_CLEAN
 
 FROM --platform=${ARCHITECTURE} base-image-${OS_VARIANT} as base-rust-image
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c rustfmt
@@ -27,15 +27,10 @@ FROM --platform=${ARCHITECTURE} base-rust-image as rust-image-fedora
 
 FROM --platform=${ARCHITECTURE} rust-image-${OS_VARIANT} as rust-image
 
-FROM --platform=${ARCHITECTURE} rust-image as fips-capable-image-debian
-RUN $APT_UPDATE && $APT_INSTALL clang && $APT_CLEAN
-
-FROM --platform=${ARCHITECTURE} rust-image as fips-capable-image-fedora
-RUN $DNF_INSTALL clang && $DNF_CLEAN
-
-FROM --platform=${ARCHITECTURE} fips-capable-image-${OS_VARIANT} as fips-capable-image
+FROM --platform=${ARCHITECTURE} rust-image as fips-capable-image
 ARG ARCHITECTURE
 ENV CC="clang"
+ENV CXX="clang++"
 RUN curl -sSf https://dl.google.com/go/go1.22.2.linux-${ARCHITECTURE}.tar.gz | tar -xz -C /usr/local
 ENV PATH="$PATH:/usr/local/go/bin"
 
@@ -58,7 +53,7 @@ RUN make
 
 FROM --platform=${ARCHITECTURE} fips-capable-image as client-image-windows
 COPY --from=pe-util-build-windows /root/pe-util/build/peldd /usr/bin/peldd
-RUN $DNF_INSTALL mingw64-gcc mingw64-freetype mingw64-cairo mingw64-harfbuzz mingw64-pango mingw64-poppler mingw64-gtk3 mingw64-winpthreads-static mingw64-glib2-static mingw64-openssl boost zip jq nasm bindgen && $DNF_CLEAN
+RUN $DNF_INSTALL mingw64-gcc mingw64-gcc-c++ mingw64-freetype mingw64-cairo mingw64-harfbuzz mingw64-pango mingw64-poppler mingw64-gtk3 mingw64-winpthreads-static mingw64-glib2-static mingw64-openssl boost zip jq nasm bindgen && $DNF_CLEAN
 ENV PKG_CONFIG_ALLOW_CROSS=1
 ENV PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/sys-root/mingw/lib/pkgconfig/
 ENV GTK_INSTALL_PATH=/usr/x86_64-w64-mingw32/sys-root/mingw/

@@ -72,6 +72,27 @@ fn encode_zlib(raw_data: ArrayView2<Pixel24>) -> Result<Vec<u8>> {
     })
 }
 
+fn encode_jpegxl(raw_data: ArrayView2<Pixel24>) -> Result<Vec<u8>> {
+    let width = raw_data.as_ndarray().len_of(axis::X);
+    let height = raw_data.as_ndarray().len_of(axis::Y);
+    let runner = jpegxl_rs::ThreadsRunner::default();
+    let mut encoder = jpegxl_rs::encoder_builder()
+        .quality(1.0)
+        .speed(jpegxl_rs::encode::EncoderSpeed::Lightning)
+        .decoding_speed(4_i64)
+        .parallel_runner(&runner)
+        .build()
+        .expect("encoder build");
+
+    Ok(tokio::task::block_in_place(|| {
+        do_encode_optimize_contig(raw_data, move |bytes| {
+            Ok(encoder
+                .encode::<u8, u8>(&bytes, width as u32, height as u32)?
+                .data)
+        })
+    })?)
+}
+
 fn encode(codec: Codec, raw_data: ArrayView2<Pixel24>) -> Result<Vec<u8>> {
     let size = raw_data.size();
 
@@ -79,6 +100,7 @@ fn encode(codec: Codec, raw_data: ArrayView2<Pixel24>) -> Result<Vec<u8>> {
     let data = match codec {
         Codec::Raw => encode_raw(raw_data)?,
         Codec::Zlib => encode_zlib(raw_data)?,
+        Codec::Jpegxl => encode_jpegxl(raw_data)?,
         Codec::Unspecified => bail!("Unspecified codec"),
     };
     let end = Instant::now();

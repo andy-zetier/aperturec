@@ -502,7 +502,9 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
 
         let preferred_codec = match client_init.client_caps {
             Some(caps) => {
-                if caps.supported_codecs.contains(&Codec::Zlib.into()) {
+                if caps.supported_codecs.contains(&Codec::Jpegxl.into()) {
+                    Codec::Jpegxl
+                } else if caps.supported_codecs.contains(&Codec::Zlib.into()) {
                     Codec::Zlib
                 } else {
                     Codec::Raw

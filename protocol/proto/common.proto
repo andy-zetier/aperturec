@@ -22,6 +22,7 @@ enum Codec {
   CODEC_UNSPECIFIED = 0;
   CODEC_RAW = 1;
   CODEC_ZLIB = 2;
+  CODEC_JPEGXL = 3;
 }
 
 message ClientCaps { repeated Codec supported_codecs = 1; }

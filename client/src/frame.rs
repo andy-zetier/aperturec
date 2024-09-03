@@ -23,10 +23,20 @@ fn decode_zlib(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
     Ok(decoded)
 }
 
+fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
+    let decoder = jpegxl_rs::decoder_builder().build()?;
+    let pixels = decoder.decode(&*encoded_data)?.1;
+    match pixels {
+        jpegxl_rs::decode::Pixels::Uint8(vec) => Ok(vec),
+        _ => bail!("unsupppored pixel format"),
+    }
+}
+
 fn decode(codec: Codec, encoded_data: Vec<u8>) -> Result<Vec<u8>> {
     match codec {
         Codec::Raw => decode_raw(encoded_data),
         Codec::Zlib => decode_zlib(encoded_data),
+        Codec::Jpegxl => decode_jpegxl(encoded_data),
         codec => bail!("Unsupported codec: {:?}", codec),
     }
 }
