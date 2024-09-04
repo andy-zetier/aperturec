@@ -3,7 +3,6 @@ use crate::metrics::{FramesCut, TrackingBufferDamageRatio};
 
 use aperturec_graphics::prelude::*;
 use aperturec_state_machine::*;
-use aperturec_trace::log;
 
 use anyhow::{anyhow, bail, Result};
 use futures::{self, future, TryFutureExt};
@@ -14,6 +13,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::*;
 
 #[derive(Debug)]
 pub struct SubframeBuffer<M: PixelMap> {
@@ -125,7 +125,7 @@ where
             js.spawn_on(
                 async move {
                     loop {
-                        log::trace!(
+                        trace!(
                             "Waiting for {} permits and damage",
                             self.state.frame_txs.len()
                         );
@@ -137,7 +137,7 @@ where
                             damage_handle.wait_for_damage(),
                         )
                         .await?;
-                        log::trace!("Received permits and damage!");
+                        trace!("Received permits and damage!");
 
                         let frame = tracking_buffer
                             .lock()

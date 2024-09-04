@@ -1,8 +1,6 @@
 //! QUIC server types
 use aperturec_protocol as protocol;
 use aperturec_state_machine::*;
-#[cfg(any(test, debug_assertions))]
-use aperturec_trace::log;
 
 use crate::quic::*;
 use crate::transport::{datagram, stream};
@@ -13,6 +11,7 @@ use anyhow::{anyhow, Result};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
+use tracing::*;
 
 #[cfg(any(test, debug_assertions))]
 use rustls::KeyLogFile;
@@ -158,7 +157,7 @@ impl Builder {
         {
             tls_config.key_log = Arc::new(KeyLogFile::new());
             if tls_config.key_log.will_log("") {
-                log::warn!("Key logging enabled! This should never happen in production!");
+                warn!("Key logging enabled! This should never happen in production!");
             }
         }
 

@@ -1,11 +1,9 @@
 use crate::backend::{Backend, CursorChange, CursorImage, Event};
 
 use aperturec_graphics::prelude::*;
+use aperturec_protocol::event as em;
 
 use anyhow::{anyhow, bail, Result};
-use aperturec_protocol::event as em;
-use aperturec_trace::log;
-use aperturec_trace::queue::{self, deq, enq, trace_queue};
 use futures::{future, stream, Stream, StreamExt};
 use ndarray::{prelude::*, AssignElem};
 use rand::distributions::{Alphanumeric, DistString};
@@ -21,12 +19,12 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::*;
 use xcb::damage::{self, Damage};
 use xcb::x::{self, Drawable, GetImage, ImageFormat, ScreenBuf, Window};
 use xcb::{randr, xfixes, xtest, BaseEvent, Connection, Extension};
 use xcb::{CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply};
 
-const X_DAMAGE_QUEUE: queue::Queue = trace_queue!("x:damage");
 const CHILD_STARTUP_WAIT_TIME_MS: Duration = Duration::from_millis(1000);
 
 pub const X_BYTES_PER_PIXEL: usize = 4;
@@ -54,9 +52,9 @@ pub struct X {
 async fn do_exec_command(display_name: &str, command: &mut Command) -> Result<Child> {
     command.env("DISPLAY", display_name);
     command.env("XDG_SESSION_TYPE", "x11");
-    log::debug!("Starting command `{:?}`", command);
+    debug!("Starting command `{:?}`", command);
     let process = command.spawn()?;
-    log::debug!("Launched {:?}", process);
+    debug!("Launched {:?}", process);
     Ok(process)
 }
 
@@ -182,7 +180,7 @@ impl Backend for X {
             Some(ref mut rp) => {
                 let es = rp.wait().await?;
                 self.root_process_exited = true;
-                log::debug!("Root program exited with result {}", es);
+                debug!("Root program exited with result {}", es);
                 Ok(es)
             }
         }
@@ -274,10 +272,9 @@ impl Backend for X {
         let max_width = max_width.into().unwrap_or(Self::DEFAULT_MAX_WIDTH);
         let max_height = max_height.into().unwrap_or(Self::DEFAULT_MAX_HEIGHT);
 
-        log::debug!(
+        debug!(
             "Starting X Server with max resolution {}x{}",
-            max_width,
-            max_height
+            max_width, max_height
         );
 
         let mut xvfb_cmd = Command::new("Xvfb");
@@ -289,7 +286,7 @@ impl Backend for X {
             .arg("1") // stdout
             .stdout(Stdio::piped())
             .kill_on_drop(true);
-        log::debug!("Starting Xvfb with command `{:?}`", xvfb_cmd);
+        debug!("Starting Xvfb with command `{:?}`", xvfb_cmd);
         let mut xvfb_proc = xvfb_cmd.spawn()?;
         time::sleep(CHILD_STARTUP_WAIT_TIME_MS).await;
         if let Ok(Some(status)) = xvfb_proc.try_wait() {
@@ -300,22 +297,22 @@ impl Backend for X {
         let mut display_name = String::new();
         xvfb_stdout.read_line(&mut display_name).await?;
         display_name = format!(":{}", display_name.trim().trim_end());
-        log::trace!("Started X server with name \"{}\"", display_name);
+        trace!("Started X server with name \"{}\"", display_name);
 
-        log::trace!("Creating new XConnection");
+        trace!("Creating new XConnection");
         let connection = XConnection::new(&*display_name)?;
-        log::trace!("Querying for damage extension version");
+        trace!("Querying for damage extension version");
         X::query_damage_version(&connection).await?;
-        log::trace!("Querying for xfixes extension version");
+        trace!("Querying for xfixes extension version");
         X::query_xfixes_version(&connection).await?;
-        log::trace!("Creating root objects");
+        trace!("Creating root objects");
         let (root_damage, root_window) = X::create_root_objects(&connection);
         let root_drawable = Drawable::Window(root_window);
-        log::trace!("Setting up damage monitor");
+        trace!("Setting up damage monitor");
         X::setup_damage_monitor(&connection, &root_damage, &root_drawable).await?;
-        log::trace!("Setting up xtest extension");
+        trace!("Setting up xtest extension");
         X::setup_xtest_extension(&connection).await?;
-        log::trace!("Setting up xfixes monitor");
+        trace!("Setting up xfixes monitor");
         X::setup_xfixes_monitor(&connection, &root_window).await?;
 
         let root_process = match root_process_cmd {
@@ -323,7 +320,7 @@ impl Backend for X {
             Some(cmd) => Some(do_exec_command(&display_name, cmd).await?),
         };
 
-        log::trace!("X initialized");
+        trace!("X initialized");
         Ok(X {
             display_name,
             max_width,
@@ -341,11 +338,9 @@ impl Backend for X {
             Event::Key { key, is_depressed } => {
                 let keycode = key as x::Keycode;
                 if keycode > self.connection.max_keycode || keycode < self.connection.min_keycode {
-                    log::warn!(
+                    warn!(
                         "Received key event for key outside range ({},{}): {}. Dropping the event.",
-                        self.connection.min_keycode,
-                        self.connection.max_keycode,
-                        keycode
+                        self.connection.min_keycode, self.connection.max_keycode, keycode
                     );
                     return Ok(());
                 }
@@ -355,7 +350,7 @@ impl Backend for X {
                     // hard-coded for same reasons as pointer event
                     3
                 } as u8;
-                log::info!("key_event.key: {}", key);
+                info!("key_event.key: {}", key);
                 let req = xtest::FakeInput {
                     r#type: event_type_num,
                     detail: key as u8,
@@ -383,7 +378,7 @@ impl Backend for X {
                         // (https://xcb.freedesktop.org/manual/group__XCB____API.html)
                         5
                     } as u8;
-                    log::debug!("event_type_num: {}", event_type_num);
+                    debug!("event_type_num: {}", event_type_num);
                     let req = xtest::FakeInput {
                         r#type: event_type_num,
                         detail: u8_for_button(&button) + 1,
@@ -394,7 +389,7 @@ impl Backend for X {
                         deviceid: 0,
                     };
 
-                    log::trace!("Sending event {:#?}", req);
+                    trace!("Sending event {:#?}", req);
                     self.connection.checked_void_request(req).await?;
                 }
                 let req = xtest::FakeInput {
@@ -410,7 +405,7 @@ impl Backend for X {
                     root_y: location.y_position as i16,
                     deviceid: 0,
                 };
-                log::trace!("Sending event {:#?}", req);
+                trace!("Sending event {:#?}", req);
                 self.connection.checked_void_request(req).await?;
             }
             Event::Display { size } => {
@@ -458,7 +453,7 @@ impl Backend for X {
             bail!("no modes for any output");
         }
 
-        log::trace!("{:#?}", screen_resources);
+        trace!("{:#?}", screen_resources);
         let curr_output = screen_resources.outputs()[0];
         let curr_output_info = self
             .connection
@@ -515,7 +510,7 @@ impl Backend for X {
 
     async fn resolution(&self) -> Result<Size> {
         let screen_resources = self.screen_resources().await?;
-        log::trace!("crtcs: {:#?}", screen_resources.crtcs());
+        trace!("crtcs: {:#?}", screen_resources.crtcs());
         if screen_resources.crtcs().len() != 1 {
             bail!(
                 "Only support single monitor, {} monitors identified",
@@ -530,7 +525,7 @@ impl Backend for X {
                 config_timestamp: x::CURRENT_TIME,
             })
             .await?;
-        log::trace!("crtc_info: {:?}", crtc_info);
+        trace!("crtc_info: {:?}", crtc_info);
 
         Ok(Size::new(
             crtc_info.width() as usize,
@@ -561,7 +556,7 @@ impl X {
     }
 
     async fn query_damage_version(connection: &XConnection) -> Result<()> {
-        log::trace!("querying damage version");
+        trace!("querying damage version");
         let reply = connection
             .checked_request_with_reply(damage::QueryVersion {
                 client_major_version: damage::MAJOR_VERSION,
@@ -569,7 +564,7 @@ impl X {
             })
             .await?;
 
-        log::trace!("received reply");
+        trace!("received reply");
         if reply.major_version() != damage::MAJOR_VERSION
             || reply.minor_version() != damage::MINOR_VERSION
         {
@@ -586,7 +581,7 @@ impl X {
     }
 
     async fn query_xfixes_version(connection: &XConnection) -> Result<()> {
-        log::trace!("querying xfixes version");
+        trace!("querying xfixes version");
         let reply = connection
             .checked_request_with_reply(xfixes::QueryVersion {
                 client_major_version: xfixes::MAJOR_VERSION,
@@ -685,7 +680,6 @@ impl XEventStreamMux {
             _event_task: tokio::task::spawn_blocking(move || loop {
                 let event = conn.wait_for_event()?;
                 event_task_tx.send(XEvent(event))?;
-                enq!(X_DAMAGE_QUEUE);
             }),
             _tx_task: tokio::task::spawn(async move {
                 loop {
@@ -750,7 +744,7 @@ impl XConnection {
             let cookie = inner.send_request(&req);
             let reply = inner.wait_for_reply(cookie);
             if let Err(e) = &reply {
-                log::error!("X returned an error for request {:?}: {}", req, e);
+                error!("X returned an error for request {:?}: {}", req, e);
             }
             reply
         })?;
@@ -766,7 +760,7 @@ impl XConnection {
         Ok(tokio::task::block_in_place(move || {
             let reply = inner.send_and_check_request(&req);
             if let Err(e) = &reply {
-                log::error!("X returned an error for request {:?}: {}", req, e);
+                error!("X returned an error for request {:?}: {}", req, e);
             }
             reply
         })?)
@@ -776,13 +770,13 @@ impl XConnection {
     /// this will use the `DISPLAY` environment variable.
     fn new<'s>(name: impl Into<Option<&'s str>>) -> Result<Self> {
         let name = name.into();
-        log::trace!("Connecting to display {:?}", name);
+        trace!("Connecting to display {:?}", name);
         let (conn, preferred_screen_index) = Connection::connect_with_extensions(
             name,
             &[Extension::Damage, Extension::Test, Extension::XFixes],
             &[],
         )?;
-        log::trace!("Created X connection");
+        trace!("Created X connection");
         let conn_arc = Arc::new(conn);
         let preferred_screen = conn_arc
             .get_setup()
@@ -806,28 +800,11 @@ impl XConnection {
 #[derive(Debug)]
 pub struct XEvent(xcb::Event);
 
-impl Drop for XEvent {
-    fn drop(&mut self) {
-        deq!(X_DAMAGE_QUEUE);
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
 
     use serial_test::serial;
-    use std::sync::Once;
-
-    static INIT: Once = Once::new();
-
-    fn setup() {
-        INIT.call_once(|| {
-            aperturec_trace::Configuration::new("test")
-                .initialize()
-                .expect("trace init");
-        });
-    }
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
@@ -850,7 +827,6 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn get_resolution() {
-        setup();
         let x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))
             .await
             .expect("x initialize");

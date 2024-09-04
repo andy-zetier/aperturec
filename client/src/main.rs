@@ -3,7 +3,6 @@ use aperturec_client::{client, gtk3};
 use aperturec_metrics::exporters::{
     CsvExporter, Exporter, LogExporter, PrometheusExporter, PushgatewayExporter,
 };
-use aperturec_trace::{self as trace, log, Level};
 
 use anyhow::Result;
 use clap::Parser;
@@ -13,6 +12,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use sysinfo::{CpuRefreshKind, RefreshKind, SystemExt};
+use tracing::*;
+use tracing_subscriber::EnvFilter;
 
 const DEFAULT_RESOLUTION: (u64, u64) = (800, 600);
 
@@ -129,11 +130,17 @@ fn main() -> Result<()> {
         2 => Level::DEBUG,
         _ => Level::TRACE,
     };
-    trace::Configuration::new("client")
-        .cmdline_verbosity(log_verbosity)
-        .initialize()?;
+    tracing_subscriber::fmt()
+        .with_file(true)
+        .with_line_number(true)
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(log_verbosity.into())
+                .from_env()?,
+        )
+        .init();
 
-    log::info!("ApertureC Client Startup");
+    info!("ApertureC Client Startup");
 
     let decoder_max = if args.decoder_max != 0 {
         args.decoder_max
@@ -164,7 +171,7 @@ fn main() -> Result<()> {
     }
     let config = config_builder.build()?;
 
-    log::debug!("{:#?}", config);
+    debug!("{:#?}", config);
 
     let mut metrics_started = false;
 
@@ -177,13 +184,13 @@ fn main() -> Result<()> {
         if args.metrics_log {
             match LogExporter::new(Level::DEBUG) {
                 Ok(le) => exporters.push(Exporter::Log(le)),
-                Err(err) => log::warn!("Failed to setup Log exporter: {}, disabling", err),
+                Err(err) => warn!("Failed to setup Log exporter: {}, disabling", err),
             }
         }
         if let Some(path) = args.metrics_csv {
             match CsvExporter::new(path) {
                 Ok(csve) => exporters.push(Exporter::Csv(csve)),
-                Err(err) => log::warn!("Failed to setup CSV exporter: {}, disabling", err),
+                Err(err) => warn!("Failed to setup CSV exporter: {}, disabling", err),
             }
         }
         if let Some(url) = args.metrics_pushgateway {
@@ -193,13 +200,13 @@ fn main() -> Result<()> {
                 std::process::id(),
             ) {
                 Ok(pge) => exporters.push(Exporter::Pushgateway(pge)),
-                Err(err) => log::warn!("Failed to setup Pushgateway exporter: {}, disabling", err),
+                Err(err) => warn!("Failed to setup Pushgateway exporter: {}, disabling", err),
             }
         }
         if let Some(bind_addr) = args.metrics_prometheus {
             match PrometheusExporter::new(&bind_addr) {
                 Ok(pe) => exporters.push(Exporter::Prometheus(pe)),
-                Err(err) => log::warn!("Failed to setup Prometheus exporter: {}, disabling", err),
+                Err(err) => warn!("Failed to setup Prometheus exporter: {}, disabling", err),
             }
         }
 

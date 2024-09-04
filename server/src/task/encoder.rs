@@ -5,7 +5,6 @@ use aperturec_graphics::prelude::*;
 use aperturec_protocol::common::{Dimension as AcDimension, Location as AcLocation, *};
 use aperturec_protocol::media::{self as mm, server_to_client as mm_s2c};
 use aperturec_state_machine::*;
-use aperturec_trace::log;
 
 use anyhow::{anyhow, bail, Result};
 use flate2::{write::DeflateEncoder, Compression};
@@ -18,6 +17,7 @@ use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+use tracing::*;
 
 fn do_encode_optimize_contig<F: FnOnce(&[u8]) -> Result<Vec<u8>>>(
     raw_data: ArrayView2<Pixel24>,
@@ -190,7 +190,7 @@ impl Transitionable<Running> for Task<Created> {
                             encoder: self.id as u32,
                         }))
                         .await?;
-                    log::trace!(
+                    trace!(
                         "Dispatched frame/encoder/sequence {}/{}/<empty>",
                         frame.id,
                         self.id
@@ -228,7 +228,7 @@ impl Transitionable<Running> for Task<Created> {
                             .send(mm_s2c::Message::Fragment(frag))
                             .await?;
 
-                        log::trace!(
+                        trace!(
                             "Dispatched frame/encoder/sequence {}/{}/{}",
                             frame.id,
                             self.id,

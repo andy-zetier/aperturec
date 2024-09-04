@@ -1,6 +1,5 @@
 use aperturec_channel::gate::*;
 use aperturec_state_machine::*;
-use aperturec_trace::log;
 
 use anyhow::{anyhow, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,6 +9,7 @@ use tokio::sync::{mpsc, oneshot, Semaphore, TryAcquireError};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
+use tracing::*;
 
 type RlRequest = (Command, usize, oneshot::Sender<()>);
 type RlSender = mpsc::UnboundedSender<RlRequest>;
@@ -107,7 +107,7 @@ impl TokenBucket {
             Ok(permit) => permit,
             Err(TryAcquireError::Closed) => panic!("Failed to acquire_many!"),
             Err(TryAcquireError::NoPermits) => {
-                log::trace!("{} blocking acquire of {} tokens!", self.name, count);
+                trace!("{} blocking acquire of {} tokens!", self.name, count);
                 self.bucket
                     .acquire_many(count as u32)
                     .await
@@ -123,11 +123,11 @@ impl TokenBucket {
 
         match dropped_token_count.cmp(&0) {
             std::cmp::Ordering::Greater => {
-                log::trace!("{} refilling {} tokens", self.name, dropped_token_count);
+                trace!("{} refilling {} tokens", self.name, dropped_token_count);
                 self.bucket.add_permits(dropped_token_count as usize);
             }
             std::cmp::Ordering::Less => {
-                log::trace!("{} removing {} tokens", self.name, -dropped_token_count);
+                trace!("{} removing {} tokens", self.name, -dropped_token_count);
                 self.bucket.forget_permits(-dropped_token_count as usize);
             }
             _ => (),
@@ -192,7 +192,7 @@ impl Transitionable<Running> for Task<Created> {
         let mut cmd_rx = self.state.cmd_rx;
 
         let task = tokio::spawn(async move {
-            log::trace!("Running rate limit task");
+            trace!("Running rate limit task");
 
             //
             // Setup Rate Limiting
@@ -217,7 +217,7 @@ impl Transitionable<Running> for Task<Created> {
                 tokio::select! {
                     biased;
                     _ = task_ct.cancelled() => {
-                        log::info!("rate limit task canceled");
+                        info!("rate limit task canceled");
                         break Ok(());
                     }
                     Some((cmd, num_bytes, response)) = cmd_rx.recv() => {

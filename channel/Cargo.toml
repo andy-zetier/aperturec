@@ -7,7 +7,7 @@ version.workspace = true
 aperturec-protocol = { path = "../protocol" }
 aperturec-state-machine = { path = "../state_machine" }
 aperturec-metrics = { path = "../metrics" }
-aperturec-trace = { path = "../trace" }
+
 anyhow = "1.0"
 bytes = "1.6"
 derive_builder = "0.12"
@@ -22,6 +22,7 @@ rustls-pemfile = "2.1"
 rustls-platform-verifier = "0.3"
 tokio = { version = "1.37", features = ["full"] }
 trait-variant = "0.1"
+tracing = "0.1"
 
 [target.'cfg(unix)'.dependencies.s2n-quic]
 version = "1.44"

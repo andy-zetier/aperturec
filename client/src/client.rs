@@ -16,7 +16,6 @@ use aperturec_protocol::event::{
     KeyEvent, MappedButton, PointerEvent, PointerEventBuilder,
 };
 use aperturec_state_machine::*;
-use aperturec_trace::log;
 
 use anyhow::Result;
 use crossbeam::channel::{select, unbounded, Receiver, Sender};
@@ -33,6 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{assert, thread};
 use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
+use tracing::*;
 
 const VERSION_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
 const VERSION_MINOR: &str = env!("CARGO_PKG_VERSION_MINOR");
@@ -381,13 +381,13 @@ impl Client {
             let msg = match msg.message {
                 Some(msg) => msg,
                 None => {
-                    log::warn!("media message with empty body");
+                    warn!("media message with empty body");
                     continue;
                 }
             };
 
             if let Err(e) = framer.report_mm(msg) {
-                log::warn!("Error processing media message: {}", e);
+                warn!("Error processing media message: {}", e);
             }
 
             if !framer.has_draws() {
@@ -400,12 +400,12 @@ impl Client {
                         let msg = match msg_res?.message {
                             Some(msg) => msg,
                             None => {
-                                log::warn!("media message with empty body");
+                                warn!("media message with empty body");
                                 continue;
                             }
                         };
                         if let Err(e) = framer.report_mm(msg) {
-                            log::warn!("Error processing media message: {}", e)
+                            warn!("Error processing media message: {}", e)
                         }
                     },
                     recv(img_rx) -> img_res => {
@@ -431,19 +431,19 @@ impl Client {
         notify_control_rx: Receiver<ControlMessage>,
     ) -> Result<()> {
         let ci = self.generate_client_init();
-        log::debug!("{:#?}", &ci);
+        debug!("{:#?}", &ci);
 
         let (mut client_cc_read, mut client_cc_write) = client_cc.split();
         client_cc_write.send(ci.into())?;
 
-        log::debug!("Client Init sent, waiting for ServerInit...");
+        debug!("Client Init sent, waiting for ServerInit...");
         let si = match client_cc_read.receive() {
             Ok(cm_s2c::Message::ServerInit(si)) => si,
             Ok(cm_s2c::Message::ServerGoodbye(gb)) => panic!("Server sent goodbye: {:?}", gb),
             Err(other) => panic!("Failed to read ServerInit: {:?}", other),
         };
 
-        log::debug!("{:#?}", si);
+        debug!("{:#?}", si);
 
         //
         // Update client config with info from Server
@@ -466,7 +466,7 @@ impl Client {
         }
 
         for decoder_area in si.decoder_areas.into_iter() {
-            log::debug!("Decoder area: {:?}", decoder_area);
+            debug!("Decoder area: {:?}", decoder_area);
             if let DecoderArea {
                 location: Some(location),
                 dimension: Some(dimension),
@@ -491,7 +491,7 @@ impl Client {
             self.config.decoder_max
         );
 
-        log::info!(
+        info!(
             "Connected to server @ {} ({}) as client {}!",
             &self.config.server_addr,
             &self.server_name.as_ref().unwrap(),
@@ -513,40 +513,40 @@ impl Client {
                 match client_cc_read.receive() {
                     Ok(cm_s2c) => {
                         if let Err(err) = control_rx_tx.send(Ok(cm_s2c)) {
-                            log::error!("Failed to send: {}", err);
+                            error!("Failed to send: {}", err);
                             break;
                         }
                     }
                     Err(err) => {
-                        log::error!("Failed to receive: {}", err);
+                        error!("Failed to receive: {}", err);
                         control_rx_tx.send(Err(err)).unwrap();
                         break;
                     }
                 }
             }
-            log::trace!("Control channel rx exiting");
+            trace!("Control channel rx exiting");
         });
 
         thread::spawn(move || {
             while let Ok(cm_c2s) = control_tx_rx.recv() {
                 if let Err(err) = client_cc_write.send(cm_c2s) {
-                    log::error!("Failed to send: {}", err);
+                    error!("Failed to send: {}", err);
                     break;
                 }
             }
-            log::trace!("Control channel tx exiting");
+            trace!("Control channel tx exiting");
         });
 
         //
         // Setup SIGINT handler
         //
         ctrlc::set_handler(move || {
-            log::warn!("SIGINT received, exiting");
+            warn!("SIGINT received, exiting");
             notify_control_tx
                 .send(ControlMessage::SigintReceived)
                 .expect("Failed to notify control channel of SIGINT");
         })
-        .unwrap_or_else(|e| log::error!("Unable to install SIGINT handler: '{}'", e));
+        .unwrap_or_else(|e| error!("Unable to install SIGINT handler: '{}'", e));
 
         //
         // Setup core Control Channel thread
@@ -555,7 +555,7 @@ impl Client {
         let should_stop = self.should_stop.clone();
 
         self.control_jh = Some(thread::spawn(move || {
-            log::debug!("Control channel started");
+            debug!("Control channel started");
             loop {
                 select! {
                     recv(control_rx_rx) -> msg => match msg {
@@ -563,12 +563,12 @@ impl Client {
                             if let Err(err) =
                                 ui_tx.send(UiMessage::Quit(String::from("Goodbye!")))
                                 {
-                                    log::warn!("Failed to send QuitMessage: {}", err);
+                                    warn!("Failed to send QuitMessage: {}", err);
                                 }
                             break;
                         },
                         Ok(Ok(_)) => {
-                            log::warn!("Unexpected message received on control channel");
+                            warn!("Unexpected message received on control channel");
                         },
                         Ok(Err(err)) => match err.downcast::<std::io::Error>() {
                             Ok(ioe) => match ioe.kind() {
@@ -577,8 +577,8 @@ impl Client {
                                     let _ = ui_tx
                                         .send(UiMessage::Quit(format!("{:?}", ioe)));
                                     let _ = control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into());
-                                    log::trace!("Sent ClientGoodbye: Terminating");
-                                    log::error!("Fatal I/O error reading control message: {:?}", ioe);
+                                    trace!("Sent ClientGoodbye: Terminating");
+                                    error!("Fatal I/O error reading control message: {:?}", ioe);
                                     break;
                                 }
                             },
@@ -589,42 +589,42 @@ impl Client {
                                             client_id,
                                             ClientGoodbyeReason::Terminating.into(),
                                             ).into());
-                                log::trace!("Sent ClientGoodbye: Terminating");
-                                log::error!("Fatal error reading control message: {:?}", other);
+                                trace!("Sent ClientGoodbye: Terminating");
+                                error!("Fatal error reading control message: {:?}", other);
                                 break;
                             }
                         },
                         Err(err) => {
-                            log::error!("Failed to recv from RX ITC channel: {}", err);
+                            error!("Failed to recv from RX ITC channel: {}", err);
                             break;
                         }
                     },
                     recv(notify_control_rx) -> msg => match msg {
                         Ok(ControlMessage::UiClosed(gm)) => {
                             control_tx_tx.send(gm.to_client_goodbye(client_id).into())
-                                .unwrap_or_else(|e| log::error!("Failed to send client goodbye to control channel: {}", e));
-                            log::trace!("Sent ClientGoodbye: User Requested");
-                            log::info!("Disconnecting from server, sent ClientGoodbye");
+                                .unwrap_or_else(|e| error!("Failed to send client goodbye to control channel: {}", e));
+                            trace!("Sent ClientGoodbye: User Requested");
+                            info!("Disconnecting from server, sent ClientGoodbye");
                             break;
                         },
                         Ok(ControlMessage::EventChannelDied(gm)) => {
                             ui_tx.send(UiMessage::Quit("Event Channel Died".to_string()))
-                                .unwrap_or_else(|e| log::error!("Failed to send QuitMessage to UI: {}", e));
+                                .unwrap_or_else(|e| error!("Failed to send QuitMessage to UI: {}", e));
                             control_tx_tx.send(gm.to_client_goodbye(client_id).into())
-                                .unwrap_or_else(|e| log::error!("Failed to send client goodbye to control channel: {}", e));
-                            log::trace!("Sent ClientGoodbye: Network Error");
+                                .unwrap_or_else(|e| error!("Failed to send client goodbye to control channel: {}", e));
+                            trace!("Sent ClientGoodbye: Network Error");
                             break;
                         },
                         Ok(ControlMessage::SigintReceived) => {
                             ui_tx.send(UiMessage::Quit("SIGINT".to_string()))
-                                .unwrap_or_else(|e| log::error!("Failed to send QuitMessage to UI: {}", e));
+                                .unwrap_or_else(|e| error!("Failed to send QuitMessage to UI: {}", e));
                             control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into())
-                                .unwrap_or_else(|e| log::error!("Failed to send client goodbye to control channel: {}", e));
-                            log::trace!("Sent ClientGoodbye: SIGINT");
+                                .unwrap_or_else(|e| error!("Failed to send client goodbye to control channel: {}", e));
+                            trace!("Sent ClientGoodbye: SIGINT");
                             break;
                         },
                         Err(err) => {
-                            log::error!("Failed to recv from ITC channel: {}", err);
+                            error!("Failed to recv from ITC channel: {}", err);
                             break;
                         }
                     },
@@ -632,7 +632,7 @@ impl Client {
             } // loop
 
             should_stop.store(true, Ordering::Relaxed);
-            log::debug!("Control channel exiting");
+            debug!("Control channel exiting");
         })); // thread::spawn
 
         Ok(())
@@ -649,23 +649,23 @@ impl Client {
         let should_stop = self.should_stop.clone();
 
         thread::spawn(move || {
-            log::debug!("Event channel Rx started");
+            debug!("Event channel Rx started");
             loop {
                 match ec_rx.receive() {
                     Ok(msg) => match msg.try_into() {
                         Ok(cm) => {
                             if let Err(err) = ui_tx.send(cm) {
-                                log::error!("Failed to send cursor message: {}", err);
+                                error!("Failed to send cursor message: {}", err);
                                 break;
                             }
                         }
                         Err(err) => {
-                            log::error!("Failed to convert event message: {}", err);
+                            error!("Failed to convert event message: {}", err);
                             break;
                         }
                     },
                     Err(err) => {
-                        log::error!("Failed to receive: {}", err);
+                        error!("Failed to receive: {}", err);
                         break;
                     }
                 }
@@ -678,7 +678,7 @@ impl Client {
 
         let should_stop = self.should_stop.clone();
         thread::spawn(move || {
-            log::debug!("Event channel Tx started");
+            debug!("Event channel Tx started");
             for event_msg in notify_event_rx.iter() {
                 let msg = match event_msg {
                     EventMessage::MouseButtonEventMessage(mbem) => {
@@ -698,12 +698,12 @@ impl Client {
                     let _ = notify_control_tx.send(ControlMessage::EventChannelDied(
                         GoodbyeMessage::new_network_error(),
                     ));
-                    log::error!("Failed to send Event message: {}", err);
+                    error!("Failed to send Event message: {}", err);
                     break;
                 }
             } // for event_rx.iter()
 
-            log::debug!("Event channel exiting");
+            debug!("Event channel exiting");
         }); // thread::spawn
 
         Ok(())
@@ -726,7 +726,7 @@ impl Client {
             channel_builder = channel_builder.server_port(port);
         }
         for cert in &self.config.additional_tls_certificates {
-            log::debug!("Adding cert: {:?}", cert);
+            debug!("Adding cert: {:?}", cert);
             channel_builder = channel_builder
                 .additional_tls_pem_certificate(&String::from_utf8_lossy(&cert.to_pem()?));
         }
@@ -787,17 +787,6 @@ mod test {
     use aperturec_channel::UnifiedServer;
     use aperturec_protocol::control::ServerInitBuilder;
 
-    use std::sync::Once;
-
-    fn setup() {
-        static INIT: Once = Once::new();
-        INIT.call_once(|| {
-            aperturec_trace::Configuration::new("test")
-                .initialize()
-                .expect("trace init");
-        });
-    }
-
     fn generate_configuration(
         temp_id: u64,
         dec_max: u16,
@@ -823,7 +812,6 @@ mod test {
 
     #[test]
     fn client_initialization() {
-        setup();
         let config = generate_default_configuration();
         let client = Client::new(&config);
 
@@ -832,7 +820,6 @@ mod test {
 
     #[test]
     fn startup() {
-        setup();
         let material =
             channel::tls::Material::ec_self_signed::<_, &str>([], []).expect("tls material");
         let pem_material: channel::tls::PemMaterial =

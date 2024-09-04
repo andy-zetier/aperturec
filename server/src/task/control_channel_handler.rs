@@ -3,11 +3,11 @@ use aperturec_channel::*;
 use aperturec_protocol::control::client_to_server as cm_c2s;
 use aperturec_protocol::control::server_to_client as cm_s2c;
 use aperturec_state_machine::*;
-use aperturec_trace::log;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::*;
 
 #[derive(Stateful, SelfTransitionable, Debug)]
 #[state(S)]
@@ -77,10 +77,10 @@ impl Transitionable<Running> for Task<Created> {
                     loop {
                         match cc_rx.receive().await {
                             Ok(cm_c2s::Message::ClientInit(_)) => {
-                                log::warn!("Spurious ClientInit message");
+                                warn!("Spurious ClientInit message");
                             }
                             Ok(cm_c2s::Message::ClientGoodbye(_)) => {
-                                log::info!("Client said goodbye");
+                                info!("Client said goodbye");
                                 break Ok(());
                             }
                             Err(e) => bail!("control channel receive error: {}", e),
@@ -128,7 +128,7 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
                 Some(task_res) = self.state.tasks.join_next() => {
                     let error = match task_res {
                         Ok(Ok(())) => {
-                            log::trace!("task exited");
+                            trace!("task exited");
                             self.state.ct.cancel();
                             continue;
                         },

@@ -8,7 +8,6 @@
 use crate::Measurement;
 
 use anyhow::{anyhow, Result};
-use aperturec_trace::{log, Level};
 use chrono::{SecondsFormat, Utc};
 use prometheus::{Encoder, Gauge, Opts, TextEncoder};
 use std::collections::HashMap;
@@ -21,6 +20,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use sysinfo::{ProcessExt, System, SystemExt, UserExt};
 use tiny_http::{Response, Server, StatusCode};
+use tracing::*;
 
 use reqwest::blocking::Client;
 use reqwest::{Method, Url};
@@ -69,11 +69,11 @@ impl LogExporter {
             .collect::<Vec<_>>()
             .join("");
         match self.log_level {
-            Level::ERROR => log::error!("{}", s),
-            Level::WARN => log::warn!("{}", s),
-            Level::INFO => log::info!("{}", s),
-            Level::DEBUG => log::debug!("{}", s),
-            Level::TRACE => log::trace!("{}", s),
+            Level::ERROR => error!("{}", s),
+            Level::WARN => warn!("{}", s),
+            Level::INFO => info!("{}", s),
+            Level::DEBUG => debug!("{}", s),
+            Level::TRACE => trace!("{}", s),
         };
         Ok(())
     }
@@ -112,7 +112,7 @@ impl CsvExporter {
                 .collect::<Vec<_>>()
                 .join(",");
             writeln!(self.file.as_ref().unwrap(), "timestamp_rfc3339,{}", header).or_else(|e| {
-                log::warn!("Failed to write metrics header to '{}': {}", self.path, e);
+                warn!("Failed to write metrics header to '{}': {}", self.path, e);
                 self.reopen_file()
             })?;
             self.needs_header = false;
@@ -131,7 +131,7 @@ impl CsvExporter {
             .collect::<Vec<_>>()
             .join(",");
         writeln!(self.file.as_ref().unwrap(), "{},{}", timestamp, line).or_else(|e| {
-            log::warn!("Failed to write metrics to '{}': {}", self.path, e);
+            warn!("Failed to write metrics to '{}': {}", self.path, e);
             self.reopen_file()
         })?;
         Ok(())
@@ -148,7 +148,7 @@ impl CsvExporter {
             .append(true)
             .open(path)
             .map_err(|e| {
-                log::error!("Failed to open metrics file '{}' for writing: {}", path, e);
+                error!("Failed to open metrics file '{}' for writing: {}", path, e);
                 e
             })?)
     }
@@ -370,7 +370,7 @@ impl PrometheusExporter {
         };
 
         let server = Arc::new(Server::http(bind_addr).map_err(|e| anyhow!(e))?);
-        log::debug!(
+        debug!(
             "Prometheus metrics webserver bound to {}",
             server.server_addr()
         );
@@ -394,7 +394,7 @@ impl PrometheusExporter {
                                         .with_header(header.clone())
                                         .boxed(),
                                     Err(e) => {
-                                        log::warn!("Failed to encode Prometheus metrics: {}", e);
+                                        warn!("Failed to encode Prometheus metrics: {}", e);
                                         Response::empty(StatusCode(500)).boxed()
                                     }
                                 }
@@ -403,16 +403,16 @@ impl PrometheusExporter {
                         };
 
                         if let Err(e) = request.respond(response) {
-                            log::warn!("Failed to respond to Prometheus request: {}", e);
+                            warn!("Failed to respond to Prometheus request: {}", e);
                         }
                     }
                     Err(err) => {
-                        log::error!("Prometheus metrics I/O error: {:?}", err);
+                        error!("Prometheus metrics I/O error: {:?}", err);
                         break;
                     }
                 }
             }
-            log::debug!("Prometheus metrics webserver shutting down");
+            debug!("Prometheus metrics webserver shutting down");
         });
 
         Ok(Self {
@@ -448,10 +448,9 @@ mod test {
         ]
     }
 
-    #[derive(Clone)]
-    struct TestWriter(Arc<Mutex<Vec<u8>>>);
+    struct TestWriter(Mutex<Vec<u8>>);
 
-    impl Write for TestWriter {
+    impl Write for &TestWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             self.0.lock().expect("lock").write(buf)
         }
@@ -463,15 +462,18 @@ mod test {
 
     #[test]
     fn log_exporter() {
-        let log_writer = TestWriter(Arc::default());
-        aperturec_trace::Configuration::new("test")
-            .cmdline_verbosity(aperturec_trace::Level::DEBUG)
-            .writer(log_writer.clone())
-            .simple(true)
-            .initialize()
-            .expect("log initialize");
+        let log_writer = Arc::new(TestWriter(Mutex::new(vec![])));
+        tracing_subscriber::fmt()
+            .with_writer(log_writer.clone())
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::builder()
+                    .with_default_directive(Level::DEBUG.into())
+                    .from_env()
+                    .unwrap(),
+            )
+            .init();
 
-        let mut le = LogExporter::new(aperturec_trace::Level::DEBUG).expect("LogExporter");
+        let mut le = LogExporter::new(Level::DEBUG).expect("LogExporter");
         le.do_export(&generate_measurements()).expect("export");
 
         assert!(

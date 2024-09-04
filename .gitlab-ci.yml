@@ -11,7 +11,7 @@ stages:
 .crates:package:
   - client
   - server
-.crates:no-extra-dependencies: "metrics,protocol,state_machine,trace"
+.crates:no-extra-dependencies: "metrics,protocol,state_machine"
 .crates:fips-dependencies: "channel"
 .crates:server-dependencies: "server"
 .crates:client-dependencies: "client"

@@ -1,7 +1,6 @@
 //! QUIC client types
 use aperturec_protocol as protocol;
 use aperturec_state_machine::*;
-use aperturec_trace::log;
 
 use super::*;
 use crate::transport::{datagram, stream};
@@ -12,6 +11,7 @@ use anyhow::{anyhow, Result};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
+use tracing::*;
 
 #[cfg(any(test, debug_assertions))]
 use rustls::KeyLogFile;
@@ -147,7 +147,7 @@ impl Builder {
         {
             tls_config.key_log = Arc::new(KeyLogFile::new());
             if tls_config.key_log.will_log("") {
-                log::warn!("Key logging enabled! This should never happen in production!");
+                warn!("Key logging enabled! This should never happen in production!");
             }
         }
 
@@ -276,12 +276,9 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
                     break;
                 }
                 Err(e) => {
-                    log::warn!(
+                    warn!(
                         "Failed to connect to {}:{} ({}): {}",
-                        self.state.server_addr,
-                        self.state.server_port,
-                        socket_addr,
-                        e
+                        self.state.server_addr, self.state.server_port, socket_addr, e
                     );
                 }
             }
@@ -423,12 +420,9 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
                     break;
                 }
                 Err(e) => {
-                    log::warn!(
+                    warn!(
                         "Failed to connect to {}:{} ({}): {}",
-                        self.state.server_addr,
-                        self.state.server_port,
-                        socket_addr,
-                        e
+                        self.state.server_addr, self.state.server_port, socket_addr, e
                     );
                 }
             }

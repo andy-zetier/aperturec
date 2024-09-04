@@ -3,7 +3,6 @@ use crate::task::frame_sync::SubframeBuffer;
 
 use aperturec_protocol::event::{self as em, server_to_client as em_s2c};
 use aperturec_state_machine::*;
-use aperturec_trace::log;
 
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
@@ -13,6 +12,7 @@ use std::hash::{Hash, Hasher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::*;
 
 #[derive(Stateful, SelfTransitionable, Debug)]
 #[state(S)]
@@ -129,7 +129,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             None => 'msg: {
                                 match self.state.backend.capture_cursor().await {
                                     Err(err) => {
-                                        log::error!("Failed to capture cursor: {}", err);
+                                        error!("Failed to capture cursor: {}", err);
                                         break 'select Err(err);
                                     },
                                     Ok(cursor_image) => {
@@ -140,7 +140,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                                         // cursor has already been sent.
                                         //
                                         if cursor_change.serial != cursor_image.serial {
-                                            log::trace!(
+                                            trace!(
                                                 "Captured cursor serial does not match originating serial: {} != {}",
                                                 cursor_image.serial,
                                                 cursor_change.serial
@@ -161,7 +161,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                                         // Generate CursorChange if ID is not unique
                                         //
                                         if cursor_cache.values().any(|&value| value == id) {
-                                            log::trace!("Cursor {} already exists in cache", id);
+                                            trace!("Cursor {} already exists in cache", id);
                                             cursor_cache.insert(cursor_image.serial, id);
                                             break 'msg (id, em_s2c::Message::CursorChange(em::CursorChange { id }));
                                         }

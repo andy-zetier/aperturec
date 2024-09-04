@@ -4,7 +4,7 @@
 //! Metrics with the Metrics system. For example:
 //!
 //! ```no_run
-//! use aperturec_trace::Level;
+//! use tracing::Level;
 //! use aperturec_metrics::MetricsInitializer;
 //! use aperturec_metrics::exporters::{Exporter, LogExporter, PushgatewayExporter};
 //!

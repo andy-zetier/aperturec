@@ -5,19 +5,18 @@ use crate::task::{
     frame_sync, media_channel_handler as mc_handler, rate_limit,
 };
 
-use aperturec_graphics::{partition::partition, prelude::*};
-
-use anyhow::{anyhow, bail, Result};
 use aperturec_channel::{
     self as channel, server::states as channel_states, AsyncReceiver, AsyncSender,
     AsyncUnifiedServer,
 };
+use aperturec_graphics::{partition::partition, prelude::*};
 use aperturec_protocol::common::*;
 use aperturec_protocol::control as cm;
 use aperturec_protocol::control::client_to_server as cm_c2s;
 use aperturec_protocol::control::server_to_client as cm_s2c;
 use aperturec_state_machine::*;
-use aperturec_trace::log;
+
+use anyhow::{anyhow, bail, Result};
 use derive_builder::Builder;
 use futures::prelude::*;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -28,6 +27,7 @@ use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::*;
 
 #[derive(Debug, Clone)]
 pub enum TlsConfiguration {
@@ -206,7 +206,7 @@ fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material>
             let mut path = save_directory.to_path_buf();
 
             path.push("cert.pem");
-            log::info!(
+            info!(
                 "Writing server self-signed certificate to {}",
                 path.display()
             );
@@ -214,7 +214,7 @@ fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material>
             path.pop();
 
             path.push("pkey.pem");
-            log::warn!("Writing server private key to {}", path.display());
+            warn!("Writing server private key to {}", path.display());
             fs::write(&path, &pem_material.pkey)?;
 
             Ok(tls_material)
@@ -403,7 +403,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
                 "non client init message received"
             ),
         };
-        log::trace!("Client init: {:#?}", client_init);
+        trace!("Client init: {:#?}", client_init);
         if client_init.temp_id != self.config.temp_client_id {
             let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::AuthenticationFailure);
             try_recover_async!(
@@ -478,10 +478,10 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
                     })
                     .await,
                 async {
-                    log::error!("Failed to launch process");
+                    error!("Failed to launch process");
                     let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::ProcessLaunchFailed);
                     cc.send(msg.clone().into()).await.unwrap_or_else(|e| {
-                        log::error!("Failed to send server goodbye {:?}: {}", msg, e)
+                        error!("Failed to send server goodbye {:?}: {}", msg, e)
                     });
                     recover_self!(cc, ec, mc, listener, backend.into_inner().0)
                 }
@@ -522,7 +522,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             recover_self!(cc, ec, mc, listener, backend.into_root()),
             SessionTerminated::<B>
         );
-        log::trace!("Resolution set to {:?}", resolution);
+        trace!("Resolution set to {:?}", resolution);
         EncoderCount::update(encoder_areas.len() as f64);
 
         let decoder_areas: Vec<_> = encoder_areas
@@ -551,7 +551,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             recover_self!(cc, ec, mc, listener, backend.into_root()),
             SessionTerminated::<B>
         );
-        log::trace!("Server init: {:#?}", server_init);
+        trace!("Server init: {:#?}", server_init);
 
         try_recover_async!(
             cc.send(server_init.into()),
@@ -744,7 +744,7 @@ impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<
             tokio::select! {
                 biased;
                 _ = ct.cancelled(), if !cleanup_started => {
-                    log::debug!("server cancelled");
+                    debug!("server cancelled");
                     let gb_reason = if task_error.is_some() {
                         cm::ServerGoodbyeReason::ShuttingDown
                     } else {
@@ -753,14 +753,14 @@ impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<
                     self.state.cc_tx
                         .send(cm::ServerGoodbye::from(gb_reason).into())
                         .await
-                        .unwrap_or_else(|_| log::warn!("Control Channel closed before server could say goodbye"));
+                        .unwrap_or_else(|_| warn!("Control Channel closed before server could say goodbye"));
                     for ct in &cts {
                         ct.cancel();
                     }
                     cleanup_started = true;
                 }
                 Some(res) = task_results.next() => {
-                    log::trace!("Task finished");
+                    trace!("Task finished");
                     if task_error.is_none() && !cleanup_started {
                         if let Err(error) = res {
                             task_error = Some(anyhow!("task error: {}", error));
@@ -784,7 +784,7 @@ impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<
             }
         }
 
-        log::debug!("Server tasks finished");
+        debug!("Server tasks finished");
 
         let stateful = Server {
             config: self.config,

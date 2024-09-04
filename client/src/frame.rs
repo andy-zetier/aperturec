@@ -1,7 +1,6 @@
 use aperturec_graphics::prelude::*;
 use aperturec_protocol::common::Codec;
 use aperturec_protocol::media::{server_to_client as mm_s2c, EmptyFrameTerminal, FrameFragment};
-use aperturec_trace::log;
 
 use anyhow::{anyhow, bail, ensure, Result};
 use flate2::read::DeflateDecoder;
@@ -11,6 +10,7 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::io::Read;
 use std::mem;
+use tracing::*;
 
 fn decode_raw(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
     Ok(encoded_data)
@@ -368,7 +368,7 @@ impl Framer {
 
     fn report_fragment(&mut self, frag: FrameFragment) -> Result<()> {
         let encoded_frag = EncodedFragmentData::try_from(frag)?;
-        log::trace!(
+        trace!(
             "Received frame/decoder/sequence {}/{}/{}",
             encoded_frag.frame,
             encoded_frag.decoder,
@@ -392,7 +392,7 @@ impl Framer {
         let terminal = decoded_frag.terminal;
 
         if let Some(early_draw) = self.early_draw.get_mut(&frame) {
-            log::debug!(
+            debug!(
                 "frame {} drawn early, drawing {}/{} @ decoder {}, {:?}/{:?} immediately",
                 frame,
                 decoder,
@@ -425,7 +425,7 @@ impl Framer {
     }
 
     fn report_empty_frame_terminal(&mut self, term: EmptyFrameTerminal) -> Result<()> {
-        log::trace!(
+        trace!(
             "Received empty frame terminal frame/decoder {}/{}",
             term.frame,
             term.encoder
@@ -462,7 +462,7 @@ impl Framer {
         if let Some(early_draw) = self.early_draw.remove(&frame) {
             match early_draw.try_complete() {
                 Ok(_) => {
-                    log::debug!("frame {} drawn early, now complete", frame);
+                    debug!("frame {} drawn early, now complete", frame);
                     self.complete.insert(frame);
                 }
                 Err(early_draw) => {
@@ -472,7 +472,7 @@ impl Framer {
         } else if let Some(in_flight) = self.in_flight.remove(&frame) {
             match in_flight.try_complete() {
                 Ok(complete) => {
-                    log::trace!("frame {} complete", frame);
+                    trace!("frame {} complete", frame);
                     self.complete.insert(frame);
 
                     for df in complete.decoded_fragments {
@@ -483,7 +483,7 @@ impl Framer {
                     let needs_early_draw = mem::replace(&mut self.in_flight, still_in_flight);
 
                     for (id, in_flight_frame) in needs_early_draw {
-                        log::trace!("drawing frame {} early", id);
+                        trace!("drawing frame {} early", id);
                         let new_dfs = match in_flight_frame.force_complete() {
                             Ok(complete) => {
                                 self.complete.insert(id);
@@ -517,7 +517,7 @@ impl Framer {
             mm_s2c::Message::Terminal(term) => self.report_empty_frame_terminal(term),
         };
 
-        log::trace!(
+        trace!(
             "in-flight/early-drawn/complete : {}/{}/{}",
             self.in_flight.len(),
             self.early_draw.len(),
@@ -540,7 +540,7 @@ impl Framer {
             .collect::<Vec<_>>();
         draws.sort_by_key(|draw| draw.frame);
         for draw in &draws {
-            log::trace!(
+            trace!(
                 "Drawing {} @ {:?}/{:?}",
                 draw.frame,
                 draw.origin,

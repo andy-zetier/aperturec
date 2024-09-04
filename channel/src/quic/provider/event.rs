@@ -1,10 +1,9 @@
-use aperturec_trace::log;
-
 use s2n_quic::provider::event::{
     self,
     events::{self, Frame},
 };
 use tokio::sync::watch;
+use tracing::*;
 
 pub struct MtuSubscriber;
 
@@ -31,12 +30,9 @@ impl event::Subscriber for MtuSubscriber {
         meta: &event::ConnectionMeta,
         event: &event::events::MtuUpdated,
     ) {
-        log::debug!(
+        debug!(
             "New MTU on path {} connection {}: {} cause {:?}",
-            meta.id,
-            event.path_id,
-            event.mtu,
-            event.cause
+            meta.id, event.path_id, event.mtu, event.cause
         );
         ctx.subscriptions.send_replace(event.mtu as usize);
     }

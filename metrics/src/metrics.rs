@@ -3,13 +3,13 @@ use crate::exporters::Exporter;
 use crate::{Metric, MetricUpdate, SysinfoMetric};
 
 use anyhow::Result;
-use aperturec_trace::log;
 use std::any;
 use std::collections::BTreeMap;
 use std::sync::{mpsc, Mutex, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use sysinfo::{RefreshKind, System, SystemExt};
+use tracing::*;
 
 static WARN_ONCE: Once = Once::new();
 
@@ -34,7 +34,7 @@ enum MetricsMsg {
 }
 
 fn warn_once(msg: &str) {
-    WARN_ONCE.call_once(|| log::warn!("{}", msg));
+    WARN_ONCE.call_once(|| warn!("{}", msg));
 }
 
 ///
@@ -44,7 +44,7 @@ pub fn register(create: impl FnOnce() -> Box<dyn Metric> + Send + 'static) {
     if let Some(mc) = METRIC_COMS.get() {
         if let Some(tx) = &mc.lock().unwrap().tx {
             match tx.send(MetricsMsg::Register(Box::new(create))) {
-                Err(e) => log::warn!("Failed to register metric: {}", e),
+                Err(e) => warn!("Failed to register metric: {}", e),
                 _ => return,
             }
         }
@@ -60,7 +60,7 @@ pub fn update(update: impl MetricUpdate + Send) {
     if let Some(mc) = METRIC_COMS.get() {
         if let Some(tx) = &mc.lock().unwrap().tx {
             match tx.send(MetricsMsg::Update(update.to_boxed_any())) {
-                Err(e) => log::warn!("Failed to update metric: {}", e),
+                Err(e) => warn!("Failed to update metric: {}", e),
                 _ => return,
             }
         }
@@ -80,7 +80,7 @@ pub fn stop() {
         if let Ok(mut mg) = mc.lock() {
             if let Some(tx) = mg.tx.take() {
                 match tx.send(MetricsMsg::Stop) {
-                    Err(e) => log::warn!("Failed to stop metrics: {}", e),
+                    Err(e) => warn!("Failed to stop metrics: {}", e),
                     Ok(_) => match mg.stop_rx.take() {
                         Some(rx) => {
                             let _ = rx.recv();
@@ -109,7 +109,7 @@ pub fn stop() {
 ///
 /// Example:
 /// ```
-/// # use aperturec_trace::Level;
+/// # use tracing::Level;
 /// use aperturec_metrics::MetricsInitializer;
 /// use aperturec_metrics::builtins;
 /// use aperturec_metrics::exporters::{Exporter, LogExporter};
@@ -187,7 +187,7 @@ impl MetricsInitializer {
     pub fn with_poll_rate(mut self, poll_rate: Duration) -> Self {
         let mut new_rate = poll_rate;
         if new_rate < Self::min_rate() {
-            log::warn!(
+            warn!(
                 "Polling rate {:?} is too low, using {:?}",
                 poll_rate,
                 Self::min_rate()
@@ -267,19 +267,18 @@ impl MetricsInitializer {
                                 let tid = metric.get_update_type_id();
                                 match metrics.insert(tid, metric) {
                                     None => {
-                                        log::debug!("Added Metric for update type {:?}", tid)
+                                        debug!("Added Metric for update type {:?}", tid)
                                     }
-                                    Some(_) => log::warn!(
-                                        "Replaced existing Metric for update type {:?}",
-                                        tid
-                                    ),
+                                    Some(_) => {
+                                        warn!("Replaced existing Metric for update type {:?}", tid)
+                                    }
                                 }
                             }
                             MetricsMsg::Update(update) => {
                                 let tid = (*update).type_id();
                                 match metrics.get_mut(&tid) {
                                     None => {
-                                        log::warn!("No Metric registered for update type {:?}", tid)
+                                        warn!("No Metric registered for update type {:?}", tid)
                                     }
                                     Some(ref mut m) => m.update(update),
                                 }
@@ -324,22 +323,22 @@ impl MetricsInitializer {
                         timeout = rate;
                     }
                     Err(err) => {
-                        log::error!("{:?}", err);
+                        error!("{:?}", err);
                         break;
                     }
                 }
             } // loop receive MetricsMsg
 
-            log::debug!("Metrics thread exiting");
+            debug!("Metrics thread exiting");
         }); // thread::spawn inner
 
         thread::spawn(move || {
             if let Err(err) = inner_jh.join() {
-                log::warn!("Metrics thread failed to join: {:?}", err);
+                warn!("Metrics thread failed to join: {:?}", err);
             }
 
             if let Err(err) = stop_tx.send(()) {
-                log::warn!("Failed to send metrics stop notification: {}", err);
+                warn!("Failed to send metrics stop notification: {}", err);
             }
         });
 

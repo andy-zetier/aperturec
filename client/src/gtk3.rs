@@ -5,7 +5,6 @@ use crate::client::{
 use crate::gtk3::image::Image;
 
 use aperturec_graphics::prelude::*;
-use aperturec_trace::log;
 
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use gtk::cairo::{Context, ImageSurface};
@@ -17,6 +16,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
+use tracing::*;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
@@ -192,12 +192,9 @@ impl GtkUi {
 
         // Need to copy decoder vector
         let decoder_areas = decoder_areas.to_vec();
-        log::debug!(
+        debug!(
             "GTK UI starting with {}x{} window @ {:?} FPS. {:?}",
-            width,
-            height,
-            fps,
-            &decoder_areas
+            width, height, fps, &decoder_areas
         );
 
         let itc = Cell::new(Some(itc));
@@ -324,7 +321,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
     // Setup keyboard tracking
     //
     area.connect_key_press_event(glib::clone!(@strong window => move |_, key| {
-        log::trace!("GTK KeyPressEvent: {:?} : {:?}", key.keyval(), key.state());
+        trace!("GTK KeyPressEvent: {:?} : {:?}", key.keyval(), key.state());
 
         match KeyboardShortcut::from_event(key) {
             Some(KeyboardShortcut::ToggleFullscreen) => {
@@ -345,7 +342,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
                         .expect("GTK failed to build KeyEventMessage!")
                         )
                     ).unwrap_or_else(|err| {
-                    log::warn!("GTK failed to tx KeyEventMessage: {}", err)
+                    warn!("GTK failed to tx KeyEventMessage: {}", err)
                 });
             },
         }
@@ -354,7 +351,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
     }));
 
     area.connect_key_release_event(glib::clone!(@strong window => move |_, key| {
-        log::trace!("GTK KeyReleaseEvent: {:?} : {:?}", key.keyval(), key.state());
+        trace!("GTK KeyReleaseEvent: {:?} : {:?}", key.keyval(), key.state());
 
         key_release_tx.send(
             EventMessage::KeyEventMessage(
@@ -365,53 +362,49 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
                     .expect("GTK failed to build KeyEventMessage!")
             )
         ).unwrap_or_else(|err| {
-            log::warn!("GTK failed to tx KeyEventMessage: {}", err)
+            warn!("GTK failed to tx KeyEventMessage: {}", err)
         });
 
         gtk::Inhibit(false)
     }));
 
-    area.connect_button_press_event(
-        glib::clone!(@strong window => move |_, event| {
-            log::trace!("GTK ButtonPressEvent: {:?} @ {:?}", event.button(), lm_button_down.as_ref().get());
+    area.connect_button_press_event(glib::clone!(@strong window => move |_, event| {
+        trace!("GTK ButtonPressEvent: {:?} @ {:?}", event.button(), lm_button_down.as_ref().get());
 
-            button_press_tx.send(
-                EventMessage::MouseButtonEventMessage(
-                    MouseButtonEventMessageBuilder::default()
-                        .button(event.button() - 1)
-                        .is_pressed(true)
-                        .pos(lm_button_down.as_ref().get())
-                        .build()
-                        .expect("GTK failed to build MouseButtonEventMessage!")
-                )
-            ).unwrap_or_else(|err| {
-                log::warn!("GTK failed to tx MouseButtonEventMessage: {}", err)
-            });
+        button_press_tx.send(
+            EventMessage::MouseButtonEventMessage(
+                MouseButtonEventMessageBuilder::default()
+                    .button(event.button() - 1)
+                    .is_pressed(true)
+                    .pos(lm_button_down.as_ref().get())
+                    .build()
+                    .expect("GTK failed to build MouseButtonEventMessage!")
+            )
+        ).unwrap_or_else(|err| {
+            warn!("GTK failed to tx MouseButtonEventMessage: {}", err)
+        });
 
-            gtk::Inhibit(false)
-        }),
-    );
+        gtk::Inhibit(false)
+    }));
 
-    area.connect_button_release_event(
-        glib::clone!(@strong window => move |_, event| {
-            log::trace!("GTK ButtonReleaseEvent: {:?} @ {:?}", event.button(), lm_button_up.as_ref().get());
+    area.connect_button_release_event(glib::clone!(@strong window => move |_, event| {
+        trace!("GTK ButtonReleaseEvent: {:?} @ {:?}", event.button(), lm_button_up.as_ref().get());
 
-            button_release_tx.send(
-                EventMessage::MouseButtonEventMessage(
-                    MouseButtonEventMessageBuilder::default()
-                        .button(event.button() - 1)
-                        .is_pressed(false)
-                        .pos(lm_button_up.as_ref().get())
-                        .build()
-                        .expect("GTK failed to build MouseButtonEventMessage!")
-                )
-            ).unwrap_or_else(|err| {
-                log::warn!("GTK failed to tx MouseButtonEventMessage: {}", err)
-            });
+        button_release_tx.send(
+            EventMessage::MouseButtonEventMessage(
+                MouseButtonEventMessageBuilder::default()
+                    .button(event.button() - 1)
+                    .is_pressed(false)
+                    .pos(lm_button_up.as_ref().get())
+                    .build()
+                    .expect("GTK failed to build MouseButtonEventMessage!")
+            )
+        ).unwrap_or_else(|err| {
+            warn!("GTK failed to tx MouseButtonEventMessage: {}", err)
+        });
 
-            gtk::Inhibit(false)
-        }),
-    );
+        gtk::Inhibit(false)
+    }));
 
     area.connect_scroll_event(glib::clone!(@strong window => move |_, event| {
         let button = match event.direction() {
@@ -422,7 +415,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
             _ => 0
         };
 
-        log::trace!("GTK ButtonPressEvent: {:?} @ {:?} (scroll)", button, lm_scroll.as_ref().get());
+        trace!("GTK ButtonPressEvent: {:?} @ {:?} (scroll)", button, lm_scroll.as_ref().get());
 
         //
         // Synthesize a press / release event
@@ -437,7 +430,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
                     .expect("GTK failed to build MouseButtonEventMessage!")
             )
         ).unwrap_or_else(|err| {
-            log::warn!("GTK failed to tx MouseButtonEventMessage: {}", err)
+            warn!("GTK failed to tx MouseButtonEventMessage: {}", err)
         });
 
         scroll_press_tx.send(
@@ -450,7 +443,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
                     .expect("GTK failed to build MouseButtonEventMessage!")
             )
         ).unwrap_or_else(|err| {
-            log::warn!("GTK failed to tx MouseButtonEventMessage: {}", err)
+            warn!("GTK failed to tx MouseButtonEventMessage: {}", err)
         });
 
         gtk::Inhibit(false)
@@ -461,7 +454,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
         lm_motion.set(pos);
 
         // Motion logging is *very* noisy
-        //log::trace!("GTK MotionEvent: {:?}", pos);
+        //trace!("GTK MotionEvent: {:?}", pos);
 
         pointer_motion_tx
             .send(EventMessage::PointerEventMessage(
@@ -470,7 +463,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
                     .build()
                     .expect("GTK failed to build PointerEventMessage!"),
             ))
-            .unwrap_or_else(|err| log::warn!("GTK failed to tx PointerEventMessage: {}", err));
+            .unwrap_or_else(|err| warn!("GTK failed to tx PointerEventMessage: {}", err));
 
         gtk::Inhibit(false)
     });
@@ -520,10 +513,10 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
             // Copy updated areas from the current frame to the stale frame
             stale_img
                 .copy_updates(&image.borrow())
-                .unwrap_or_else(|err| log::warn!("GTK Failed to copy Image updates: {}", err));
+                .unwrap_or_else(|err| warn!("GTK Failed to copy Image updates: {}", err));
 
             tx.send(stale_img)
-                .unwrap_or_else(|err| log::warn!("GTK failed to send image to client: {}", err));
+                .unwrap_or_else(|err| warn!("GTK failed to send image to client: {}", err));
 
             // Image swap logging is *very* noisy
             /*trace!(
@@ -541,7 +534,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
         glib::clone!(@strong window => move |msg| {
             match msg {
                 UiMessage::Quit(msg) => {
-                    log::debug!("GTK received shutdown notification: {}", msg);
+                    debug!("GTK received shutdown notification: {}", msg);
                     window.close();
                 }
                 UiMessage::CursorImage { cursor_data, id } => {
@@ -572,7 +565,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
                 UiMessage::CursorChange { id } => {
                     match cursor_map.get(&id) {
                         Some(cursor) => area.window().unwrap().set_cursor(Some(cursor)),
-                        None => log::warn!("No cursor for ID {}. Ignoring", id),
+                        None => warn!("No cursor for ID {}. Ignoring", id),
                     }
                 }
             }
@@ -589,6 +582,6 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
         window.fullscreen();
     }
 
-    log::debug!("GTK UI built, showing {}x{} window", width, height);
+    debug!("GTK UI built, showing {}x{} window", width, height);
     window.show_all()
 }

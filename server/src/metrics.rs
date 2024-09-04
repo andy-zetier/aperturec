@@ -2,7 +2,7 @@ use aperturec_metrics::exporters::{
     CsvExporter, Exporter, LogExporter, PrometheusExporter, PushgatewayExporter,
 };
 use aperturec_metrics::{create_histogram_metric_with_buckets, create_metric, MetricsInitializer};
-use aperturec_trace::{log, Level};
+use tracing::*;
 
 create_histogram_metric_with_buckets!(
     CompressionRatio,
@@ -29,7 +29,7 @@ pub fn setup_server_metrics(
     prom_id: u32,
 ) {
     if metrics_prometheus.is_none() && metrics_pushgateway.is_none() {
-        log::warn!("Prometheus metrics are not being exported. Use --metrics-pushgateawy or --metrics-prometheus to resolve");
+        warn!("Prometheus metrics are not being exported. Use --metrics-pushgateawy or --metrics-prometheus to resolve");
     }
 
     if metrics_log
@@ -41,25 +41,25 @@ pub fn setup_server_metrics(
         if metrics_log {
             match LogExporter::new(Level::DEBUG) {
                 Ok(le) => exporters.push(Exporter::Log(le)),
-                Err(err) => log::warn!("Failed to setup Log exporter: {}, disabling", err),
+                Err(err) => warn!("Failed to setup Log exporter: {}, disabling", err),
             }
         }
         if let Some(path) = metrics_csv {
             match CsvExporter::new(path) {
                 Ok(csve) => exporters.push(Exporter::Csv(csve)),
-                Err(err) => log::warn!("Failed to setup CSV exporter: {}, disabling", err),
+                Err(err) => warn!("Failed to setup CSV exporter: {}, disabling", err),
             }
         }
         if let Some(url) = metrics_pushgateway {
             match PushgatewayExporter::new(url.to_owned(), "aperturec_server".to_owned(), prom_id) {
                 Ok(pge) => exporters.push(Exporter::Pushgateway(pge)),
-                Err(err) => log::warn!("Failed to setup Pushgateway exporter: {}, disabling", err),
+                Err(err) => warn!("Failed to setup Pushgateway exporter: {}, disabling", err),
             }
         }
         if let Some(bind_addr) = metrics_prometheus {
             match PrometheusExporter::new(&bind_addr) {
                 Ok(pe) => exporters.push(Exporter::Prometheus(pe)),
-                Err(err) => log::warn!("Failed to setup Prometheus exporter: {}, disabling", err),
+                Err(err) => warn!("Failed to setup Prometheus exporter: {}, disabling", err),
             }
         }
 

@@ -2,13 +2,14 @@ use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
 use aperturec_state_machine::*;
-use aperturec_trace::{self as trace, log, Level};
 
 use anyhow::Result;
 use clap::Parser;
 use futures::future;
 use gethostname::gethostname;
 use std::path::PathBuf;
+use tracing::*;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false)]
@@ -134,20 +135,6 @@ struct Args {
     /// Send metric data to Pushgateway instance at the provided URL
     #[arg(long, default_value = None)]
     metrics_pushgateway: Option<String>,
-
-    /// Output directory for tracing data
-    #[arg(long, env=trace::OUTDIR_ENV_VAR, default_value = trace::default_output_path_display())]
-    trace_output_directory: PathBuf,
-
-    /// Trace filter directive as defined by the
-    /// [`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)
-    /// documentation
-    #[arg(long, env=trace::FILTER_ENV_VAR, default_value = trace::default_filter_directive())]
-    trace_filter: String,
-
-    /// Log to rotating files in the specified output directory in addition to stdout/stderr
-    #[arg(long, default_value_t = false)]
-    log_to_file: bool,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -159,12 +146,15 @@ async fn main() -> Result<()> {
         2 => Level::DEBUG,
         _ => Level::TRACE,
     };
-    trace::Configuration::new("server")
-        .cmdline_verbosity(log_verbosity)
-        .output_directory(&args.trace_output_directory)
-        .trace_filter(&args.trace_filter)
-        .log_to_file(args.log_to_file)
-        .initialize()?;
+    tracing_subscriber::fmt()
+        .with_file(true)
+        .with_line_number(true)
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(log_verbosity.into())
+                .from_env()?,
+        )
+        .init();
 
     let dims: Vec<usize> = args
         .screen_size
@@ -223,31 +213,31 @@ async fn main() -> Result<()> {
             let listening = match session_terminated.try_transition() {
                 Ok(listening) => listening,
                 Err(recovered) => {
-                    log::error!("Error preparing the server to listen: {}", recovered.error);
+                    error!("Error preparing the server to listen: {}", recovered.error);
                     break Err::<(), _>(recovered.error);
                 }
             };
 
             let accepted = try_transition_continue_async!(listening, session_terminated, |e| {
-                future::ready(log::error!("Error accepting client: {}", e))
+                future::ready(error!("Error accepting client: {}", e))
             });
 
             let authenticated =
                 try_transition_continue_async!(accepted, session_terminated, |e| future::ready(
-                    log::error!("Error authenticating client: {}", e)
+                    error!("Error authenticating client: {}", e)
                 ));
 
             let running = try_transition_continue_async!(authenticated, session_terminated, |e| {
-                future::ready(log::error!("Error starting session: {}", e))
+                future::ready(error!("Error starting session: {}", e))
             });
 
             session_terminated = match running.try_transition().await {
                 Ok(session_complete) => {
-                    log::info!("Session ended successfully");
+                    info!("Session ended successfully");
                     session_complete
                 }
                 Err(Recovered { stateful, error }) => {
-                    log::error!("Session ended with error: {}", error);
+                    error!("Session ended with error: {}", error);
                     stateful
                 }
             };
@@ -256,15 +246,15 @@ async fn main() -> Result<()> {
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            log::info!("Received Ctrl-C, exiting");
+            info!("Received Ctrl-C, exiting");
             aperturec_metrics::stop();
             Ok(())
         }
         main_task_res = main_task => {
             match main_task_res {
-                Ok(Ok(())) => log::warn!("main task exited naturally"),
-                Ok(Err(e)) => log::error!("main task exited with error: {}", e),
-                Err(e) => log::error!("main task panicked with error: {}", e),
+                Ok(Ok(())) => warn!("main task exited naturally"),
+                Ok(Err(e)) => error!("main task exited with error: {}", e),
+                Err(e) => error!("main task panicked with error: {}", e),
             }
             panic!("main task exited");
         }

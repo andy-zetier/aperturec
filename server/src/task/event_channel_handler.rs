@@ -4,11 +4,11 @@ use anyhow::{anyhow, bail, Result};
 use aperturec_channel::{self as channel, AsyncReceiver, AsyncSender};
 use aperturec_protocol::event::server_to_client as em_s2c;
 use aperturec_state_machine::*;
-use aperturec_trace::log;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::*;
 
 #[derive(Stateful, SelfTransitionable, Debug)]
 #[state(S)]
@@ -125,7 +125,7 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
                 Some(task_res) = self.state.tasks.join_next() => {
                     let error = match task_res {
                         Ok(Ok(())) => {
-                            log::trace!("task exited");
+                            trace!("task exited");
                             self.state.ct.cancel();
                             continue;
                         }
