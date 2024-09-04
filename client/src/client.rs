@@ -211,13 +211,14 @@ pub struct Configuration {
     pub decoder_max: u16,
     pub server_addr: String,
     pub max_fps: Duration,
-    pub keepalive_timeout: Duration,
     pub win_width: u64,
     pub win_height: u64,
     #[builder(setter(strip_option), default)]
     pub program_cmdline: Option<String>,
     #[builder(setter(name = "additional_tls_certificate", custom), default)]
     pub additional_tls_certificates: Vec<X509>,
+    #[builder(default)]
+    pub allow_insecure_connection: bool,
 }
 
 impl ConfigurationBuilder {
@@ -729,6 +730,9 @@ impl Client {
             channel_builder = channel_builder
                 .additional_tls_pem_certificate(&String::from_utf8_lossy(&cert.to_pem()?));
         }
+        if self.config.allow_insecure_connection {
+            channel_builder = channel_builder.allow_insecure_connection();
+        }
         let channel = channel_builder.build_sync()?;
         let channel = try_transition!(channel, channel_states::Connected).map_err(|r| r.error)?;
         self.local_addr = Some(channel.local_addr()?);
@@ -809,7 +813,6 @@ mod test {
             .win_width(width)
             .win_height(height)
             .max_fps(Duration::from_secs((1 / 30u16).into()))
-            .keepalive_timeout(Duration::from_secs(1))
             .build()
             .expect("Failed to build Configuration!")
     }

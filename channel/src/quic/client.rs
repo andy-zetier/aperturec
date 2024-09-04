@@ -85,6 +85,7 @@ pub struct Builder {
     server_addr: Option<String>,
     server_port: Option<u16>,
     additional_pem_certs: Vec<String>,
+    allow_insecure_connection: bool,
 }
 
 impl Builder {
@@ -103,6 +104,11 @@ impl Builder {
     /// Add additional acceptable TLS certificates, beyond those installed on the system
     pub fn additional_tls_pem_certificate(mut self, cert: &str) -> Self {
         self.additional_pem_certs.push(cert.to_string());
+        self
+    }
+
+    pub fn allow_insecure_connection(mut self) -> Self {
+        self.allow_insecure_connection = true;
         self
     }
 
@@ -129,6 +135,7 @@ impl Builder {
             cert_verifier.user_provided =
                 Some(rustls::client::WebPkiServerVerifier::builder(Arc::new(roots)).build()?);
         }
+        cert_verifier.allow_insecure_connection = self.allow_insecure_connection;
         let mut tls_config = TlsConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(cert_verifier))

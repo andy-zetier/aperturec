@@ -71,11 +71,6 @@ struct Args {
     #[arg(long = "fps", default_value_t = 30)]
     fps_max: u16,
 
-    /// Duration in seconds between subsequent keepalive attempts. This value may need to be
-    /// tweaked depending on your NAT configuration.
-    #[arg(short = 'k', default_value_t = 23)]
-    keepalive_timeout: u64,
-
     /// Log metric data to a CSV file at the provided path
     #[arg(long, default_value = None)]
     metrics_csv: Option<String>,
@@ -115,6 +110,10 @@ struct Args {
     /// Initial ID of the client. Must match the server's --temp-client-id.
     #[arg(short, long, default_value_t = 1234)]
     temp_client_id: u64,
+
+    /// Disable server certificate validation. Similar to `curl -k / --insecure`
+    #[arg(short = 'k', long, action)]
+    insecure: bool,
 
     /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
     /// verbosity. The maximum is 3.
@@ -156,7 +155,7 @@ fn main() -> Result<()> {
         .win_width(width)
         .temp_id(args.temp_client_id)
         .max_fps(Duration::from_secs_f32(1.0 / (args.fps_max as f32)))
-        .keepalive_timeout(Duration::from_secs(args.keepalive_timeout));
+        .allow_insecure_connection(args.insecure);
     if let Some(program_cmdline) = args.program_cmdline {
         config_builder.program_cmdline(program_cmdline);
     }

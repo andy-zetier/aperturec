@@ -21,6 +21,7 @@ use s2n_quic::provider::tls::rustls::rustls;
 #[derive(Debug, Default)]
 pub(crate) struct CertVerifier {
     pub(crate) user_provided: Option<Arc<dyn ServerCertVerifier>>,
+    pub(crate) allow_insecure_connection: bool,
     platform: rustls_platform_verifier::Verifier,
 }
 
@@ -33,6 +34,10 @@ impl ServerCertVerifier for CertVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
+        if self.allow_insecure_connection {
+            return Ok(ServerCertVerified::assertion());
+        }
+
         let up_res = self.user_provided.as_ref().map(|v| {
             v.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
         });
@@ -55,6 +60,10 @@ impl ServerCertVerifier for CertVerifier {
         cert: &CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
+        if self.allow_insecure_connection {
+            return Ok(HandshakeSignatureValid::assertion());
+        }
+
         let up_res = self
             .user_provided
             .as_ref()
@@ -72,6 +81,10 @@ impl ServerCertVerifier for CertVerifier {
         cert: &CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
+        if self.allow_insecure_connection {
+            return Ok(HandshakeSignatureValid::assertion());
+        }
+
         let up_res = self
             .user_provided
             .as_ref()
