@@ -176,6 +176,7 @@ impl Builder {
             )?
             .build()?;
         let quic_server_builder = s2n_quic::Server::builder()
+            .with_congestion_controller(s2n_quic::provider::congestion_controller::Bbr::default())?
             .with_io(io)?
             .with_tls(tls_provider)?
             .with_event((
