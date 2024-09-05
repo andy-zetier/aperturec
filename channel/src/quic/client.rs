@@ -247,6 +247,7 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
                     .with_event(provider::event::TrxSubscriber)?
                     .with_tls(tls)?
                     .with_io(io)?
+                    .with_limits(provider::limits::default())?
                     .start()?,
             )
         };
@@ -276,7 +277,7 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
                     break;
                 }
                 Err(e) => {
-                    warn!(
+                    debug!(
                         "Failed to connect to {}:{} ({}): {}",
                         self.state.server_addr, self.state.server_port, socket_addr, e
                     );
@@ -392,6 +393,7 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
                     .with_event(provider::event::TrxSubscriber)?
                     .with_tls(tls)?
                     .with_io(io)?
+                    .with_limits(provider::limits::default())?
                     .start()?,
             )
         };
@@ -420,7 +422,7 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
                     break;
                 }
                 Err(e) => {
-                    warn!(
+                    debug!(
                         "Failed to connect to {}:{} ({}): {}",
                         self.state.server_addr, self.state.server_port, socket_addr, e
                     );

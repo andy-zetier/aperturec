@@ -181,7 +181,8 @@ impl Builder {
             .with_event((
                 provider::event::TrxSubscriber,
                 provider::event::MtuSubscriber,
-            ))?;
+            ))?
+            .with_limits(provider::limits::default())?;
 
         let mut rt = None;
         let quic_server = if tokio::runtime::Handle::try_current().is_err() {
