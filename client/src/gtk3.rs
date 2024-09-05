@@ -188,6 +188,7 @@ impl GtkUi {
     ) {
         let app = gtk::Application::builder()
             .application_id("com.zetier.aperturec.client")
+            .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
             .build();
 
         // Need to copy decoder vector
