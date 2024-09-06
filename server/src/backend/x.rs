@@ -1,4 +1,4 @@
-use crate::backend::{Backend, CursorChange, CursorImage, Event};
+use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState};
 
 use aperturec_graphics::prelude::*;
 use aperturec_protocol::event as em;
@@ -413,6 +413,123 @@ impl Backend for X {
                 self.set_resolution(&size).await?;
             }
         }
+
+        Ok(())
+    }
+
+    async fn set_lock_state(&self, lock_state: LockState) -> Result<()> {
+        struct Lock {
+            end_state: Option<bool>,
+            keybutmask: x::KeyButMask,
+            map_index: x::MapIndex,
+        }
+
+        debug!("Setting lock_state: {:?}", lock_state);
+
+        let mut locks = vec![
+            Lock {
+                end_state: lock_state.is_caps_locked,
+                map_index: x::MapIndex::Lock,
+                keybutmask: x::KeyButMask::LOCK,
+            },
+            Lock {
+                end_state: lock_state.is_num_locked,
+                map_index: x::MapIndex::N2, // MOD2
+                keybutmask: x::KeyButMask::MOD2,
+            },
+            Lock {
+                end_state: lock_state.is_scroll_locked,
+                map_index: x::MapIndex::N3, // MOD3
+                keybutmask: x::KeyButMask::MOD3,
+            },
+        ];
+
+        locks.retain(|l| l.end_state.is_some());
+
+        let reply = self
+            .connection
+            .checked_request_with_reply(x::QueryPointer {
+                window: self.root_window()?,
+            })
+            .await?;
+
+        let mask = reply.mask();
+        trace!("Current KeyButMask: {:?}", mask);
+
+        locks.retain(|l| l.end_state.unwrap() != mask.contains(l.keybutmask));
+        if locks.is_empty() {
+            trace!("All locks correct, nothing to do!");
+            return Ok(());
+        }
+
+        let reply = self
+            .connection
+            .checked_request_with_reply(x::GetModifierMapping {})
+            .await?;
+
+        //
+        // keycodes_per_modifier() is a private function in GetModifierMappingReply, but we need
+        // this value to properly iterate the keycode array in chunks. According to the X
+        // [documentation](https://www.x.org/releases/X11R7.7/doc/xproto/x11protocol.html#requests:GetModifierMapping),
+        // we know the length of the keycode array is 8 * keycodes_per_modifier. Therefore, we can
+        // derive keycodes_per_modifier by dividing the length of the keycode slice by 8.
+        //
+        // The visibility issue has been reported to the rust-x-binding maintainers as [issue
+        // 271](https://github.com/rust-x-bindings/rust-xcb/issues/271).
+        //
+        let keycodes_per_modifier = reply.keycodes().len() / 8;
+
+        for l in &mut locks {
+            match reply
+                .keycodes()
+                .chunks(keycodes_per_modifier)
+                .nth(l.map_index as usize)
+                .and_then(|codes| codes.first().cloned())
+            {
+                Some(kc)
+                    if kc > self.connection.min_keycode && kc < self.connection.max_keycode =>
+                {
+                    debug!("Using keycode {:?} for {:?}", kc, l.map_index);
+                    let req = xtest::FakeInput {
+                        r#type: x::KeyPressEvent::NUMBER as u8,
+                        detail: kc,
+                        time: x::CURRENT_TIME,
+                        root: self.root_window()?,
+                        root_x: 0,
+                        root_y: 0,
+                        deviceid: 0,
+                    };
+                    self.connection.checked_void_request(req).await?;
+
+                    let req = xtest::FakeInput {
+                        r#type: 3_u8,
+                        detail: kc,
+                        time: x::CURRENT_TIME,
+                        root: self.root_window()?,
+                        root_x: 0,
+                        root_y: 0,
+                        deviceid: 0,
+                    };
+                    self.connection.checked_void_request(req).await?;
+                }
+                _ => {
+                    warn!(
+                        "No keycode available for {:?}, modifier disabled",
+                        l.map_index
+                    );
+                }
+            };
+        }
+
+        trace!(
+            "Final KeyButMask: {:?}",
+            self.connection
+                .checked_request_with_reply(x::QueryPointer {
+                    window: self.root_window()?,
+                })
+                .await?
+                .mask()
+        );
 
         Ok(())
     }

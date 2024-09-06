@@ -8,13 +8,13 @@ ENV APT_UPDATE="apt update"
 ENV APT_INSTALL="apt install -y --no-install-recommends --no-install-suggests"
 ENV APT_CLEAN="rm -rf /var/lib/apt/lists/*"
 ENV DEBIAN_FRONTEND=noninteractive
-RUN $APT_UPDATE && $APT_INSTALL clang curl build-essential cmake pkg-config libssl-dev ca-certificates git protobuf-compiler libprotobuf-dev && $APT_CLEAN
+RUN $APT_UPDATE && $APT_INSTALL clang curl build-essential cmake pkg-config libssl-dev ca-certificates git protobuf-compiler libprotobuf-dev xvfb && $APT_CLEAN
 
 FROM --platform=${ARCHITECTURE} ${UPSTREAM_REGISTRY}/${IMAGE_BASE} as base-image-fedora
 ENV DNF_INSTALL="dnf install --setopt=install_weak_deps=False -y"
 ENV DNF_CLEAN="dnf clean all"
 WORKDIR /root
-RUN $DNF_INSTALL -y clang gcc openssl-devel cmake git protobuf-compiler protobuf-devel && $DNF_CLEAN
+RUN $DNF_INSTALL -y clang gcc openssl-devel cmake git protobuf-compiler protobuf-devel xorg-x11-server-Xvfb && $DNF_CLEAN
 
 FROM --platform=${ARCHITECTURE} base-image-${OS_VARIANT} as base-rust-image
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c rustfmt
@@ -63,9 +63,9 @@ RUN rustup target add x86_64-pc-windows-gnu
 FROM --platform=${ARCHITECTURE} client-image-${OS_VARIANT} as client-image
 
 FROM --platform=${ARCHITECTURE} fips-capable-image as server-image-debian
-RUN $APT_UPDATE && $APT_INSTALL xvfb libxcb1-dev ubuntu-session mesa-utils lsb-release && $APT_CLEAN
+RUN $APT_UPDATE && $APT_INSTALL libxcb1-dev ubuntu-session mesa-utils lsb-release && $APT_CLEAN
 
 FROM --platform=${ARCHITECTURE} fips-capable-image as server-image-fedora
-RUN $DNF_INSTALL -y glx-utils xorg-x11-server-Xvfb libxcb-devel mesa-dri-drivers && $DNF_CLEAN
+RUN $DNF_INSTALL -y glx-utils libxcb-devel mesa-dri-drivers && $DNF_CLEAN
 
 FROM --platform=${ARCHITECTURE} server-image-${OS_VARIANT} as server-image

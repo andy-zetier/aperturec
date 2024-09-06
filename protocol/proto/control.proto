@@ -50,7 +50,6 @@ message ClientInfo {
   uint64 number_of_cores = 11;
   string amount_of_ram = 12;
   common.Dimension display_size = 13;
-  uint64 recv_buffer_size = 14;
 }
 
 message ClientInit {
@@ -60,6 +59,9 @@ message ClientInit {
   uint32 max_decoder_count = 4;
   string client_specified_program_cmdline = 5;
   uint32 mbps_max = 6;
+  bool is_caps_locked = 7;
+  bool is_num_locked = 8;
+  bool is_scroll_locked = 9;
 }
 
 enum ClientGoodbyeReason {

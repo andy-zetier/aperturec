@@ -1,5 +1,5 @@
 use crate::frame::*;
-use crate::gtk3::{image::Image, ClientSideItcChannels, GtkUi, ItcChannels};
+use crate::gtk3::{image::Image, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
 
 use aperturec_channel::{
     self as channel, client::states as channel_states, Receiver as _, Sender as _, UnifiedClient,
@@ -22,7 +22,6 @@ use crossbeam::channel::{select, unbounded, Receiver, Sender};
 use derive_builder::Builder;
 use gtk::glib;
 use openssl::x509::X509;
-use socket2::{Domain, Socket, Type};
 use std::collections::BTreeSet;
 use std::env::consts;
 use std::io::ErrorKind;
@@ -233,12 +232,6 @@ impl ConfigurationBuilder {
     }
 }
 
-fn get_recv_buffer_size(sock_addr: SocketAddr) -> usize {
-    let sock =
-        Socket::new(Domain::for_address(sock_addr), Type::DGRAM, None).expect("Socket create");
-    sock.recv_buffer_size().expect("SO_RCVBUF")
-}
-
 pub struct Client {
     config: Configuration,
     id: Option<u64>,
@@ -341,12 +334,12 @@ impl Client {
                 self.config.win_width,
                 self.config.win_height,
             ))
-            .recv_buffer_size(get_recv_buffer_size(self.local_addr.expect("local address")) as u64)
             .build()
             .expect("Failed to generate ClientInfo")
     }
 
     fn generate_client_init(&self) -> ClientInit {
+        let lock_state = LockState::get_current();
         ClientInitBuilder::default()
             .temp_id(self.config.temp_id)
             .client_info(self.generate_client_info())
@@ -358,6 +351,9 @@ impl Client {
                     .clone()
                     .unwrap_or(String::from("")),
             )
+            .is_caps_locked(lock_state.is_caps_locked)
+            .is_num_locked(lock_state.is_num_locked)
+            .is_scroll_locked(lock_state.is_scroll_locked)
             .build()
             .expect("Failed to generate ClientInit!")
     }
@@ -784,6 +780,7 @@ pub fn run_client(config: Configuration) -> Result<()> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::gtk3;
     use aperturec_channel::UnifiedServer;
     use aperturec_protocol::control::ServerInitBuilder;
 
@@ -831,11 +828,13 @@ mod test {
             .build_sync()
             .expect("Create qserver");
 
+        let (width, height) = gtk3::get_fullscreen_dims();
+
         let mut config = generate_configuration(
             1234,
             8,
-            1920,
-            1080,
+            width.try_into().unwrap(),
+            height.try_into().unwrap(),
             qserver.local_addr().expect("local addr").port(),
         );
         config

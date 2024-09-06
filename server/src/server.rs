@@ -1,4 +1,4 @@
-use crate::backend::{Backend, SwapableBackend};
+use crate::backend::{Backend, LockState, SwapableBackend};
 use crate::metrics::EncoderCount;
 use crate::task::{
     backend, control_channel_handler as cc_handler, encoder, event_channel_handler as ec_handler,
@@ -438,7 +438,11 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
                 "Client provided invalid mbps max"
             ),
         };
-        let client_resolution = match client_init.client_info.and_then(|ci| ci.display_size) {
+        let client_resolution = match client_init
+            .client_info
+            .as_ref()
+            .and_then(|ci| ci.display_size.clone())
+        {
             Some(display_size) => display_size,
             _ => return_recover!(
                 recover_self!(cc, ec, mc, listener),
@@ -537,6 +541,16 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
         let client_id: u64 = rand::random();
 
         let rl_config = rate_limit::Configuration::new(self.config.mbps_max, client_mbps_max);
+
+        try_recover_async!(
+            backend.set_lock_state(LockState {
+                is_caps_locked: Some(client_init.is_caps_locked),
+                is_num_locked: Some(client_init.is_num_locked),
+                is_scroll_locked: Some(client_init.is_scroll_locked),
+            }),
+            recover_self!(cc, ec, mc, listener, backend.into_root()),
+            SessionTerminated::<B>
+        );
 
         let server_init = try_recover!(
             cm::ServerInitBuilder::default()

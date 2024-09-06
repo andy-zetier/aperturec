@@ -151,6 +151,13 @@ impl Hash for CursorImage {
     }
 }
 
+#[derive(Debug)]
+pub struct LockState {
+    pub is_caps_locked: Option<bool>,
+    pub is_scroll_locked: Option<bool>,
+    pub is_num_locked: Option<bool>,
+}
+
 mod backend_trait {
     use super::*;
 
@@ -167,6 +174,7 @@ mod backend_trait {
         where
             N: Into<Option<usize>> + Send + Sync;
         async fn notify_event(&mut self, event: Event) -> Result<()>;
+        async fn set_lock_state(&self, lock_state: LockState) -> Result<()>;
         async fn set_resolution(&mut self, resolution: &Size) -> Result<()>;
         async fn resolution(&self) -> Result<Size>;
         async fn damage_stream(&self) -> Result<impl Stream<Item = Rect> + Send + Unpin + 'static>;

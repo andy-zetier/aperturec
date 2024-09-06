@@ -8,10 +8,10 @@ use aperturec_graphics::prelude::*;
 
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use gtk::cairo::{Context, ImageSurface};
-use gtk::gdk::{keys, Display, EventMask, ModifierType, ScrollDirection, WindowState};
+use gtk::gdk::{keys, Display, EventMask, Keymap, ModifierType, ScrollDirection, WindowState};
 use gtk::prelude::*;
 use gtk::{glib, Adjustment, ApplicationWindow, DrawingArea, ScrolledWindow};
-use keycode::{KeyMap, KeyMapping};
+use keycode::{KeyMap, KeyMapping, KeyMappingId};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -79,6 +79,28 @@ impl ItcChannels {
                 notify_control_tx,
                 notify_event_tx,
                 img_tx,
+            },
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub struct LockState {
+    pub is_caps_locked: bool,
+    pub is_num_locked: bool,
+    pub is_scroll_locked: bool,
+}
+
+impl LockState {
+    pub fn get_current() -> Self {
+        gtk::init().expect("Failed to initialize GTK");
+        let display = Display::default().expect("Failed to get default GTK display");
+        match Keymap::for_display(&display) {
+            None => panic!("can't get keymap"),
+            Some(keymap) => Self {
+                is_caps_locked: keymap.is_caps_locked(),
+                is_num_locked: keymap.is_num_locked(),
+                is_scroll_locked: keymap.is_scroll_locked(),
             },
         }
     }
@@ -152,7 +174,6 @@ fn convert_win_virtual_key_to_scan_code(virtual_key: u32) -> anyhow::Result<u32>
 
 fn gtk_key_to_x11(key: &gtk::gdk::EventKey) -> u16 {
     let keycode = key.keycode().expect("Failed to get keycode!");
-
     let mapping = {
         #[cfg(target_os = "macos")]
         {
@@ -263,7 +284,8 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
             | EventMask::BUTTON_PRESS_MASK
             | EventMask::BUTTON_RELEASE_MASK
             | EventMask::SCROLL_MASK
-            | EventMask::POINTER_MOTION_MASK,
+            | EventMask::POINTER_MOTION_MASK
+            | EventMask::FOCUS_CHANGE_MASK,
     );
 
     //
@@ -311,12 +333,20 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
     let button_release_tx = itc.notify_event_tx.clone();
     let scroll_press_tx = itc.notify_event_tx.clone();
     let pointer_motion_tx = itc.notify_event_tx.clone();
+    let lock_state_tx = itc.notify_event_tx.clone();
     let notify_control_tx = itc.notify_control_tx.clone();
 
     //
     // Setup cursor tracking
     //
     let mut cursor_map = HashMap::new();
+
+    //
+    // Setup lock state tracking
+    //
+    let lock_state = Rc::new(Cell::new(LockState::get_current()));
+    let ls_in = lock_state.clone();
+    let ls_out = lock_state.clone();
 
     //
     // Setup keyboard tracking
@@ -466,6 +496,53 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
             ))
             .unwrap_or_else(|err| warn!("GTK failed to tx PointerEventMessage: {}", err));
 
+        gtk::Inhibit(false)
+    });
+
+    area.connect_focus_in_event(move |_, _| {
+        let current_ls = LockState::get_current();
+        let previous_ls = ls_in.get();
+        let mut keycodes = vec![];
+
+        if previous_ls.is_caps_locked != current_ls.is_caps_locked {
+            keycodes.push(KeyMap::from(KeyMappingId::CapsLock).xkb);
+        }
+        if previous_ls.is_num_locked != current_ls.is_num_locked {
+            keycodes.push(KeyMap::from(KeyMappingId::NumLock).xkb);
+        }
+        if previous_ls.is_scroll_locked != current_ls.is_scroll_locked {
+            keycodes.push(KeyMap::from(KeyMappingId::ScrollLock).xkb);
+        }
+
+        for kc in keycodes {
+            trace!("GTK lock state changed, sending keycode {:?}", kc);
+            lock_state_tx
+                .send(EventMessage::KeyEventMessage(
+                    KeyEventMessageBuilder::default()
+                        .key(kc.into())
+                        .is_pressed(true)
+                        .build()
+                        .expect("GTK failed to build KeyEventMessage!"),
+                ))
+                .unwrap_or_else(|err| warn!("GTK failed to tx KeyEventMessage: {}", err));
+
+            lock_state_tx
+                .send(EventMessage::KeyEventMessage(
+                    KeyEventMessageBuilder::default()
+                        .key(kc.into())
+                        .is_pressed(false)
+                        .build()
+                        .expect("GTK failed to build KeyEventMessage!"),
+                ))
+                .unwrap_or_else(|err| warn!("GTK failed to tx KeyEventMessage: {}", err));
+        }
+
+        gtk::Inhibit(false)
+    });
+
+    area.connect_focus_out_event(move |_, _| {
+        let lock_state = LockState::get_current();
+        ls_out.replace(lock_state);
         gtk::Inhibit(false)
     });
 
