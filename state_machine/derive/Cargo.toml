@@ -2,7 +2,6 @@
 name = "aperturec-state-machine-derive"
 edition.workspace = true
 version.workspace = true
-readme = "README.md"
 
 [lib]
 proc-macro = true
