@@ -34,12 +34,18 @@ which = "6.0"
 xcb = { version = "1.2.2", features = ["damage", "randr", "xtest", "xfixes" ] }
 
 [dev-dependencies]
-criterion = "0.4"
+criterion = "0.5"
 serial_test = "2.0"
 tempdir = "0.3"
 
 [[bench]]
-name = "tracking_buffer_bench"
+name = "tracking-buffer-time"
+path = "benches/tracking_buffer/time.rs"
+harness = false
+
+[[bench]]
+name = "tracking-buffer-pixels"
+path = "benches/tracking_buffer/pixels.rs"
 harness = false
 
 [package.metadata.deb]

@@ -236,7 +236,7 @@ enum Damage {
 /// - A boolean indicating if the entire buffer is damaged (`is_fully_damaged`).
 ///
 /// This structure is particularly useful in graphical applications where partial updates to the pixel data are common.
-struct TrackingBuffer<BackendPixelMap: PixelMap> {
+pub struct TrackingBuffer<BackendPixelMap: PixelMap> {
     area: Box2D,
     data: Array2<Pixel24>,
     damage: Damage,
@@ -250,7 +250,7 @@ where
     BackendPixelMap: PixelMap,
     for<'p> &'p mut Pixel24: AssignElem<BackendPixelMap::Pixel>,
 {
-    fn new(resolution: Size) -> Self {
+    pub fn new(resolution: Size) -> Self {
         let (damage_tx, _) = watch::channel(());
         let shape = (resolution.height, resolution.width);
         TrackingBuffer {
@@ -263,7 +263,7 @@ where
         }
     }
 
-    fn update(&mut self, framebuffer_data: SubframeBuffer<BackendPixelMap>) {
+    pub fn update(&mut self, framebuffer_data: SubframeBuffer<BackendPixelMap>) {
         // Early exit if the origin point is outside the bounds of the current data array.
         let intersection = match self.area.intersection(&framebuffer_data.area) {
             Some(intersection) => intersection,
@@ -371,7 +371,7 @@ where
         self.damage = Damage::None;
     }
 
-    fn cut_frame(&mut self) -> Option<Frame> {
+    pub fn cut_frame(&mut self) -> Option<Frame> {
         let buffers = match self.damage {
             Damage::None => return None,
             Damage::Partial(ref boxes) => boxes
