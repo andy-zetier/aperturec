@@ -41,16 +41,23 @@ fn do_encode_optimize_contig<F: FnOnce(&[u8]) -> Result<Vec<u8>>>(
         f(raw)
     } else {
         let size = raw_data.size();
-        let mut raw = vec![0_u8; size.area() * mem::size_of::<Pixel24>()];
+        let mut raw = Vec::with_capacity(size.area());
 
-        // SAFETY: `raw` is defined to be size_of(Pixel24) * area of the slice, guaranteeing enough
-        // space
-        let raw_as_ndarray = unsafe {
-            ArrayViewMut2::from_shape_ptr(size.as_shape(), &mut *raw as *mut [u8] as *mut Pixel24)
-        };
+        let raw_as_ndarray = ArrayViewMut2::from_shape(size.as_shape(), raw.spare_capacity_mut())?;
 
-        raw_data.as_ndarray().assign_to(raw_as_ndarray);
-        f(&raw)
+        raw_data.assign_to(raw_as_ndarray);
+
+        // SAFETY: Vec::set_len is safe because we do the assignment in the `assign_to` call above
+        //
+        // SAFETY: slice::from_raw_parts is safe because we ensure the slice size is no greater
+        // than the allocated vector size
+        unsafe {
+            raw.set_len(size.area());
+            f(slice::from_raw_parts(
+                raw.as_ptr() as *const Pixel24 as *const u8,
+                size.area() * mem::size_of::<Pixel24>(),
+            ))
+        }
     }
 }
 
