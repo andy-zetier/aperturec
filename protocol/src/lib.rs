@@ -1,4 +1,6 @@
-pub const MAGIC: &'static str = concat!(
+#![allow(clippy::too_many_arguments, clippy::large_enum_variant)]
+
+pub const MAGIC: &str = concat!(
     r"ApertureC-",
     env!("CARGO_PKG_VERSION_MAJOR"),
     ".",
