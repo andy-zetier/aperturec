@@ -1,57 +1,9 @@
+use aperturec_metrics::create_metric;
+
 use s2n_quic::provider::event::{
     self,
     events::{self, Frame},
 };
-use tokio::sync::watch;
-use tracing::*;
-
-pub struct MtuSubscriber;
-
-pub type ConnectionId = u64;
-
-pub const DEFAULT_MTU: usize = 1200;
-
-impl event::Subscriber for MtuSubscriber {
-    type ConnectionContext = MtuContext;
-
-    fn create_connection_context(
-        &mut self,
-        _: &event::ConnectionMeta,
-        _: &event::ConnectionInfo,
-    ) -> Self::ConnectionContext {
-        MtuContext {
-            subscriptions: watch::channel(DEFAULT_MTU).0,
-        }
-    }
-
-    fn on_mtu_updated(
-        &mut self,
-        ctx: &mut Self::ConnectionContext,
-        meta: &event::ConnectionMeta,
-        event: &event::events::MtuUpdated,
-    ) {
-        debug!(
-            "New MTU on path {} connection {}: {} cause {:?}",
-            meta.id, event.path_id, event.mtu, event.cause
-        );
-        ctx.subscriptions.send_replace(event.mtu as usize);
-    }
-}
-
-pub struct MtuContext {
-    subscriptions: watch::Sender<usize>,
-}
-
-impl MtuContext {
-    pub fn subscribe(&mut self) -> MtuSubscription {
-        self.subscriptions.subscribe()
-    }
-}
-
-pub type MtuSubscription = watch::Receiver<usize>;
-
-pub struct TrxSubscriber;
-pub struct TrxContext;
 
 fn application_bytes_in_frame(frame: &Frame) -> Option<usize> {
     match frame {
@@ -60,15 +12,53 @@ fn application_bytes_in_frame(frame: &Frame) -> Option<usize> {
     }
 }
 
-impl event::Subscriber for TrxSubscriber {
-    type ConnectionContext = TrxContext;
+create_metric!(Mtu);
+create_metric!(RttAverage);
+create_metric!(RttVariance);
+create_metric!(RttMax);
+pub struct MetricsSubscriber;
+pub struct MetricsSubscriberContext {
+    max_rtt: f64,
+}
+
+impl event::Subscriber for MetricsSubscriber {
+    type ConnectionContext = MetricsSubscriberContext;
 
     fn create_connection_context(
         &mut self,
         _: &event::ConnectionMeta,
         _: &event::ConnectionInfo,
     ) -> Self::ConnectionContext {
-        TrxContext
+        Mtu::register();
+        RttAverage::register();
+        RttVariance::register();
+        RttMax::register();
+
+        MetricsSubscriberContext { max_rtt: f64::MIN }
+    }
+
+    fn on_mtu_updated(
+        &mut self,
+        _: &mut Self::ConnectionContext,
+        _: &event::ConnectionMeta,
+        event: &event::events::MtuUpdated,
+    ) {
+        Mtu::update(event.mtu);
+    }
+
+    fn on_recovery_metrics(
+        &mut self,
+        ctx: &mut Self::ConnectionContext,
+        _: &event::ConnectionMeta,
+        event: &event::events::RecoveryMetrics,
+    ) {
+        RttAverage::update(event.smoothed_rtt.as_secs_f64());
+        RttVariance::update(event.rtt_variance.as_secs_f64());
+
+        if event.latest_rtt.as_secs_f64() > ctx.max_rtt {
+            ctx.max_rtt = event.latest_rtt.as_secs_f64();
+            RttMax::update(ctx.max_rtt);
+        }
     }
 
     fn on_frame_sent(

@@ -133,6 +133,7 @@ dependencies = [
  "futures",
  "once_cell",
  "openssl",
+ "paste",
  "pem",
  "prost",
  "prost-types",

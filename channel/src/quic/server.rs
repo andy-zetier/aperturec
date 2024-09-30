@@ -178,11 +178,8 @@ impl Builder {
             .with_congestion_controller(s2n_quic::provider::congestion_controller::Bbr::default())?
             .with_io(io)?
             .with_tls(tls_provider)?
-            .with_event((
-                provider::event::TrxSubscriber,
-                provider::event::MtuSubscriber,
-            ))?
-            .with_limits(provider::limits::default())?;
+            .with_limits(provider::limits::default())?
+            .with_event(provider::event::MetricsSubscriber)?;
 
         let mut rt = None;
         let quic_server = if tokio::runtime::Handle::try_current().is_err() {

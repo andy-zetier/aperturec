@@ -244,7 +244,7 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
                     .with_congestion_controller(
                         s2n_quic::provider::congestion_controller::Bbr::default(),
                     )?
-                    .with_event(provider::event::TrxSubscriber)?
+                    .with_event(provider::event::MetricsSubscriber)?
                     .with_tls(tls)?
                     .with_io(io)?
                     .with_limits(provider::limits::default())?
@@ -390,7 +390,7 @@ impl AsyncTryTransitionable<AsyncConnected, AsyncClosed> for Client<AsyncClosed>
                     .with_congestion_controller(
                         s2n_quic::provider::congestion_controller::Bbr::default(),
                     )?
-                    .with_event(provider::event::TrxSubscriber)?
+                    .with_event(provider::event::MetricsSubscriber)?
                     .with_tls(tls)?
                     .with_io(io)?
                     .with_limits(provider::limits::default())?
