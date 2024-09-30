@@ -247,12 +247,27 @@ impl MetricsInitializer {
 
             // Build a sysinfo::RefreshKind from the Kinds published by all SysinfoMetrics
             let mut refresh_kind = RefreshKind::new();
-            sysinfo_metrics
-                .iter()
-                .for_each(|sm| sm.add_refresh_kind(&mut refresh_kind));
-
             let mut sys = System::new_with_specifics(refresh_kind);
             sys.refresh_all();
+
+            sysinfo_metrics.iter().for_each(|sm| {
+                sm.add_refresh_kind(&mut refresh_kind);
+                let measurements = sm.poll_with_sys(&sys);
+                let m_titles = measurements
+                    .iter()
+                    .map(|m| m.title.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                debug!("Registering builtin Metric measurements: {}", m_titles);
+                self.exporters.iter_mut().for_each(|ex| {
+                    if let Err(e) = ex.register_measurements(&measurements) {
+                        error!(
+                            "Failed to register measurements {:?} with exporter {:?}: {:?}",
+                            m_titles, ex, e
+                        );
+                    }
+                });
+            });
 
             let mut timeout = rate;
 
@@ -265,14 +280,30 @@ impl MetricsInitializer {
                             MetricsMsg::Register(metric) => {
                                 let metric = (metric)();
                                 let tid = metric.get_update_type_id();
+                                let measurements = metric.poll();
+                                let m_titles = measurements
+                                    .iter()
+                                    .map(|m| m.title.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
                                 match metrics.insert(tid, metric) {
                                     None => {
-                                        debug!("Added Metric for update type {:?}", tid)
+                                        debug!("Registering Metric measurements: {}", m_titles);
+                                        trace!("Added Metric for update type {:?}", tid);
                                     }
                                     Some(_) => {
                                         warn!("Replaced existing Metric for update type {:?}", tid)
                                     }
                                 }
+
+                                self.exporters.iter_mut().for_each(|ex| {
+                                    if let Err(e) = ex.register_measurements(&measurements) {
+                                        error!(
+                                            "Failed to register measurements {:?} with exporter {:?}: {:?}",
+                                            m_titles, ex, e
+                                        );
+                                    }
+                                });
                             }
                             MetricsMsg::Update(update) => {
                                 let tid = (*update).type_id();

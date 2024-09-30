@@ -157,7 +157,7 @@ macro_rules! create_metric {
 ///
 /// * `MyMetric::update_with(FnOnce)` Sets the metric value to the value returned by the closure
 /// * `MyMetric::update_last(FnOnce(f64))` Provides the last value to a closure and stores the
-/// result
+///    result
 /// * `MyMetric::update(new_value)` Sets the metric value to `new_value`
 /// * `MyMetric::inc()` Increments the metric by 1
 /// * `MyMetric::dec()` Decrements the metric by 1
@@ -165,7 +165,7 @@ macro_rules! create_metric {
 /// * `MyMetric::dec_by(count)` Decrements the metric by `count`
 /// * `MyMetric::register()` Registers the Metric. Must be called prior to use.
 /// * `MyMetric::register_sticky()` Registers the Metric. This version of a Stats Metric will
-/// retain the last value across `poll()` calls instead of being reset to 0.
+///    retain the last value across `poll()` calls instead of being reset to 0.
 ///
 /// Statistical information published by this Metric includes:
 /// * Average
@@ -340,7 +340,7 @@ macro_rules! create_stats_metric {
 /// Presuming a metric name of `MyHistogram`, the following functions are available:
 ///
 /// * `MyHistogram::observe(value)` Calls [`observe()`](prometheus::Histogram::observe) on the
-/// generated histogram metric
+///    generated histogram metric
 ///
 /// If you need access to the full set of `Histogram` features, the raw prometheus macros such as
 /// [`register_histogram`](prometheus::register_histogram) can be used with the

@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::{Ipv4Addr, TcpStream};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
@@ -32,6 +33,7 @@ use reqwest::{Method, Url};
 /// [`with_exporter()`](crate::MetricsInitializer::with_exporter) method.
 ///
 
+#[derive(Debug)]
 pub enum Exporter {
     Log(LogExporter),
     Csv(CsvExporter),
@@ -48,11 +50,21 @@ impl Exporter {
             Exporter::Prometheus(e) => e.do_export(measurements),
         }
     }
+
+    pub fn register_measurements(&mut self, measurements: &[Measurement]) -> Result<()> {
+        match self {
+            Exporter::Csv(e) => e.register_measurements(measurements),
+            Exporter::Pushgateway(e) => e.register_measurements(measurements),
+            Exporter::Prometheus(e) => e.register_measurements(measurements),
+            _ => Ok(()),
+        }
+    }
 }
 
 ///
 /// Writes metric data to the initialized log at the specified [`Level`]
 ///
+#[derive(Debug)]
 pub struct LogExporter {
     log_level: Level,
 }
@@ -86,36 +98,38 @@ impl LogExporter {
 /// exist, a header line will be written before appending metric data. Calls to
 /// [`new()`](CsvExporter::new) may fail if `path` cannot be opened.
 ///
+#[derive(Debug)]
 pub struct CsvExporter {
-    pub path: String,
     file: Option<std::fs::File>,
-    needs_header: bool,
+    path: String,
+    header_items: Vec<String>,
 }
 
 impl CsvExporter {
     pub fn new(path: String) -> Result<Self> {
-        let file = Some(Self::open_file(&path)?);
-        let needs_header = file.as_ref().unwrap().metadata().unwrap().len() == 0;
-
         Ok(Self {
+            file: None,
             path,
-            file,
-            needs_header,
+            header_items: vec!["timestamp_rfc3339".to_string()],
         })
     }
 
-    fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
-        if self.needs_header {
-            let header = results
+    fn register_measurements(&mut self, m: &[Measurement]) -> Result<()> {
+        self.header_items.append(
+            &mut m
                 .iter()
-                .map(|r| format!("{}_{}", r.title_as_lower(), r.units_as_lower(),))
-                .collect::<Vec<_>>()
-                .join(",");
-            writeln!(self.file.as_ref().unwrap(), "timestamp_rfc3339,{}", header).or_else(|e| {
-                warn!("Failed to write metrics header to '{}': {}", self.path, e);
-                self.reopen_file()
-            })?;
-            self.needs_header = false;
+                .map(|m| format!("{}_{}", m.title_as_lower(), m.units_as_lower()))
+                .collect::<Vec<_>>(),
+        );
+        self.file.take();
+        Ok(())
+    }
+
+    fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
+        if self.file.is_none() {
+            self.reopen_file()?;
+            let header = self.header_items.join(",");
+            writeln!(self.file.as_ref().unwrap(), "{}", header).or_else(|_| self.reopen_file())?;
         }
 
         let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -142,19 +156,55 @@ impl CsvExporter {
         Ok(())
     }
 
-    fn open_file(path: &str) -> Result<std::fs::File> {
-        Ok(OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(|e| {
-                error!("Failed to open metrics file '{}' for writing: {}", path, e);
-                e
-            })?)
+    fn open_file(path_str: &str) -> Result<std::fs::File> {
+        let path = Path::new(path_str);
+
+        if let Ok(f) = OpenOptions::new().write(true).open(path) {
+            if f.metadata()?.len() == 0 {
+                return Ok(f);
+            }
+        }
+
+        let mut last_error = None;
+        for count in 0..1000 {
+            let new_path = path.with_file_name(format!(
+                "{}.{}{}",
+                path.file_stem().unwrap_or_default().to_string_lossy(),
+                count,
+                path.extension()
+                    .map(|ext| format!(".{}", ext.to_string_lossy()))
+                    .unwrap_or_default()
+            ));
+
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&new_path)
+            {
+                Ok(f) => return Ok(f),
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::AlreadyExists => last_error = Some(e),
+                    _ => {
+                        error!(
+                            "Failed to open metrics file '{}' for writing: {:?}",
+                            new_path.display(),
+                            e
+                        );
+                        return Err(e.into());
+                    }
+                },
+            }
+        }
+
+        Err(last_error
+            .unwrap_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::Other, "Unknown error occurred")
+            })
+            .into())
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct PrometheusProxy {
     gauges: HashMap<String, Gauge>,
     registration_status: HashMap<String, bool>,
@@ -169,15 +219,12 @@ impl PrometheusProxy {
     }
 
     fn update(&mut self, results: &[Measurement]) -> bool {
-        if self.gauges.is_empty() {
-            self.setup_gauges(results)
-        }
-
         //
         // If any of the Measurements backed by Prometheus Gauges have changed in their validity
         // (ie. r.value.is_none() -> r.value.is_some()), we need to adjust the gauges we have
         // registered with the registry. There doesn't seem to be a way to see if a gauge is
-        // currently registered, so we keep track of registration_status ourselves.
+        // currently registered, so we keep track of registration_status ourselves. Note, Histogram
+        // Measurements are not backed by Gauges and are ignored.
         //
         let mut updated_registrations = false;
         results.iter().for_each(|r| {
@@ -211,24 +258,33 @@ impl PrometheusProxy {
         updated_registrations
     }
 
-    fn setup_gauges(&mut self, ers: &[Measurement]) {
-        ers.iter().for_each(|e| {
-            let gauge_opts = Opts::new(e.title_as_namespaced(), e.help.to_string());
+    fn register_measurements(&mut self, measurements: &[Measurement]) -> Result<()> {
+        measurements.iter().for_each(|m| {
+            let gauge_opts = Opts::new(m.title_as_namespaced(), m.help.to_string());
             let gauge = Gauge::with_opts(gauge_opts).expect("Gauge Create");
 
             //
-            // This may fail if the Measurement has already been registered with the
-            // default registry. This is expected for macro-generated histogram metrics and allows
-            // native prometheus metrics to be used along with those managed by this crate.
+            // Measurements may have already been registered with the Prometheus registry. This is
+            // expected for macro-generated histogram metrics and allows native prometheus metrics
+            // to be used along with those managed by this crate.
             //
-            if prometheus::default_registry()
-                .register(Box::new(gauge.clone()))
-                .is_ok()
-            {
-                self.gauges.insert(e.title.to_string(), gauge);
-                self.registration_status.insert(e.title.to_string(), true);
-            }
+            match prometheus::default_registry().register(Box::new(gauge.clone())) {
+                Ok(()) => {
+                    self.gauges.insert(m.title.to_string(), gauge);
+                    self.registration_status.insert(m.title.to_string(), true);
+                }
+                Err(prometheus::Error::AlreadyReg) => {
+                    trace!(
+                        "Prometheus Collector '{}' already registered, ignoring",
+                        m.title
+                    )
+                }
+                Err(e) => {
+                    error!("Prometheus gauge '{}' failed to register: {:?}", m.title, e);
+                }
+            };
         });
+        Ok(())
     }
 }
 
@@ -243,7 +299,7 @@ impl PrometheusProxy {
 /// Pushgateway](https://github.com/prometheus/pushgateway#prometheus-pushgateway) docs for more
 /// info.
 ///
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct PushgatewayExporter {
     url: String,
     job_name: String,
@@ -290,6 +346,10 @@ impl PushgatewayExporter {
         })
     }
 
+    fn register_measurements(&mut self, results: &[Measurement]) -> Result<()> {
+        self.prom_proxy.register_measurements(results)
+    }
+
     fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
         //
         // If any of the Measurements have changed in their validity (ie. r.value.is_none() ->
@@ -312,7 +372,7 @@ impl PushgatewayExporter {
         Ok(())
     }
 
-    fn clear_metrics(&self) -> Result<()> {
+    fn clear_metrics(&mut self) -> Result<()> {
         let delete_url = format!(
             "{}/metrics/job/{}/{}",
             &self.url,
@@ -330,6 +390,7 @@ impl PushgatewayExporter {
             .unwrap()
             .request(Method::DELETE, Url::from_str(&delete_url).unwrap())
             .send()?;
+        self.needs_cleared = true;
         Ok(())
     }
 }
@@ -345,7 +406,7 @@ impl Drop for PushgatewayExporter {
 ///
 /// Hosts metric data for Prometheus
 ///
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct PrometheusExporter {
     prom_proxy: PrometheusProxy,
 }
@@ -420,6 +481,10 @@ impl PrometheusExporter {
         })
     }
 
+    fn register_measurements(&mut self, results: &[Measurement]) -> Result<()> {
+        self.prom_proxy.register_measurements(results)
+    }
+
     fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
         self.prom_proxy.update(results);
         Ok(())
@@ -430,6 +495,7 @@ impl PrometheusExporter {
 mod test {
     use super::*;
     use crate::measurement::Measurement;
+    use std::fs::{self, File};
     use std::io::Read;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
@@ -492,10 +558,13 @@ mod test {
     #[test]
     fn csv_exporter() {
         let mut file = NamedTempFile::new().expect("tempfile");
+        let path = file.path().to_str().expect("path").to_string();
+        let mut measurements = generate_measurements();
 
-        let mut ce =
-            CsvExporter::new(file.path().to_str().expect("path").to_string()).expect("CsvExporter");
-        ce.do_export(&generate_measurements()).expect("export");
+        let mut ce = CsvExporter::new(path).expect("CsvExporter");
+
+        ce.register_measurements(&measurements).expect("register");
+        ce.do_export(&measurements).expect("export");
 
         let mut contents = String::new();
         file.read_to_string(&mut contents).expect("read");
@@ -504,19 +573,63 @@ mod test {
         assert_eq!(contents.lines().collect::<Vec<_>>().len(), 2);
 
         // Append an additional value line
-        ce.do_export(&generate_measurements()).expect("export");
+        ce.do_export(&measurements).expect("export");
         file.read_to_string(&mut contents).expect("read");
         assert_eq!(contents.lines().collect::<Vec<_>>().len(), 3);
 
         // Expect 9 commas: 3 in header line, 3 in each value line
         assert_eq!(
-            generate_measurements().len() * 3,
+            measurements.len() * 3,
             contents
                 .chars()
                 .filter(|c| *c == ',')
                 .collect::<Vec<_>>()
                 .len()
         );
+
+        //
+        // Test registering a new metric after the first do_export()
+        //
+
+        let mut new_measurements = vec![Measurement::new(
+            "Baz",
+            Some(6.0),
+            "Luhrmann",
+            "Movies directed",
+        )];
+
+        ce.register_measurements(&new_measurements)
+            .expect("register");
+        measurements.append(&mut new_measurements);
+        ce.do_export(&measurements).expect("export");
+
+        let expected_path = file.path().with_file_name(format!(
+            "{}.0",
+            file.path()
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        ));
+
+        let mut file = File::open(expected_path.clone()).expect("open next file");
+        contents.clear();
+        file.read_to_string(&mut contents).expect("read");
+
+        // Expect 2 lines in CSV file: 1 header line, 1 value line
+        assert_eq!(contents.lines().collect::<Vec<_>>().len(), 2);
+
+        // Expect 8 commas: 4 in header line, 4 in each value line
+        assert_eq!(
+            measurements.len() * 2,
+            contents
+                .chars()
+                .filter(|c| *c == ',')
+                .collect::<Vec<_>>()
+                .len()
+        );
+
+        drop(file);
+        fs::remove_file(expected_path).expect("remove temp file");
     }
 
     #[test]
@@ -524,6 +637,7 @@ mod test {
         const JOB: &str = "pushgateway_unit_test";
 
         let put_request: Arc<Mutex<String>> = Arc::new(Mutex::from(String::new()));
+        let put_content: Arc<Mutex<String>> = Arc::new(Mutex::from(String::new()));
         let delete_request: Arc<Mutex<String>> = Arc::new(Mutex::from(String::new()));
         let server = Arc::new(Server::http("127.0.0.1:0").unwrap());
         let is_running = Arc::new(AtomicBool::new(true));
@@ -532,14 +646,19 @@ mod test {
             let server = server.clone();
             let is_running = is_running.clone();
             let put_request = put_request.clone();
+            let put_content = put_content.clone();
             let delete_request = delete_request.clone();
             thread::spawn(move || {
                 while is_running.load(Ordering::SeqCst) {
-                    if let Ok(Some(request)) = server.recv_timeout(Duration::from_millis(100)) {
+                    if let Ok(Some(mut request)) = server.recv_timeout(Duration::from_millis(100)) {
                         let response = match request.method().as_str() {
                             "PUT" => {
                                 let mut s = put_request.lock().unwrap();
                                 *s = format!("PUT {}", request.url());
+                                let mut content = Vec::new();
+                                request.as_reader().read_to_end(&mut content).unwrap();
+                                let mut c = put_content.lock().unwrap();
+                                *c = String::from_utf8_lossy(&content).to_string();
                                 Response::from_string("Ok").boxed()
                             }
                             "DELETE" => {
@@ -558,18 +677,21 @@ mod test {
 
         let port = server.server_addr().to_ip().unwrap().port();
         let id = std::process::id();
+        let measurements = generate_measurements();
 
         let mut pge =
             PushgatewayExporter::new(format!("http://127.0.0.1:{}", port), JOB.to_string(), id)
                 .expect("Pushgateway Exporter");
 
+        pge.register_measurements(&measurements).expect("register");
+
         // Generate a PUSH request
-        pge.do_export(&generate_measurements()).expect("export");
+        pge.do_export(&measurements).expect("export");
 
         // Generate a DROP request
         drop(pge);
 
-        // shutdown fake pushgateway
+        // Shutdown fake pushgateway
         is_running.store(false, Ordering::SeqCst);
 
         let uri = format!("/metrics/job/{}/", JOB);
@@ -586,13 +708,29 @@ mod test {
                     expected
                 );
             });
+
+        // Content is protobuf encoded, but the title and help strings should be in plaintext
+        let content = put_content.lock().unwrap();
+        for s in measurements
+            .into_iter()
+            .map(|m| vec![m.title_as_namespaced(), m.help])
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+        {
+            assert!(content.contains(&s), "\"{:?}\" ⊉ \"{:?}\"", content, s);
+        }
     }
 
     #[test]
     fn prometheus_exporter() {
-        const URL: &str = "127.0.0.1:8080";
+        const URL: &str = "127.0.0.1:8946";
+        let measurements = generate_measurements();
 
         let mut pe = PrometheusExporter::new(URL).expect("PrometheusExporter");
+
+        pe.register_measurements(&measurements).expect("register");
         pe.do_export(&generate_measurements()).expect("export");
 
         let response = Client::builder()
@@ -625,7 +763,7 @@ mod test {
             text.contains(
                 "# HELP ac_bars All bars available\n# TYPE ac_bars gauge\nac_bars 33.33333"
             ),
-            "\"{:?}\" ⊉ \"# HELP ac_bars ...\"",
+            "\"{:?}\" ⊉ \"# HELP ac_bars ALL bars ...\"",
             text
         );
     }
