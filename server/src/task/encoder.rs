@@ -9,10 +9,11 @@ use aperturec_state_machine::*;
 use anyhow::{anyhow, bail, Result};
 use flate2::{write::DeflateEncoder, Compression};
 use ndarray::prelude::*;
+use std::any::Any;
 use std::io::Write;
 use std::mem;
 use std::slice;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
 use tokio::time::Instant;
@@ -79,35 +80,62 @@ fn encode_zlib(raw_data: ArrayView2<Pixel24>) -> Result<Vec<u8>> {
     })
 }
 
-fn encode_jpegxl(raw_data: ArrayView2<Pixel24>) -> Result<Vec<u8>> {
+struct JxlEncoder<'a, 'b>(jpegxl_rs::encode::JxlEncoder<'a, 'b>);
+
+// SAFETY: jpegxl_rs::encode::JxlEncoder is only !Send because it has some raw pointers in it.
+// However, we know that these raw pointers will be created in global memory (`LazyLock`), and only
+// ever accessed from one thread at a time `ResourcePool`. So we can use a new-type here and mark
+// the new-type as Send
+unsafe impl Send for JxlEncoder<'_, '_> {}
+
+async fn encode_jpegxl(raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
+    static ENCODER_POOL: LazyLock<simple_pool::ResourcePool<JxlEncoder>> = LazyLock::new(|| {
+        const NUM_ENCODERS: usize = 256;
+        let pool = simple_pool::ResourcePool::with_capacity(NUM_ENCODERS);
+        for _ in 0..NUM_ENCODERS {
+            let par = jpegxl_rs::ResizableRunner::default();
+            let encoder = JxlEncoder(
+                jpegxl_rs::encoder_builder()
+                    .quality(1.0)
+                    .speed(jpegxl_rs::encode::EncoderSpeed::Lightning)
+                    .parallel_runner(Box::leak(Box::new(par)))
+                    .decoding_speed(4_i64)
+                    .build()
+                    .expect("encoder build"),
+            );
+            pool.append(encoder);
+        }
+        pool
+    });
+
     let width = raw_data.as_ndarray().len_of(axis::X);
     let height = raw_data.as_ndarray().len_of(axis::Y);
-    let runner = jpegxl_rs::ThreadsRunner::default();
-    let mut encoder = jpegxl_rs::encoder_builder()
-        .quality(1.0)
-        .speed(jpegxl_rs::encode::EncoderSpeed::Lightning)
-        .decoding_speed(4_i64)
-        .parallel_runner(&runner)
-        .build()
-        .expect("encoder build");
+    let mut encoder = ENCODER_POOL.get().await;
+    if let Some(mut par) = encoder.0.parallel_runner {
+        let any = &mut par as &mut dyn Any;
+        if let Some(runner) = any.downcast_mut::<jpegxl_rs::ResizableRunner>() {
+            runner.set_num_threads(width as u64, height as u64);
+        }
+    }
 
     Ok(tokio::task::block_in_place(|| {
         do_encode_optimize_contig(raw_data, move |bytes| {
             Ok(encoder
+                .0
                 .encode::<u8, u8>(&bytes, width as u32, height as u32)?
                 .data)
         })
     })?)
 }
 
-fn encode(codec: Codec, raw_data: ArrayView2<Pixel24>) -> Result<Vec<u8>> {
+async fn encode(codec: Codec, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
     let size = raw_data.size();
 
     let start = Instant::now();
     let data = match codec {
         Codec::Raw => encode_raw(raw_data)?,
         Codec::Zlib => encode_zlib(raw_data)?,
-        Codec::Jpegxl => encode_jpegxl(raw_data)?,
+        Codec::Jpegxl => encode_jpegxl(raw_data).await?,
         Codec::Unspecified => bail!("Unspecified codec"),
     };
     let end = Instant::now();
@@ -213,7 +241,7 @@ impl Transitionable<Running> for Task<Created> {
                                 .as_slice(),
                         );
 
-                        let data = encode(self.state.codec, pixels)?;
+                        let data = encode(self.state.codec, pixels).await?;
                         let loc = intersection.min.to_vector() - self.state.area.min.to_vector();
 
                         let frag = mm::FrameFragment {
@@ -316,18 +344,18 @@ mod test {
         }
     }
 
-    #[test]
-    fn simple_encode_raw() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn simple_encode_raw() {
         let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
-        let enc_data: Vec<_> = encode(Codec::Raw, raw_data).expect("encode raw");
+        let enc_data: Vec<_> = encode(Codec::Raw, raw_data).await.expect("encode raw");
         assert_eq!(enc_data.len(), 64 * 64 * 3);
         assert_eq_decoded(&enc_data);
     }
 
-    #[test]
-    fn simple_encode_zlib() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn simple_encode_zlib() {
         let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
-        let enc_data: Vec<_> = encode(Codec::Zlib, raw_data).expect("encode zlib");
+        let enc_data: Vec<_> = encode(Codec::Zlib, raw_data).await.expect("encode zlib");
 
         let mut decompressor = flate2::Decompress::new(false);
         let mut dec_data = vec![];
