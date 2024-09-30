@@ -14,6 +14,7 @@ create_metric!(PixelsCompressed);
 create_metric!(TimeInCompression);
 create_metric!(FramesCut);
 create_metric!(EncoderCount);
+create_metric!(BackendEvent);
 
 create_histogram_metric_with_buckets!(
     TrackingBufferDamageRatio,
@@ -81,5 +82,6 @@ pub fn setup_server_metrics(
         TimeInCompression::register();
         FramesCut::register();
         EncoderCount::register();
+        BackendEvent::register();
     }
 }

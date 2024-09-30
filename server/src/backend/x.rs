@@ -1,4 +1,5 @@
 use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState};
+use crate::metrics::BackendEvent;
 
 use aperturec_graphics::prelude::*;
 use aperturec_protocol::event as em;
@@ -797,6 +798,7 @@ impl XEventStreamMux {
             _event_task: tokio::task::spawn_blocking(move || loop {
                 let event = conn.wait_for_event()?;
                 event_task_tx.send(XEvent(event))?;
+                BackendEvent::inc();
             }),
             _tx_task: tokio::task::spawn(async move {
                 loop {
