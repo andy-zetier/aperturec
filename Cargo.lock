@@ -173,6 +173,7 @@ dependencies = [
  "sysinfo",
  "tracing",
  "tracing-subscriber",
+ "url",
  "windows",
 ]
 

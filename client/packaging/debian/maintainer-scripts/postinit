@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+# Update the MIME database
+if command -v update-desktop-database > /dev/null ; then
+    update-desktop-database /usr/share/applications || true
+fi
+
+# Register the URI handler
+if command -v xdg-mime > /dev/null ; then
+    xdg-mime default aperturec-client.desktop x-scheme-handler/aperturec-client || true
+fi
+
+exit 0

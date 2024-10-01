@@ -4,16 +4,19 @@ use aperturec_metrics::exporters::{
     CsvExporter, Exporter, LogExporter, PrometheusExporter, PushgatewayExporter,
 };
 
-use anyhow::Result;
+use anyhow::{anyhow, ensure, Result};
 use clap::Parser;
 use gethostname::gethostname;
 use openssl::x509::X509;
+use std::env;
 use std::fs;
+use std::iter;
 use std::path::PathBuf;
 use std::time::Duration;
 use sysinfo::{CpuRefreshKind, RefreshKind, SystemExt};
 use tracing::*;
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
 const DEFAULT_RESOLUTION: (u64, u64) = (800, 600);
 
@@ -122,8 +125,49 @@ struct Args {
     verbosity: u8,
 }
 
+fn args_from_uri(uri: &str) -> Result<Args> {
+    let parsed_uri = Url::parse(uri)?;
+    ensure!(
+        parsed_uri.scheme() == env!("CARGO_PKG_NAME"),
+        "URI scheme should be '{}', is '{}'",
+        env!("CARGO_PKG_NAME"),
+        parsed_uri.scheme()
+    );
+    ensure!(parsed_uri.username() == "", "URI provides username");
+    ensure!(parsed_uri.fragment() == None, "URI provides fragment");
+
+    let mut host = parsed_uri
+        .host_str()
+        .ok_or(anyhow!("URI provides no host"))?
+        .to_string();
+    if let Some(port) = parsed_uri.port() {
+        host = format!("{}:{}", host, port);
+    }
+    let args = parsed_uri.query_pairs().flat_map(|(k, v)| {
+        let k = if k.len() == 1 {
+            format!("-{}", k)
+        } else {
+            format!("--{}", k)
+        };
+
+        if v.is_empty() {
+            vec![k]
+        } else {
+            vec![k, v.to_string()]
+        }
+    });
+    Ok(Args::try_parse_from(
+        iter::once(env!("CARGO_PKG_NAME").to_string())
+            .chain(iter::once(host))
+            .chain(args),
+    )?)
+}
+
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let args = match env::var("AC_URI") {
+        Ok(uri) => args_from_uri(&uri)?,
+        Err(_) => Args::parse(),
+    };
     let log_verbosity = match args.verbosity {
         0 => Level::WARN,
         1 => Level::INFO,

@@ -29,6 +29,7 @@ range-set-blaze = "0.1"
 sysinfo = "0.29.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"]}
+url = "2.5"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features=["Win32_UI_Input_KeyboardAndMouse"]}
@@ -37,3 +38,8 @@ windows = { version = "0.54", features=["Win32_UI_Input_KeyboardAndMouse"]}
 copyright = "2024, Zetier Inc."
 maintainer = "ApertureC Team <aperturec@zetier.com>"
 section = "x11"
+assets = [
+  ["target/release/aperturec-client", "/usr/bin/aperturec-client", "755"],
+  ["packaging/debian/aperturec-client.desktop", "/usr/share/applications/aperturec-client.desktop", "644"],
+]
+maintainer-scripts = "packaging/debian/maintainer-scripts"
