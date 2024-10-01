@@ -17,7 +17,3 @@ lto = "thin"
 
 [profile.bench]
 inherits = "dev-optimized"
-
-[patch.crates-io]
-# Required for ARM builds until jpegxl-rs cuts a new release
-jpegxl-rs = { git = "https://github.com/inflation/jpegxl-rs" }
