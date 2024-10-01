@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::io::Read;
 use std::mem;
+use std::sync::{LazyLock, Mutex};
 use tracing::*;
 
 fn decode_raw(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
@@ -23,9 +24,30 @@ fn decode_zlib(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
     Ok(decoded)
 }
 
+struct JxlDecoder<'a, 'b>(jpegxl_rs::decode::JxlDecoder<'a, 'b>);
+
+// SAFETY: jpegxl_rs::decode::JxlDecoder is only !Send because it has some raw pointers in it.
+// However, we know that these raw pointers will be created in global memory (`LazyLock`), and only
+// ever accessed from one thread at a time `ResourcePool`. So we can use a new-type here and mark
+// the new-type as Send
+unsafe impl Send for JxlDecoder<'_, '_> {}
+
 fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
-    let decoder = jpegxl_rs::decoder_builder().build()?;
-    let pixels = decoder.decode(&*encoded_data)?.1;
+    static DECODER: LazyLock<Mutex<JxlDecoder>> = LazyLock::new(|| {
+        let par = jpegxl_rs::ThreadsRunner::default();
+        Mutex::new(JxlDecoder(
+            jpegxl_rs::decoder_builder()
+                .parallel_runner(Box::leak(Box::new(par)))
+                .build()
+                .expect("decoder build"),
+        ))
+    });
+    let pixels = DECODER
+        .lock()
+        .expect("JxlDecoder")
+        .0
+        .decode(&*encoded_data)?
+        .1;
     match pixels {
         jpegxl_rs::decode::Pixels::Uint8(vec) => Ok(vec),
         _ => bail!("unsupppored pixel format"),
