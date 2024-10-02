@@ -11,7 +11,6 @@ use anyhow::{anyhow, Result};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
-use tracing::*;
 
 #[cfg(any(test, debug_assertions))]
 use rustls::KeyLogFile;
@@ -19,6 +18,7 @@ use rustls::KeyLogFile;
 use s2n_quic::provider::tls::rustls::{
     rustls, rustls::ServerConfig as TlsConfig, Server as TlsProvider,
 };
+use tracing::*;
 
 #[derive(Stateful, Debug, SelfTransitionable)]
 #[state(S)]
