@@ -42,4 +42,3 @@ assets = [
   ["target/release/aperturec-client", "/usr/bin/aperturec-client", "755"],
   ["packaging/debian/aperturec-client.desktop", "/usr/share/applications/aperturec-client.desktop", "644"],
 ]
-maintainer-scripts = "packaging/debian/maintainer-scripts"

@@ -1,9 +1,0 @@
-#!/bin/sh
-set -e
-
-# Unregister the URI handler
-if command -v xdg-mime > /dev/null ; then
-    xdg-mime uninstall aperturec-client.desktop x-scheme-handler/aperturec-client || true
-fi
-
-exit 0
