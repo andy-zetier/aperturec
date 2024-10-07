@@ -126,11 +126,13 @@ struct Args {
 }
 
 fn args_from_uri(uri: &str) -> Result<Args> {
+    const URI_SCHEME: &str = "aperturec";
+
     let parsed_uri = Url::parse(uri)?;
     ensure!(
-        parsed_uri.scheme() == env!("CARGO_PKG_NAME"),
+        parsed_uri.scheme() == URI_SCHEME,
         "URI scheme should be '{}', is '{}'",
-        env!("CARGO_PKG_NAME"),
+        URI_SCHEME,
         parsed_uri.scheme()
     );
     ensure!(parsed_uri.username() == "", "URI provides username");

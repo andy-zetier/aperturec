@@ -3,4 +3,4 @@ Name=ApertureC Client
 Exec=env AC_URI=%u /usr/bin/aperturec-client
 Type=Application
 Terminal=false
-MimeType=x-scheme-handler/aperturec-client;
+MimeType=x-scheme-handler/aperturec;
