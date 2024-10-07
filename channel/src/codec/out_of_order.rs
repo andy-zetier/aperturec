@@ -408,19 +408,26 @@ where
     }
 }
 
+// Client
+// Sync
 pub type ClientMediaChannel =
     ReceiverSimplex<datagram::Receiver, media::ServerToClient, media::ServerToClient>;
-
+// Async
 pub type AsyncClientMediaChannel =
     AsyncReceiverSimplex<datagram::AsyncReceiver, media::ServerToClient, media::ServerToClient>;
-
+// Server
+// Sync
 pub type ServerMediaChannel =
     SenderSimplex<datagram::Transmitter, media::ServerToClient, media::ServerToClient>;
+// Async
 pub type AsyncServerMediaChannel =
     AsyncSenderSimplex<datagram::AsyncTransmitter, media::ServerToClient, media::ServerToClient>;
-
+// Gated
+// Server
+// Sync
 pub type GatedServerMediaChannel<G> =
     Gated<SenderSimplex<datagram::Transmitter, media::ServerToClient, media::ServerToClient>, G>;
+// Async
 pub type AsyncGatedServerMediaChannel<G> = Gated<
     AsyncSenderSimplex<datagram::AsyncTransmitter, media::ServerToClient, media::ServerToClient>,
     G,
