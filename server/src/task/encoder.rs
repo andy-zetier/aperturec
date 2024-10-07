@@ -8,6 +8,7 @@ use aperturec_state_machine::*;
 
 use anyhow::{anyhow, bail, Result};
 use flate2::{write::DeflateEncoder, Compression};
+use futures::{prelude::*, stream::FuturesUnordered};
 use ndarray::prelude::*;
 use std::any::Any;
 use std::io::Write;
@@ -231,29 +232,40 @@ impl Transitionable<Running> for Task<Created> {
                         self.id
                     );
                 } else {
-                    for (sequence, (buffer, intersection)) in relevant.iter().enumerate() {
-                        let pixmap = buffer.pixels.as_ndarray();
-                        let pixels = pixmap.slice(
-                            intersection
+                    let mut encodings = FuturesUnordered::new();
+                    for (buffer, intersection) in &relevant {
+                        encodings.push(async move {
+                            let buffer_relative_area = intersection
                                 .to_i64()
                                 .translate(-buffer.area.min.to_vector().to_i64())
-                                .to_usize()
-                                .as_slice(),
-                        );
+                                .to_usize();
+                            let enc_relative_area = intersection
+                                .to_i64()
+                                .translate(-self.state.area.min.to_vector().to_i64())
+                                .to_usize();
 
-                        let data = encode(self.state.codec, pixels).await?;
-                        let loc = intersection.min.to_vector() - self.state.area.min.to_vector();
+                            let pixmap = buffer.pixels.as_ndarray();
+                            let pixels = pixmap.slice(buffer_relative_area.as_slice());
+                            let data = encode(self.state.codec, pixels).await?;
+                            Ok::<_, anyhow::Error>((data, enc_relative_area))
+                        });
+                    }
 
+                    let mut sequence = 0;
+                    while let Some(Ok((data, enc_relative_area))) = encodings.next().await {
                         let frag = mm::FrameFragment {
                             frame: frame.id as u64,
                             encoder: self.id as u32,
                             sequence: sequence as u32,
                             terminal: sequence == relevant.len() - 1,
                             codec: self.state.codec.into(),
-                            location: Some(AcLocation::new(loc.x as u64, loc.y as u64)),
+                            location: Some(AcLocation::new(
+                                enc_relative_area.min.x as u64,
+                                enc_relative_area.min.y as u64,
+                            )),
                             dimension: Some(AcDimension::new(
-                                intersection.width() as u64,
-                                intersection.height() as u64,
+                                enc_relative_area.width() as u64,
+                                enc_relative_area.height() as u64,
                             )),
                             data,
                         };
@@ -269,6 +281,8 @@ impl Transitionable<Running> for Task<Created> {
                             self.id,
                             sequence
                         );
+
+                        sequence += 1;
                     }
                 }
             }

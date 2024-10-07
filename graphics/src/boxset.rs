@@ -1,6 +1,6 @@
 use crate::geometry::{Box2D, Point};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Set {
     inner: Vec<Box2D>,
 }
@@ -8,6 +8,14 @@ pub struct Set {
 impl Set {
     pub fn with_initial_box(b: Box2D) -> Self {
         Set { inner: vec![b] }
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 
     /// Add a new box to the box set
@@ -173,6 +181,14 @@ impl<'b> Iterator for Iter<'b> {
         let output = self.set.inner.get(self.idx);
         self.idx += 1;
         output
+    }
+}
+
+impl FromIterator<Box2D> for Set {
+    fn from_iter<T: IntoIterator<Item = Box2D>>(iter: T) -> Self {
+        let mut set = Set::default();
+        iter.into_iter().for_each(|b| set.add(b));
+        set
     }
 }
 

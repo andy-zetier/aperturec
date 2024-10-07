@@ -14,6 +14,8 @@ create_metric!(PixelsCompressed);
 create_metric!(TimeInCompression);
 create_metric!(FramesCut);
 create_metric!(EncoderCount);
+create_metric!(TrackingBufferDisjointAreas);
+create_metric!(TrackingBufferUpdates);
 create_metric!(BackendEvent);
 
 create_histogram_metric_with_buckets!(
@@ -82,6 +84,8 @@ pub fn setup_server_metrics(
         TimeInCompression::register();
         FramesCut::register();
         EncoderCount::register();
+        TrackingBufferDisjointAreas::register();
+        TrackingBufferUpdates::register();
         BackendEvent::register();
     }
 }

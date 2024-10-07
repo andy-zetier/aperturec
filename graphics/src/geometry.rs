@@ -1,11 +1,12 @@
 use crate::ndarray_convert::*;
 
-use euclid::{Point2D, Size2D, UnknownUnit};
+use euclid::{Point2D, Size2D, UnknownUnit, Vector2D};
 
 pub type Box2D = euclid::Box2D<usize, UnknownUnit>;
 pub type Point = Point2D<usize, UnknownUnit>;
 pub type Rect = euclid::Rect<usize, UnknownUnit>;
 pub type Size = Size2D<usize, UnknownUnit>;
+pub type Vector = Vector2D<i64, UnknownUnit>;
 
 impl AsNdarrayShape for Box2D {
     fn as_shape(&self) -> impl ShapeBuilder<Dim = Ix2> {

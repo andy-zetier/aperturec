@@ -51,9 +51,9 @@ impl From<Pixel24> for Pixel32 {
     }
 }
 
-pub trait Pixel: PartialEq<Pixel24> + Copy {}
+pub trait Pixel: PartialEq<Pixel24> + Copy + Send + Sync {}
 
-impl<P> Pixel for P where P: PartialEq<Pixel24> + Copy {}
+impl<P> Pixel for P where P: PartialEq<Pixel24> + Copy + Send + Sync {}
 
 pub trait PixelMap: Sized {
     type Pixel: Pixel;

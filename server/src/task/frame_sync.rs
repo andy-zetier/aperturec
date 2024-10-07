@@ -1,7 +1,9 @@
 use crate::backend::Backend;
-use crate::metrics::{FramesCut, TrackingBufferDamageRatio};
+use crate::metrics::{
+    FramesCut, TrackingBufferDamageRatio, TrackingBufferDisjointAreas, TrackingBufferUpdates,
+};
 
-use aperturec_graphics::prelude::*;
+use aperturec_graphics::{prelude::*, rectangle_cover::diff_rectangle_cover};
 use aperturec_state_machine::*;
 
 use anyhow::{anyhow, bail, Result};
@@ -237,7 +239,7 @@ enum Damage {
 ///
 /// This structure is particularly useful in graphical applications where partial updates to the pixel data are common.
 pub struct TrackingBuffer<BackendPixelMap: PixelMap> {
-    area: Box2D,
+    size: Size,
     data: Array2<Pixel24>,
     damage: Damage,
     curr_frame_id: usize,
@@ -254,7 +256,7 @@ where
         let (damage_tx, _) = watch::channel(());
         let shape = (resolution.height, resolution.width);
         TrackingBuffer {
-            area: Rect::new(Point::new(0, 0), resolution).to_box2d(),
+            size: resolution,
             data: Array2::from_elem(shape, Pixel24::default()),
             damage: Damage::Full,
             curr_frame_id: 0,
@@ -264,16 +266,12 @@ where
     }
 
     pub fn update(&mut self, framebuffer_data: SubframeBuffer<BackendPixelMap>) {
+        TrackingBufferUpdates::inc();
         // Early exit if the origin point is outside the bounds of the current data array.
-        let intersection = match self.area.intersection(&framebuffer_data.area) {
+        let intersection = match Box2D::from_size(self.size).intersection(&framebuffer_data.area) {
             Some(intersection) => intersection,
             None => return,
         };
-
-        let tb_relative_area = intersection
-            .to_i64()
-            .translate(-self.area.min.to_vector().to_i64())
-            .to_usize();
         let fb_relative_area = intersection
             .to_i64()
             .translate(-framebuffer_data.area.min.to_vector().to_i64())
@@ -283,78 +281,40 @@ where
         let new = pixmap.slice(&fb_relative_area.as_slice());
         tokio::task::block_in_place(|| match self.damage {
             Damage::Full => {
-                new.assign_to(self.data.slice_mut(tb_relative_area.as_slice()));
+                new.assign_to(self.data.slice_mut(intersection.as_slice()));
                 TrackingBufferDamageRatio::observe(1.);
             }
             _ => {
-                let curr = self.data.slice(tb_relative_area.as_slice());
-                let row_iter = curr.lanes(axis::X).into_iter().zip(new.lanes(axis::X));
+                let curr = self.data.slice(intersection.as_slice());
+                let cover_areas = diff_rectangle_cover(curr, new);
 
-                let top = row_iter.clone().position(|(curr, new)| new != curr);
-
-                let (bottom, left, right) = if top.is_some() {
-                    let bottom = row_iter
-                        .collect::<Vec<_>>()
-                        .iter()
-                        .rposition(|(curr, new)| new != curr);
-
-                    let cols = curr
-                        .lanes(axis::Y)
-                        .into_iter()
-                        .zip(new.lanes(axis::Y))
-                        .collect::<Vec<_>>();
-                    let left = cols.iter().position(|(curr, new)| new != curr);
-                    let right = cols.iter().rposition(|(curr, new)| new != curr);
-
-                    (bottom, left, right)
-                } else {
-                    (None, None, None)
-                };
-
-                let boundaries = match (left, right, top, bottom) {
-                    (Some(l), Some(r), Some(t), Some(b)) => Some((l, r, t, b)),
-                    (None, None, None, None) => None,
-                    _ => unreachable!("bounds not in sync"),
-                };
-
-                if let Some((l, r, t, b)) = boundaries {
-                    let min_intersection = Box2D::new(Point::new(l, t), Point::new(r + 1, b + 1))
-                        .translate(intersection.min.to_vector());
-                    let min_tb_relative_area = min_intersection
-                        .to_i64()
-                        .translate(-self.area.min.to_vector().to_i64())
-                        .to_usize();
-
-                    let min_fb_relative_area = min_intersection
-                        .to_i64()
-                        .translate(-framebuffer_data.area.min.to_vector().to_i64())
-                        .to_usize();
+                let mut total_area = 0;
+                for b in &cover_areas {
+                    let tb_relative_rect = b.translate(intersection.min.to_vector());
 
                     framebuffer_data
                         .pixels
                         .as_ndarray()
-                        .slice(min_fb_relative_area.as_slice())
-                        .assign_to(self.data.slice_mut(min_tb_relative_area.as_slice()));
+                        .slice(b.as_slice())
+                        .assign_to(self.data.slice_mut(tb_relative_rect.as_slice()));
 
-                    TrackingBufferDamageRatio::observe(
-                        min_intersection.area() as f64 / intersection.area() as f64 * 100.,
-                    );
-
-                    self.mark_stale(min_intersection);
-                } else {
-                    TrackingBufferDamageRatio::observe(0.)
+                    total_area += b.area();
+                    self.mark_stale(tb_relative_rect);
                 }
+                TrackingBufferDamageRatio::observe(
+                    total_area as f64 / intersection.area() as f64 * 100.,
+                );
             }
         });
     }
 
     fn mark_stale(&mut self, stale: Box2D) {
-        let intersection = match self.area.intersection(&stale) {
+        let intersection = match Box2D::from_size(self.size).intersection(&stale) {
             Some(intersection) => intersection,
             None => return,
         };
 
-        if intersection == self.area {
+        if intersection.area() == self.size.area() {
             self.damage = Damage::Full;
         } else {
             match self.damage {
@@ -376,15 +336,28 @@ where
             Damage::None => return None,
             Damage::Partial(ref boxes) => boxes
                 .iter()
-                .map(|b| SubframeBuffer {
-                    area: *b,
-                    pixels: self.data.slice(b.as_slice()).to_owned(),
+                .map(|b| {
+                    // SAFETY: We initialize the Array2 in the call to `build_init`, so
+                    // `assume_init` is safe to call
+                    let pixels = unsafe {
+                        Array2::build_uninit(b.as_shape(), |dst| {
+                            self.data.slice(b.as_slice()).assign_to(dst)
+                        })
+                        .assume_init()
+                    };
+                    SubframeBuffer { area: *b, pixels }
                 })
                 .collect(),
             Damage::Full => {
+                // SAFETY: We initialize the Array2 in the call to `build_init`, so
+                // `assume_init` is safe to call
+                let pixels = unsafe {
+                    Array2::build_uninit(self.size.as_shape(), |dst| self.data.assign_to(dst))
+                        .assume_init()
+                };
                 vec![SubframeBuffer {
-                    area: self.area,
-                    pixels: self.data.clone(),
+                    area: Box2D::from_size(self.size),
+                    pixels,
                 }]
             }
         };
@@ -394,6 +367,7 @@ where
         self.curr_frame_id += 1;
 
         FramesCut::inc();
+        TrackingBufferDisjointAreas::inc_by(buffers.len() as f64);
         Some(Frame { id, buffers })
     }
 

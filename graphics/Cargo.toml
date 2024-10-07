@@ -5,4 +5,8 @@ edition.workspace = true
 
 [dependencies]
 euclid = "0.22"
-ndarray = "0.16"
+image = "0.25"
+imageproc = "0.25"
+ndarray = { version = "0.16", features = ["rayon"] }
+nshare = "0.10"
+rayon = "1.10"
