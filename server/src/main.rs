@@ -9,7 +9,7 @@ use futures::future;
 use gethostname::gethostname;
 use std::path::PathBuf;
 use tracing::*;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{prelude::*, EnvFilter};
 
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false)]
@@ -146,15 +146,23 @@ async fn main() -> Result<()> {
         2 => Level::DEBUG,
         _ => Level::TRACE,
     };
-    tracing_subscriber::fmt()
-        .with_file(true)
-        .with_line_number(true)
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(log_verbosity.into())
-                .from_env()?,
-        )
-        .init();
+    let mut layers = vec![];
+    #[cfg(feature = "tokio-console")]
+    {
+        layers.push(console_subscriber::spawn().boxed());
+    }
+    layers.push(
+        tracing_subscriber::fmt::layer()
+            .with_file(true)
+            .with_line_number(true)
+            .with_filter(
+                EnvFilter::builder()
+                    .with_default_directive(log_verbosity.into())
+                    .from_env()?,
+            )
+            .boxed(),
+    );
+    tracing_subscriber::registry().with(layers).init();
 
     let dims: Vec<usize> = args
         .screen_size
