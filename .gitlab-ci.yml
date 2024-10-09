@@ -64,7 +64,7 @@ create-images:build:
     - .runner-arch:dependent
     - .create-images
   image:
-    name: gcr.io/kaniko-project/executor:v1.19.2-debug
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
   variables:
     IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
