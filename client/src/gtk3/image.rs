@@ -92,6 +92,44 @@ impl Image {
 
         if did_assignment {
             self.update_history.add(draw.area());
+
+            #[cfg(feature = "draw-debug")]
+            {
+                let b = Box2D::new(
+                    draw.origin,
+                    draw.origin
+                        + Point::new(draw.pixels.len_of(axis::X), draw.pixels.len_of(axis::Y))
+                            .to_vector(),
+                );
+                for x in b.min.x..b.max.x {
+                    self.pixels[(b.min.y, x)] = Pixel32 {
+                        blue: 0,
+                        green: u8::MAX,
+                        red: 0,
+                        alpha: u8::MAX,
+                    };
+                    self.pixels[(b.max.y - 1, x)] = Pixel32 {
+                        blue: 0,
+                        green: u8::MAX,
+                        red: 0,
+                        alpha: u8::MAX,
+                    };
+                }
+                for y in b.min.y..b.max.y {
+                    self.pixels[(y, b.min.x)] = Pixel32 {
+                        blue: 0,
+                        green: u8::MAX,
+                        red: 0,
+                        alpha: u8::MAX,
+                    };
+                    self.pixels[(y, b.max.x - 1)] = Pixel32 {
+                        blue: 0,
+                        green: u8::MAX,
+                        red: 0,
+                        alpha: u8::MAX,
+                    };
+                }
+            }
         }
     }
 }
