@@ -291,8 +291,8 @@ impl PrometheusProxy {
 ///
 /// Sends metric data to a Prometheus Pushgateway
 ///
-/// Calls to [`new()`](PushgatewayExporter::new) may fail if there does not appear to be anything
-/// listening at `url`. Metric data pushed to a Pushgateway may become stale and continue to
+/// Calls to [`new()`](PushgatewayExporter::new) will fail if URL is unresolvable. Connection
+/// errors will warn. Metric data pushed to a Pushgateway may become stale and continue to
 /// persist even after the process shuts down due to loss of network connectivity or unexpected
 /// process termination. Stale metric data can be deleted from the Pushgateway using the web UI or
 /// the available `pg_clean.sh` included in the source tree. See the [Prometheus
@@ -310,10 +310,13 @@ pub struct PushgatewayExporter {
 
 impl PushgatewayExporter {
     pub fn new(url: String, job_name: String, id: u32) -> Result<Self> {
-        // Ensure we can connect to the Pushgateway
-        drop(TcpStream::connect(
-            Url::parse(&url)?.socket_addrs(|| None).unwrap().as_slice(),
-        )?);
+        // Ensure Pushgateway URL is resolvable, warn on failed connection
+        {
+            if let Err(e) = TcpStream::connect(Url::parse(&url)?.socket_addrs(|| None)?.as_slice())
+            {
+                warn!("Pushgateway Exporter failed to connect to {}: {}", url, e);
+            }
+        }
 
         let mut groupings = HashMap::new();
         groupings.insert("id".to_owned(), id.to_string());
@@ -635,6 +638,16 @@ mod test {
     #[test]
     fn pushgateway_exporter() {
         const JOB: &str = "pushgateway_unit_test";
+
+        // Pushgateway exporter can be initalized before server is running
+        {
+            let _pge = PushgatewayExporter::new(
+                format!("http://127.0.0.1:{}", 1234),
+                JOB.to_string(),
+                5678,
+            )
+            .expect("Pushgateway Exporter");
+        }
 
         let put_request: Arc<Mutex<String>> = Arc::new(Mutex::from(String::new()));
         let put_content: Arc<Mutex<String>> = Arc::new(Mutex::from(String::new()));
