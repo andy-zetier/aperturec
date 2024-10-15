@@ -340,7 +340,7 @@ package:create-rpm:
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
 
-package:push-deb:
+package:push:
   stage: package
   extends:
     - .runner-arch:independent
