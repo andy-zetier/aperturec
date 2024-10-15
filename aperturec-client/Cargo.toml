@@ -3,13 +3,14 @@ name = "aperturec-client"
 description = "ApertureC Client"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 [dependencies]
-aperturec-channel = { path = "../channel" }
-aperturec-graphics = { path = "../graphics" }
-aperturec-protocol = { path = "../protocol" }
-aperturec-state-machine = { path = "../state_machine" }
-aperturec-metrics = { path = "../metrics" }
+aperturec-channel = { path = "../aperturec-channel" }
+aperturec-graphics = { path = "../aperturec-graphics" }
+aperturec-protocol = { path = "../aperturec-protocol" }
+aperturec-state-machine = { path = "../aperturec-state-machine" }
+aperturec-metrics = { path = "../aperturec-metrics" }
 
 anyhow = "1.0"
 build_id = "0.2.1"
@@ -43,5 +44,11 @@ maintainer = "ApertureC Team <aperturec@zetier.com>"
 section = "x11"
 assets = [
   ["target/release/aperturec-client", "/usr/bin/aperturec-client", "755"],
-  ["packaging/debian/aperturec-client.desktop", "/usr/share/applications/aperturec-client.desktop", "644"],
+  ["packaging/aperturec-client.desktop", "/usr/share/applications/aperturec-client.desktop", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+  { source = "target/release/aperturec-client", dest = "/usr/bin/aperturec-client", mode = "755" },
+  { source = "packaging/aperturec-client.desktop", dest = "/usr/share/applications/aperturec-client.desktop", mode = "644" }
 ]

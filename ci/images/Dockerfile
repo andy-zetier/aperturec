@@ -24,6 +24,7 @@ FROM --platform=${ARCHITECTURE} base-rust-image as rust-image-debian
 RUN cargo install cargo-deb
 
 FROM --platform=${ARCHITECTURE} base-rust-image as rust-image-fedora
+RUN cargo install cargo-generate-rpm
 
 FROM --platform=${ARCHITECTURE} rust-image-${OS_VARIANT} as rust-image
 

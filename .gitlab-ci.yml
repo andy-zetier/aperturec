@@ -9,12 +9,12 @@ stages:
   - arm64
 
 .crates:package:
-  - client
-  - server
-.crates:no-extra-dependencies: "metrics,protocol,state_machine"
-.crates:fips-dependencies: "channel"
-.crates:server-dependencies: "server"
-.crates:client-dependencies: "client"
+  - aperturec-client
+  - aperturec-server
+.crates:no-extra-dependencies: "aperturec-metrics,aperturec-protocol,aperturec-state-machine"
+.crates:fips-dependencies: "aperturec-channel"
+.crates:server-dependencies: "aperturec-server"
+.crates:client-dependencies: "aperturec-client"
 
 .images:debian:
   - ubuntu:20.04
@@ -164,7 +164,7 @@ create-images:deploy-manifest:
   variables:
     IMAGE_TARGET: rust-image
   before_script:
-    - export CARGO_ARGS=`sed -e 's/^/-p aperturec-/g' -e 's/,/ -p aperturec-/g' -e 's/_/-/g' <<< $CRATES`
+    - export CARGO_ARGS=`sed -e 's/^/-p /g' -e 's/,/ -p /g' <<< $CRATES`
 
 cargo:check-build-test:
   stage: check-build-test
@@ -180,8 +180,8 @@ cargo:check-build-test:
     - RUST_BACKTRACE=1 cargo test $CARGO_ARGS
     - cargo build $CARGO_ARGS --release
     - |-
-      if [[ -f target/release/aperturec-$CRATES ]]; then
-        mv target/release/aperturec-$CRATES target/release/aperturec-$CRATES-$IMAGE_BASE-$ARCHITECTURE
+      if [[ -f target/release/$CRATES ]]; then
+        mv target/release/$CRATES target/release/$CRATES-$IMAGE_BASE-$ARCHITECTURE
       fi
     - git diff-index --quiet HEAD
   parallel:
@@ -194,11 +194,11 @@ cargo:check-build-test:
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: fips-capable-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: server
+      - CRATES: aperturec-server
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: client
+      - CRATES: aperturec-client
         IMAGE_BASE: !reference [.images:all]
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
@@ -206,7 +206,7 @@ cargo:check-build-test:
     - job: create-images:deploy-manifest
       optional: true
   artifacts:
-    paths: [target/release/aperturec-$CRATES-$IMAGE_BASE-$ARCHITECTURE]
+    paths: [target/release/$CRATES-$IMAGE_BASE-$ARCHITECTURE]
 
 cargo:check-build-windows-client:
   stage: check-build-test
@@ -220,10 +220,10 @@ cargo:check-build-windows-client:
     - mkdir test_executables
     - cargo test $CARGO_ARGS -q --no-run --message-format=json | jq -r 'select(.profile.test == true) | .filenames[]' | xargs -I {} cp {} test_executables/
     - cargo build $CARGO_ARGS --release
-    - mv target/x86_64-pc-windows-gnu/release/aperturec-$CRATES.exe .
+    - mv target/x86_64-pc-windows-gnu/release/$CRATES.exe .
     - git diff-index --quiet HEAD
   variables:
-    CRATES: client
+    CRATES: aperturec-client
     IMAGE_BASE: fedora:40
     IMAGE_TARGET: client-image-windows
     ARCHITECTURE: amd64
@@ -231,7 +231,7 @@ cargo:check-build-windows-client:
     - job: create-images:deploy-manifest
       optional: true
   artifacts:
-    paths: [test_executables, aperturec-$CRATES.exe]
+    paths: [test_executables, $CRATES.exe]
 
 cargo:doc:
   stage: doc
@@ -262,7 +262,7 @@ package:windows-client:
   script:
     - $CI_PROJECT_DIR/ci/scripts/create-windows-package.sh
   variables:
-    CRATES: client
+    CRATES: aperturec-client
     IMAGE_BASE: fedora:40
     IMAGE_TARGET: client-image-windows
     ARCHITECTURE: amd64
@@ -277,30 +277,66 @@ package:create-deb:
     - .cargo
     - .runner-arch:dependent
   script:
-    - mv target/release/aperturec-$CRATES-$IMAGE_BASE-$ARCHITECTURE target/release/aperturec-$CRATES
+    - mv target/release/$CRATES-$IMAGE_BASE-$ARCHITECTURE target/release/$CRATES
     - cargo deb $CARGO_ARGS -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID" --no-build -- --release
   artifacts:
-    paths: [target/*/*/aperturec-$CRATES_*_*.deb]
+    paths: [target/*/*/$CRATES_*_*.deb]
   needs:
     - job: cargo:check-build-test
       parallel:
         matrix:
-          - CRATES: server
+          - CRATES: aperturec-server
             IMAGE_BASE: !reference [.images:debian]
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
-          - CRATES: client
+          - CRATES: aperturec-client
             IMAGE_BASE: !reference [.images:debian]
             IMAGE_TARGET: client-image
             ARCHIECTURE: !reference [.architectures:all]
   parallel:
     matrix:
-      - CRATES: server
+      - CRATES: aperturec-server
         IMAGE_BASE: !reference [.images:debian]
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: client
+      - CRATES: aperturec-client
         IMAGE_BASE: !reference [.images:debian]
+        IMAGE_TARGET: client-image
+        ARCHITECTURE: !reference [.architectures:all]
+
+package:create-rpm:
+  stage: package
+  extends:
+    - .cargo
+    - .runner-arch:dependent
+  script:
+    - mv target/release/$CRATES-$IMAGE_BASE-$ARCHITECTURE target/release/$CRATES
+    - ID=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+    - VERSION_ID=$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+    - mkdir -p target/$ID/$VERSION_ID
+    - cargo generate-rpm $CARGO_ARGS -o ./target/$ID/$VERSION_ID/ -s "release=$CI_PIPELINE_IID"
+  artifacts:
+    paths: [target/*/*/$CRATES*.rpm]
+  needs:
+    - job: cargo:check-build-test
+      parallel:
+        matrix:
+          - CRATES: aperturec-server
+            IMAGE_BASE: !reference [.images:fedora]
+            IMAGE_TARGET: server-image
+            ARCHIECTURE: !reference [.architectures:all]
+          - CRATES: aperturec-client
+            IMAGE_BASE: !reference [.images:fedora]
+            IMAGE_TARGET: client-image
+            ARCHIECTURE: !reference [.architectures:all]
+  parallel:
+    matrix:
+      - CRATES: aperturec-server
+        IMAGE_BASE: !reference [.images:fedora]
+        IMAGE_TARGET: server-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - CRATES: aperturec-client
+        IMAGE_BASE: !reference [.images:fedora]
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
 
@@ -318,3 +354,4 @@ package:push-deb:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
   needs:
     - job: package:create-deb
+    - job: package:create-rpm

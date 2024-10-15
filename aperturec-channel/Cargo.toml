@@ -2,11 +2,12 @@
 name = "aperturec-channel"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 [dependencies]
-aperturec-protocol = { path = "../protocol" }
-aperturec-state-machine = { path = "../state_machine" }
-aperturec-metrics = { path = "../metrics" }
+aperturec-protocol = { path = "../aperturec-protocol" }
+aperturec-state-machine = { path = "../aperturec-state-machine" }
+aperturec-metrics = { path = "../aperturec-metrics" }
 
 anyhow = "1.0"
 bytes = "1.6"

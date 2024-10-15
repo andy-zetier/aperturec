@@ -3,13 +3,14 @@ name = "aperturec-server"
 description = "ApertureC Server"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 [dependencies]
-aperturec-channel = { path = "../channel" }
-aperturec-graphics = { path = "../graphics" }
-aperturec-protocol = { path = "../protocol" }
-aperturec-state-machine = { path = "../state_machine" }
-aperturec-metrics = { path = "../metrics" }
+aperturec-channel = { path = "../aperturec-channel" }
+aperturec-graphics = { path = "../aperturec-graphics" }
+aperturec-protocol = { path = "../aperturec-protocol" }
+aperturec-state-machine = { path = "../aperturec-state-machine" }
+aperturec-metrics = { path = "../aperturec-metrics" }
 
 anyhow = "1.0"
 clap = { version = "4.3", features = ["derive", "env", "string"] }
@@ -61,3 +62,8 @@ copyright = "2024, Zetier Inc."
 depends = "$auto, xvfb"
 maintainer = "ApertureC Team <aperturec@zetier.com>"
 section = "x11"
+
+[package.metadata.generate-rpm]
+assets = [
+  { source = "target/release/aperturec-server", dest = "/usr/bin/aperturec-server", mode = "755" }
+]
