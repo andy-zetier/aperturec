@@ -785,38 +785,30 @@ impl X {
 
 struct XEventStreamMux {
     txs: Arc<Mutex<Vec<mpsc::UnboundedSender<Arc<XEvent>>>>>,
-    _event_task: JoinHandle<Result<()>>,
-    _tx_task: JoinHandle<Result<()>>,
+    _task: JoinHandle<Result<()>>,
 }
 
 impl XEventStreamMux {
     fn new(conn: Arc<xcb::Connection>) -> XEventStreamMux {
-        let (event_task_tx, mut event_task_rx) = mpsc::unbounded_channel();
-
         let conn = conn.clone();
         let txs: Arc<Mutex<_>> = Arc::default();
         let tx_task_txs = txs.clone();
 
         XEventStreamMux {
             txs,
-            _event_task: tokio::task::spawn_blocking(move || loop {
-                let event = conn.wait_for_event()?;
-                event_task_tx.send(XEvent(event))?;
-                BackendEvent::inc();
-            }),
-            _tx_task: tokio::task::spawn(async move {
+            _task: tokio::task::spawn(async move {
                 loop {
-                    match event_task_rx.recv().await {
-                        Some(event) => {
-                            let arcd = Arc::new(event);
+                    let event = loop {
+                        if let Some(event) = conn.poll_for_event()? {
+                            break event;
+                        }
+                        time::sleep(Duration::from_micros(1)).await;
+                    };
+                    BackendEvent::inc();
+                    let arcd = Arc::new(XEvent(event));
 
-                            let mut txs = tx_task_txs.lock().expect("lock X mux txs");
-                            txs.retain(|tx| tx.send(arcd.clone()).is_ok());
-                        }
-                        None => {
-                            bail!("No more X events");
-                        }
-                    }
+                    let mut txs = tx_task_txs.lock().expect("lock X mux txs");
+                    txs.retain(|tx| tx.send(arcd.clone()).is_ok());
                 }
             }),
         }
@@ -862,17 +854,14 @@ impl XConnection {
         R: RequestWithReply + Debug,
         <R as xcb::Request>::Cookie: CookieWithReplyChecked,
     {
-        let inner = self.inner.clone();
-        let response = tokio::task::block_in_place(move || {
-            let cookie = inner.send_request(&req);
-            let reply = inner.wait_for_reply(cookie);
-            if let Err(e) = &reply {
-                error!("X returned an error for request {:?}: {}", req, e);
+        let cookie = self.inner.send_request(&req);
+        self.inner.flush()?;
+        loop {
+            if let Some(response) = self.inner.poll_for_reply(&cookie).transpose()? {
+                return Ok(response);
             }
-            reply
-        })?;
-
-        Ok(response)
+            time::sleep(Duration::from_micros(1)).await;
+        }
     }
 
     async fn checked_void_request<R>(&self, req: R) -> Result<()>
