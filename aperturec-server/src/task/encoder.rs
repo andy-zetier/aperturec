@@ -56,7 +56,7 @@ fn do_encode_optimize_contig<F: FnOnce(&[u8]) -> Result<Vec<u8>>>(
         unsafe {
             raw.set_len(size.area());
             f(slice::from_raw_parts(
-                raw.as_ptr() as *const Pixel24 as *const u8,
+                raw.as_ptr() as *const u8,
                 size.area() * mem::size_of::<Pixel24>(),
             ))
         }
@@ -119,14 +119,14 @@ async fn encode_jpegxl(raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
         }
     }
 
-    Ok(tokio::task::block_in_place(|| {
+    tokio::task::block_in_place(|| {
         do_encode_optimize_contig(raw_data, move |bytes| {
             Ok(encoder
                 .0
-                .encode::<u8, u8>(&bytes, width as u32, height as u32)?
+                .encode::<u8, u8>(bytes, width as u32, height as u32)?
                 .data)
         })
-    })?)
+    })
 }
 
 async fn encode(codec: Codec, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
@@ -151,6 +151,10 @@ async fn encode(codec: Codec, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u
     Ok(data)
 }
 
+pub enum Command {
+    UpdateArea(Box2D),
+}
+
 #[derive(Stateful, SelfTransitionable, Debug)]
 #[state(S)]
 pub struct Task<S: State> {
@@ -164,6 +168,7 @@ pub struct Created {
     area: Box2D,
     frame_rx: mpsc::Receiver<Arc<Frame>>,
     mm_tx: mpsc::Sender<mm_s2c::Message>,
+    command_rx: mpsc::Receiver<Command>,
 }
 
 #[derive(State, Debug)]
@@ -182,16 +187,21 @@ impl Task<Created> {
         codec: Codec,
         frame_rx: mpsc::Receiver<Arc<Frame>>,
         mm_tx: mpsc::Sender<mm_s2c::Message>,
-    ) -> Self {
-        Task {
-            id,
-            state: Created {
-                codec,
-                area,
-                frame_rx,
-                mm_tx,
+    ) -> (Self, mpsc::Sender<Command>) {
+        let (command_tx, command_rx) = mpsc::channel(1);
+        (
+            Task {
+                id,
+                state: Created {
+                    codec,
+                    area,
+                    frame_rx,
+                    mm_tx,
+                    command_rx,
+                },
             },
-        }
+            command_tx,
+        )
     }
 }
 
@@ -206,87 +216,96 @@ impl Transitionable<Running> for Task<Created> {
 
     fn transition(mut self) -> Self::NextStateful {
         let task: JoinHandle<Result<()>> = task::spawn(async move {
-            while let Some(frame) = self.state.frame_rx.recv().await {
-                let relevant = frame
-                    .buffers
-                    .iter()
-                    .filter_map(|buffer| {
-                        self.state
-                            .area
-                            .intersection(&buffer.area)
-                            .map(|intersection| (buffer, intersection))
-                    })
-                    .collect::<Vec<_>>();
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(command) = self.state.command_rx.recv() => {
+                        let Command::UpdateArea(area) = command;
+                        debug!("[encoder {}] New encoder area: {:?} -> {:?}", self.id, self.state.area, area);
+                        self.state.area = area;
+                    },
+                    Some(frame) = self.state.frame_rx.recv() => {
+                        let relevant = frame
+                            .buffers
+                            .iter()
+                            .filter_map(|buffer| {
+                                self.state
+                                    .area
+                                    .intersection(&buffer.area)
+                                    .map(|intersection| (buffer, intersection))
+                            })
+                        .collect::<Vec<_>>();
 
-                if relevant.is_empty() {
-                    self.state
-                        .mm_tx
-                        .send(mm_s2c::Message::Terminal(mm::EmptyFrameTerminal {
-                            frame: frame.id as u64,
-                            encoder: self.id as u32,
-                        }))
-                        .await?;
-                    trace!(
-                        "Dispatched frame/encoder/sequence {}/{}/<empty>",
-                        frame.id,
-                        self.id
-                    );
-                } else {
-                    let mut encodings = FuturesUnordered::new();
-                    for (buffer, intersection) in &relevant {
-                        encodings.push(async move {
-                            let buffer_relative_area = intersection
-                                .to_i64()
-                                .translate(-buffer.area.min.to_vector().to_i64())
-                                .to_usize();
-                            let enc_relative_area = intersection
-                                .to_i64()
-                                .translate(-self.state.area.min.to_vector().to_i64())
-                                .to_usize();
-
-                            let pixmap = buffer.pixels.as_ndarray();
-                            let pixels = pixmap.slice(buffer_relative_area.as_slice());
-                            let data = encode(self.state.codec, pixels).await?;
-                            Ok::<_, anyhow::Error>((data, enc_relative_area))
-                        });
-                    }
-
-                    let mut sequence = 0;
-                    while let Some(Ok((data, enc_relative_area))) = encodings.next().await {
-                        let frag = mm::FrameFragment {
-                            frame: frame.id as u64,
-                            encoder: self.id as u32,
-                            sequence: sequence as u32,
-                            terminal: sequence == relevant.len() - 1,
-                            codec: self.state.codec.into(),
-                            location: Some(AcLocation::new(
-                                enc_relative_area.min.x as u64,
-                                enc_relative_area.min.y as u64,
-                            )),
-                            dimension: Some(AcDimension::new(
-                                enc_relative_area.width() as u64,
-                                enc_relative_area.height() as u64,
-                            )),
-                            data,
-                        };
-
-                        self.state
-                            .mm_tx
-                            .send(mm_s2c::Message::Fragment(frag))
+                        if relevant.is_empty() {
+                            self.state
+                                .mm_tx
+                                .send(mm_s2c::Message::Terminal(mm::EmptyFrameTerminal {
+                                    frame: frame.id as u64,
+                                    encoder: self.id as u32,
+                                }))
                             .await?;
+                            trace!(
+                                "Dispatched frame/encoder/sequence {}/{}/<empty>",
+                                frame.id,
+                                self.id
+                            );
+                        } else {
+                            let mut encodings = FuturesUnordered::new();
+                            for (buffer, intersection) in &relevant {
+                                encodings.push(async move {
+                                    let buffer_relative_area = intersection
+                                        .to_i64()
+                                        .translate(-buffer.area.min.to_vector().to_i64())
+                                        .to_usize();
+                                    let enc_relative_area = intersection
+                                        .to_i64()
+                                        .translate(-self.state.area.min.to_vector().to_i64())
+                                        .to_usize();
 
-                        trace!(
-                            "Dispatched frame/encoder/sequence {}/{}/{}",
-                            frame.id,
-                            self.id,
-                            sequence
-                        );
+                                    let pixmap = buffer.pixels.as_ndarray();
+                                    let pixels = pixmap.slice(buffer_relative_area.as_slice());
+                                    let data = encode(self.state.codec, pixels).await?;
+                                    Ok::<_, anyhow::Error>((data, enc_relative_area))
+                                });
+                            }
 
-                        sequence += 1;
+                            let mut sequence = 0;
+                            while let Some(Ok((data, enc_relative_area))) = encodings.next().await {
+                                let frag = mm::FrameFragment {
+                                    frame: frame.id as u64,
+                                    encoder: self.id as u32,
+                                    sequence: sequence as u32,
+                                    terminal: sequence == relevant.len() - 1,
+                                    codec: self.state.codec.into(),
+                                    location: Some(AcLocation::new(
+                                            enc_relative_area.min.x as u64,
+                                            enc_relative_area.min.y as u64,
+                                    )),
+                                    dimension: Some(AcDimension::new(
+                                            enc_relative_area.width() as u64,
+                                            enc_relative_area.height() as u64,
+                                    )),
+                                    data,
+                                };
+
+                                self.state
+                                    .mm_tx
+                                    .send(mm_s2c::Message::Fragment(frag))
+                                    .await?;
+
+                                trace!(
+                                    "Dispatched frame/encoder/sequence {}/{}/{}",
+                                    frame.id,
+                                    self.id,
+                                    sequence
+                                );
+
+                                sequence += 1;
+                            }
+                        }
                     }
                 }
             }
-            bail!("[encoder {}] frame stream exhausted", self.id)
         });
 
         Task {

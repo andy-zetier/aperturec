@@ -12,7 +12,7 @@ use ndarray::{prelude::*, AssignElem};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
@@ -29,6 +29,12 @@ pub struct Frame {
     pub buffers: Vec<SubframeBuffer<Pixel24Map>>,
 }
 
+#[derive(Debug)]
+pub struct NewResolution {
+    pub resolution: Size,
+    pub notify_complete_tx: oneshot::Sender<()>,
+}
+
 #[derive(Stateful, SelfTransitionable)]
 #[state(S)]
 pub struct Task<S: State> {
@@ -37,9 +43,10 @@ pub struct Task<S: State> {
 
 #[derive(State)]
 pub struct Created<B: Backend> {
-    resolution: Size,
+    initial_resolution: Size,
     frame_txs: Vec<mpsc::Sender<Arc<Frame>>>,
     damage_rx: mpsc::UnboundedReceiver<SubframeBuffer<B::PixelMap>>,
+    resolution_rx: mpsc::Receiver<NewResolution>,
 }
 
 #[derive(State, Debug)]
@@ -55,10 +62,11 @@ pub struct Terminated;
 pub struct Channels<B: Backend> {
     pub frame_rxs: Vec<mpsc::Receiver<Arc<Frame>>>,
     pub damage_tx: mpsc::UnboundedSender<SubframeBuffer<B::PixelMap>>,
+    pub resolution_tx: mpsc::Sender<NewResolution>,
 }
 
 impl<B: Backend> Task<Created<B>> {
-    pub fn new(resolution: Size, num_encoders: usize) -> (Self, Channels<B>) {
+    pub fn new(initial_resolution: Size, num_encoders: usize) -> (Self, Channels<B>) {
         let (frame_txs, frame_rxs) = (0..num_encoders)
             .map(|_| {
                 let (tx, rx) = mpsc::channel(1);
@@ -66,18 +74,21 @@ impl<B: Backend> Task<Created<B>> {
             })
             .collect();
         let (damage_tx, damage_rx) = mpsc::unbounded_channel();
+        let (resolution_tx, resolution_rx) = mpsc::channel(1);
 
         (
             Task {
                 state: Created {
-                    resolution,
+                    initial_resolution,
                     frame_txs,
                     damage_rx,
+                    resolution_rx,
                 },
             },
             Channels {
                 frame_rxs,
                 damage_tx,
+                resolution_tx,
             },
         )
     }
@@ -99,7 +110,22 @@ where
         let mut js = JoinSet::new();
         let curr_rt = Handle::current();
 
-        let tracking_buffer = Arc::new(Mutex::new(TrackingBuffer::new(self.state.resolution)));
+        let tb_size = self.state.initial_resolution;
+        let tracking_buffer = Arc::new(Mutex::new(TrackingBuffer::new(tb_size)));
+
+        {
+            let tracking_buffer = tracking_buffer.clone();
+            js.spawn_on(
+                async move {
+                    while let Some(nr) = self.state.resolution_rx.recv().await {
+                        tracking_buffer.lock().unwrap().resize(nr.resolution);
+                        nr.notify_complete_tx.send(()).expect("Failed send");
+                    }
+                    bail!("failed resolution recv")
+                },
+                &curr_rt,
+            );
+        }
 
         {
             let tracking_buffer = tracking_buffer.clone();
@@ -263,6 +289,13 @@ where
             damage_tx,
             _pixel_map: PhantomData,
         }
+    }
+
+    fn resize(&mut self, resolution: Size) {
+        let shape = (resolution.height, resolution.width);
+        self.data = Array2::from_elem(shape, Pixel24::default());
+        self.size = resolution;
+        self.clear();
     }
 
     pub fn update(&mut self, framebuffer_data: SubframeBuffer<BackendPixelMap>) {

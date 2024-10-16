@@ -21,6 +21,7 @@ use derive_builder::Builder;
 use futures::prelude::*;
 use futures::stream::{FuturesUnordered, StreamExt};
 use ndarray::AssignElem;
+use std::collections::BTreeMap;
 use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -529,13 +530,17 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
         trace!("Resolution set to {:?}", resolution);
         EncoderCount::update(encoder_areas.len() as f64);
 
-        let decoder_areas: Vec<_> = encoder_areas
+        let decoder_areas: BTreeMap<u32, _> = encoder_areas
             .iter()
             .enumerate()
-            .map(|(id, (b, ..))| cm::DecoderArea {
-                decoder_id: id as u32,
-                location: Some(Location::new(b.min.x as u64, b.min.y as u64)),
-                dimension: Some(Dimension::new(b.width() as u64, b.height() as u64)),
+            .map(|(id, (b, ..))| {
+                (
+                    id as u32,
+                    DecoderArea {
+                        location: Some(Location::new(b.min.x as u64, b.min.y as u64)),
+                        dimension: Some(Dimension::new(b.width() as u64, b.height() as u64)),
+                    },
+                )
             })
             .collect();
         let client_id: u64 = rand::random();
@@ -556,10 +561,13 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             cm::ServerInitBuilder::default()
                 .client_id(client_id)
                 .server_name(self.config.name.clone())
-                .decoder_areas(decoder_areas)
-                .display_size(Dimension::new(
-                    resolution.width as u64,
-                    resolution.height as u64,
+                .display_configuration(DisplayConfiguration::new(
+                    0,
+                    Some(Dimension::new(
+                        resolution.width as u64,
+                        resolution.height as u64
+                    )),
+                    decoder_areas
                 ))
                 .build(),
             recover_self!(cc, ec, mc, listener, backend.into_root()),
@@ -612,7 +620,7 @@ where
         let (mc_handler_task, mc_handler_channels) =
             mc_handler::Task::new(self.state.mc, rl_handle);
 
-        let encoder_tasks = self
+        let (encoder_tasks, encoder_command_txs): (Vec<_>, Vec<_>) = self
             .state
             .encoder_areas
             .iter()
@@ -627,13 +635,15 @@ where
                     mc_handler_channels.mm_tx.clone(),
                 )
             })
-            .collect::<Vec<_>>();
+            .unzip();
 
         let backend_task = backend::Task::<backend::Created<B>>::new(
             self.state.backend,
             ec_handler_channels.event_rx,
-            frame_sync_channels.damage_tx,
             ec_handler_channels.to_send_tx.clone(),
+            frame_sync_channels.damage_tx,
+            frame_sync_channels.resolution_tx,
+            encoder_command_txs,
         );
 
         let backend_task = try_transition_inner_recover_async!(
@@ -1046,15 +1056,20 @@ mod test {
         let (_, mut client_cc, ..) = server_client_authenticated().await;
         let msg = client_cc.receive().await.expect("receiving server init");
         let server_init = if let cm_s2c::Message::ServerInit(server_init) = msg {
-            assert_eq!(server_init.decoder_areas.len(), 2);
             server_init
         } else {
             panic!("non server init message");
         };
 
-        assert_eq!(server_init.decoder_areas.len(), 2);
+        let dc = server_init
+            .display_configuration
+            .expect("display_configuration");
+
+        assert_eq!(dc.areas.keys().len(), 2);
         assert_eq!(
-            server_init.decoder_areas[0]
+            dc.areas
+                .get(&0)
+                .expect("area 0")
                 .dimension
                 .as_ref()
                 .expect("dimension")
@@ -1062,7 +1077,9 @@ mod test {
             512
         );
         assert_eq!(
-            server_init.decoder_areas[1]
+            dc.areas
+                .get(&1)
+                .expect("area 1")
                 .dimension
                 .as_ref()
                 .expect("dimension")
@@ -1070,7 +1087,9 @@ mod test {
             512
         );
         assert_eq!(
-            server_init.decoder_areas[0]
+            dc.areas
+                .get(&0)
+                .expect("area 0")
                 .dimension
                 .as_ref()
                 .expect("dimension")
@@ -1078,7 +1097,9 @@ mod test {
             768
         );
         assert_eq!(
-            server_init.decoder_areas[1]
+            dc.areas
+                .get(&1)
+                .expect("area 1")
                 .dimension
                 .as_ref()
                 .expect("dimension")
@@ -1086,7 +1107,9 @@ mod test {
             768
         );
         assert_eq!(
-            server_init.decoder_areas[0]
+            dc.areas
+                .get(&0)
+                .expect("area 0")
                 .location
                 .as_ref()
                 .expect("location")
@@ -1094,7 +1117,9 @@ mod test {
             0
         );
         assert_eq!(
-            server_init.decoder_areas[1]
+            dc.areas
+                .get(&1)
+                .expect("area 1")
                 .location
                 .as_ref()
                 .expect("location")
@@ -1102,7 +1127,9 @@ mod test {
             512
         );
         assert_eq!(
-            server_init.decoder_areas[0]
+            dc.areas
+                .get(&0)
+                .expect("area 0")
                 .location
                 .as_ref()
                 .expect("location")
@@ -1110,28 +1137,16 @@ mod test {
             0
         );
         assert_eq!(
-            server_init.decoder_areas[1]
+            dc.areas
+                .get(&1)
+                .expect("area 1")
                 .location
                 .as_ref()
                 .expect("location")
                 .y_position,
             0
         );
-        assert_eq!(
-            server_init
-                .display_size
-                .as_ref()
-                .expect("display_size")
-                .width,
-            1024
-        );
-        assert_eq!(
-            server_init
-                .display_size
-                .as_ref()
-                .expect("display_size")
-                .height,
-            768
-        );
+        assert_eq!(dc.display_size.as_ref().expect("display_size").width, 1024);
+        assert_eq!(dc.display_size.as_ref().expect("display_size").height, 768);
     }
 }

@@ -12,7 +12,6 @@ use std::env;
 use std::fs;
 use std::iter;
 use std::path::PathBuf;
-use std::time::Duration;
 use sysinfo::{CpuRefreshKind, RefreshKind, SystemExt};
 use tracing::*;
 use tracing_subscriber::EnvFilter;
@@ -70,10 +69,6 @@ struct Args {
     /// value of 0 uses the number of CPU cores available.
     #[arg(short, long, default_value_t = 0)]
     decoder_max: u16,
-
-    /// Maximum frames per second.
-    #[arg(long = "fps", default_value_t = 30)]
-    fps_max: u16,
 
     /// Log metric data to a CSV file at the provided path
     #[arg(long, default_value = None)]
@@ -136,7 +131,7 @@ fn args_from_uri(uri: &str) -> Result<Args> {
         parsed_uri.scheme()
     );
     ensure!(parsed_uri.username() == "", "URI provides username");
-    ensure!(parsed_uri.fragment() == None, "URI provides fragment");
+    ensure!(parsed_uri.fragment().is_none(), "URI provides fragment");
 
     let mut host = parsed_uri
         .host_str()
@@ -207,7 +202,6 @@ fn main() -> Result<()> {
         .win_height(height)
         .win_width(width)
         .temp_id(args.temp_client_id)
-        .max_fps(Duration::from_secs_f32(1.0 / (args.fps_max as f32)))
         .allow_insecure_connection(args.insecure);
     if let Some(program_cmdline) = args.program_cmdline {
         config_builder.program_cmdline(program_cmdline);

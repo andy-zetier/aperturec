@@ -2,7 +2,6 @@ syntax = "proto3";
 
 package media;
 import "common.proto";
-import "google/protobuf/timestamp.proto";
 
 message FrameFragment {
   uint64 frame = 1;

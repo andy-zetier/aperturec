@@ -1,6 +1,7 @@
 use crate::client::{
-    ControlMessage, CursorData, EventMessage, GoodbyeMessageBuilder, KeyEventMessageBuilder,
-    MouseButtonEventMessageBuilder, PointerEventMessageBuilder, UiMessage,
+    ControlMessage, CursorData, DisplayConfig, DisplayEventMessageBuilder, EventMessage,
+    GoodbyeMessageBuilder, KeyEventMessageBuilder, MouseButtonEventMessageBuilder,
+    PointerEventMessageBuilder, UiMessage,
 };
 use crate::gtk3::image::Image;
 
@@ -30,6 +31,8 @@ pub struct ClientSideItcChannels {
     pub notify_control_tx: Sender<ControlMessage>,
     pub notify_event_rx: Receiver<EventMessage>,
     pub notify_event_tx: Sender<EventMessage>,
+    pub notify_media_rx: Receiver<DisplayConfig>,
+    pub notify_media_tx: Sender<DisplayConfig>,
     pub img_rx: Receiver<Image>,
 }
 
@@ -58,6 +61,7 @@ impl ItcChannels {
 
         let (notify_control_tx, notify_control_rx) = unbounded();
         let (notify_event_tx, notify_event_rx) = unbounded();
+        let (notify_media_tx, notify_media_rx) = unbounded();
 
         let (glib_img_tx, glib_img_rx) = glib::MainContext::channel(glib::Priority::default());
 
@@ -71,6 +75,8 @@ impl ItcChannels {
                 notify_control_tx: notify_control_tx.clone(),
                 notify_event_rx,
                 notify_event_tx: notify_event_tx.clone(),
+                notify_media_rx,
+                notify_media_tx: notify_media_tx.clone(),
                 img_rx,
             },
             gtk_half: GtkSideItcChannels {
@@ -202,9 +208,8 @@ pub struct GtkUi;
 impl GtkUi {
     pub fn run_ui(
         itc: GtkSideItcChannels,
-        width: i32,
-        height: i32,
-        fps: Duration,
+        initial_width: i32,
+        initial_height: i32,
         decoder_areas: &[Box2D],
     ) {
         let app = gtk::Application::builder()
@@ -215,14 +220,14 @@ impl GtkUi {
         // Need to copy decoder vector
         let decoder_areas = decoder_areas.to_vec();
         debug!(
-            "GTK UI starting with {}x{} window @ {:?} FPS. {:?}",
-            width, height, fps, &decoder_areas
+            "GTK UI starting with {}x{} window, {:?}",
+            initial_width, initial_height, &decoder_areas
         );
 
         let itc = Cell::new(Some(itc));
         app.connect_activate(move |app| {
             if let Some(itc) = itc.take() {
-                build_ui(app, itc, width, height)
+                build_ui(app, itc, initial_width, initial_height)
             }
         });
 
@@ -233,12 +238,20 @@ impl GtkUi {
     }
 }
 
-fn init_image(size: Size) -> Image {
-    let mut image = Image::new(size);
+fn init_image_black(size: Size, display_config_id: u64) -> Image {
+    init_image_rgb(size, display_config_id, 0.0, 0.0, 0.0)
+}
+
+fn init_image_green(size: Size, display_config_id: u64) -> Image {
+    init_image_rgb(size, display_config_id, 0.0, 1.0, 0.0)
+}
+
+fn init_image_rgb(size: Size, display_config_id: u64, red: f64, green: f64, blue: f64) -> Image {
+    let mut image = Image::new(size, display_config_id);
 
     image.with_surface(|surface| {
         let cr = Context::new(surface).expect("GTK failed to create Cairo ctx!");
-        cr.set_source_rgb(0., 1., 0.);
+        cr.set_source_rgb(red, green, blue);
         cr.paint().expect("GTK invalid Cairo surface state");
     });
 
@@ -260,11 +273,16 @@ fn render_image(cr: &Context, image: &ImageSurface) {
     cr.fill().expect("cairo fill");
 }
 
-fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height: i32) {
+fn build_ui(
+    app: &gtk::Application,
+    itc: GtkSideItcChannels,
+    initial_width: i32,
+    initial_height: i32,
+) {
     let window = ApplicationWindow::builder()
         .application(app)
-        .default_width(width)
-        .default_height(height)
+        .default_width(initial_width)
+        .default_height(initial_height)
         .resizable(true)
         .title("ApertureC Client")
         .build();
@@ -276,7 +294,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
     scrolled_window.add(&area);
     window.add(&scrolled_window);
 
-    area.set_size_request(width, height);
+    area.set_size_request(initial_width, initial_height);
     area.set_can_focus(true);
     area.add_events(
         EventMask::KEY_PRESS_MASK
@@ -288,12 +306,15 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
             | EventMask::FOCUS_CHANGE_MASK,
     );
 
+    window.add(&area);
+
     //
     // Setup Images
     //
-
-    let image = init_image(Size::new(width as usize, height as usize));
-    let _ = itc.img_tx.send(image.clone());
+    let image = init_image_green(
+        Size::new(initial_width as usize, initial_height as usize),
+        0,
+    );
 
     let workspace = Rc::new((RefCell::new(image), itc.img_tx));
 
@@ -334,6 +355,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
     let scroll_press_tx = itc.notify_event_tx.clone();
     let pointer_motion_tx = itc.notify_event_tx.clone();
     let lock_state_tx = itc.notify_event_tx.clone();
+    let window_resize_tx = itc.notify_event_tx.clone();
     let notify_control_tx = itc.notify_control_tx.clone();
 
     //
@@ -347,6 +369,12 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
     let lock_state = Rc::new(Cell::new(LockState::get_current()));
     let ls_in = lock_state.clone();
     let ls_out = lock_state.clone();
+
+    //
+    // Setup display size tracking
+    //
+    let last_display_size = Rc::new(RefCell::new((initial_width as u32, initial_height as u32)));
+    let sa_last_display_size = last_display_size.clone();
 
     //
     // Setup keyboard tracking
@@ -484,9 +512,6 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
         let pos = Point::new(event.position().0 as usize, event.position().1 as usize);
         lm_motion.set(pos);
 
-        // Motion logging is *very* noisy
-        //trace!("GTK MotionEvent: {:?}", pos);
-
         pointer_motion_tx
             .send(EventMessage::PointerEventMessage(
                 PointerEventMessageBuilder::default()
@@ -546,6 +571,43 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
         gtk::Inhibit(false)
     });
 
+    let resize_timeout = Rc::new(RefCell::new(None::<glib::source::SourceId>));
+
+    area.connect_size_allocate(glib::clone!(@strong window => move |_, allocation| {
+        let new_size = (
+            allocation.width().try_into().unwrap(),
+            allocation.height().try_into().unwrap()
+        );
+
+        if let Some(source_id) = resize_timeout.borrow_mut().take() {
+            source_id.remove();
+        }
+
+        if new_size == *sa_last_display_size.borrow() {
+            return;
+        }
+
+        *sa_last_display_size.borrow_mut() = new_size;
+
+        let timeout = resize_timeout.clone();
+        let tx = window_resize_tx.clone();
+
+        const RESIZE_TIMER : Duration = Duration::from_millis(600);
+        *resize_timeout.borrow_mut() = Some(glib::source::timeout_add_local(RESIZE_TIMER, move || {
+            debug!("New size: {:?}", new_size);
+            tx.send(EventMessage::DisplayEventMessage(
+                DisplayEventMessageBuilder::default()
+                    .size(new_size)
+                    .build()
+                    .expect("GTK failed to build DisplayEventMessage!"),
+            ))
+            .unwrap_or_else(|err| warn!("GTK failed to tx DisplayEventMessage: {}", err));
+
+            *timeout.borrow_mut() = None;
+            glib::source::Continue(false)
+        }));
+    }));
+
     window.connect_delete_event(move |_, _| {
         _ = notify_control_tx.send(ControlMessage::UiClosed(
             GoodbyeMessageBuilder::default()
@@ -564,8 +626,15 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
 
     itc.img_rx.attach(
         None,
-        glib::clone!(@strong area => move |updated_img| {
+        glib::clone!(@strong area, @strong window, @strong workspace => move |updated_img| {
             let (ref image, ref tx) = *workspace;
+
+            if updated_img.display_config_id < image.borrow().display_config_id {
+                debug!("GTK Dropping Image with DCI {:?} (< {:?})",
+                    updated_img.display_config_id,
+                    image.borrow().display_config_id);
+                return glib::source::Continue(true);
+            }
 
             //
             // Replace the stale Image with the new one. The data in the images vector will be used
@@ -573,35 +642,24 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
             //
             let mut stale_img = image.replace(updated_img);
 
-            //
-            // TODO: Drawing requests should be limited to whatever our FPS cap is (passed in as
-            // `_fps`). There is still some work to do here to figure out how best to implement
-            // this. For now, queue drawing requests as fast as we can.
-            //
             for updated_area in &image.borrow().update_history {
                 let rect = updated_area.to_rect();
                 area.queue_draw_area(
                     rect.origin.x as i32,
                     rect.origin.y as i32,
                     rect.size.width as i32,
-                    rect.size.height as i32,
+                    rect.size.height as i32
                 );
             }
 
-            // Copy updated areas from the current frame to the stale frame
-            stale_img
-                .copy_updates(&image.borrow())
-                .unwrap_or_else(|err| warn!("GTK Failed to copy Image updates: {}", err));
-
-            tx.send(stale_img)
-                .unwrap_or_else(|err| warn!("GTK failed to send image to client: {}", err));
-
-            // Image swap logging is *very* noisy
-            /*trace!(
-                "GTK image update from decoder_{} : {:?}",
-                decoder_id,
-                origin
-            );*/
+            if let Err(err) = stale_img.copy_updates(&image.borrow()) {
+                error!("GTK Failed to copy Image updates: {}, dropping Image with DCI {:?}",
+                    err,
+                    stale_img.display_config_id);
+            } else {
+                tx.send(stale_img)
+                    .unwrap_or_else(|err| warn!("GTK failed to send image to client: {}", err));
+            }
 
             glib::source::Continue(true)
         }),
@@ -609,7 +667,7 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
 
     itc.ui_rx.attach(
         None,
-        glib::clone!(@strong window => move |msg| {
+        glib::clone!(@strong window, @strong workspace => move |msg| {
             match msg {
                 UiMessage::Quit(msg) => {
                     debug!("GTK received shutdown notification: {}", msg);
@@ -646,6 +704,26 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
                         None => warn!("No cursor for ID {}. Ignoring", id),
                     }
                 }
+                UiMessage::DisplayChange { dc_id, display_size } => {
+                    let (ref image, ref tx) = *workspace;
+
+                    //
+                    // Re-create Images with new display_size. Set to render and send clone to
+                    // client
+                    //
+                    let new_image = init_image_black(display_size, dc_id);
+                    image.replace(new_image.clone());
+                    tx.send(new_image)
+                        .unwrap_or_else(|err| warn!("GTK failed to send image to client: {}", err));
+
+                    *last_display_size.borrow_mut() = (
+                        display_size.width.try_into().unwrap(),
+                        display_size.height.try_into().unwrap()
+                    );
+
+                    window.resize(display_size.width.try_into().unwrap(), display_size.height.try_into().unwrap());
+                    window.queue_draw();
+                }
             }
             glib::source::Continue(true)
         }),
@@ -654,12 +732,15 @@ fn build_ui(app: &gtk::Application, itc: GtkSideItcChannels, width: i32, height:
     //
     // Set to fullscreen
     //
-    if get_fullscreen_dims() == (width, height) {
-        window.set_default_width(width / 2);
-        window.set_default_height(height / 2);
+    if get_fullscreen_dims() == (initial_width, initial_height) {
+        window.set_default_width(initial_width / 2);
+        window.set_default_height(initial_height / 2);
         window.fullscreen();
     }
 
-    debug!("GTK UI built, showing {}x{} window", width, height);
+    debug!(
+        "GTK UI built, showing {}x{} window",
+        initial_width, initial_height
+    );
     window.show_all()
 }

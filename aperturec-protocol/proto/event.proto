@@ -66,5 +66,6 @@ message ServerToClient {
   oneof message {
     CursorChange cursor_change = 1;
     CursorImage cursor_image = 2;
+    common.DisplayConfiguration display_configuration = 3;
   }
 }

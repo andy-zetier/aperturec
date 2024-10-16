@@ -1,6 +1,9 @@
 use crate::backend::{Backend, Event, SwapableBackend};
-use crate::task::frame_sync::SubframeBuffer;
+use crate::task::encoder;
+use crate::task::frame_sync::{NewResolution, SubframeBuffer};
 
+use aperturec_graphics::{partition::partition, prelude::*};
+use aperturec_protocol::common::*;
 use aperturec_protocol::event::{self as em, server_to_client as em_s2c};
 use aperturec_state_machine::*;
 
@@ -9,7 +12,7 @@ use futures::StreamExt;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
@@ -25,8 +28,10 @@ pub struct Created<B: Backend> {
     ct: CancellationToken,
     backend: SwapableBackend<B>,
     event_rx: mpsc::Receiver<Event>,
+    event_tx: mpsc::Sender<em_s2c::Message>,
     damage_tx: mpsc::UnboundedSender<SubframeBuffer<B::PixelMap>>,
-    cursor_tx: mpsc::Sender<em_s2c::Message>,
+    resolution_tx: mpsc::Sender<NewResolution>,
+    encoder_command_txs: Vec<mpsc::Sender<encoder::Command>>,
 }
 
 #[derive(State, Debug)]
@@ -55,16 +60,20 @@ impl<B: Backend> Task<Created<B>> {
     pub fn new(
         backend: SwapableBackend<B>,
         event_rx: mpsc::Receiver<Event>,
+        event_tx: mpsc::Sender<em_s2c::Message>,
         damage_tx: mpsc::UnboundedSender<SubframeBuffer<B::PixelMap>>,
-        cursor_tx: mpsc::Sender<em_s2c::Message>,
+        resolution_tx: mpsc::Sender<NewResolution>,
+        encoder_command_txs: Vec<mpsc::Sender<encoder::Command>>,
     ) -> Task<Created<B>> {
         Task {
             state: Created {
                 ct: CancellationToken::new(),
                 backend,
                 event_rx,
+                event_tx,
                 damage_tx,
-                cursor_tx,
+                resolution_tx,
+                encoder_command_txs,
             },
         }
     }
@@ -103,12 +112,78 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
 
         let ct = self.state.ct.clone();
         let task = tokio::task::spawn(async move {
+            let mut display_config_id = 0;
             let res = 'select: loop {
                 tokio::select! {
                     biased;
                     _ = ct.cancelled() => break Ok(()),
                     Some(event) = self.state.event_rx.recv() => {
-                        if let Err(e) = self.state.backend.notify_event(event).await {
+                        if let Event::Display { ref size } = event {
+
+                            //
+                            // Partition the new resolution across all available encoders
+                            //
+                            let size = Size::new(size.width as usize, size.height as usize);
+                            let (resolution, partitions) = partition(
+                                &size,
+                                self.state.encoder_command_txs.len(),
+                            );
+
+                            //
+                            // Try to set the backend resolution
+                            //
+                            if let Err(e) = self.state.backend.set_resolution(&resolution).await {
+                                warn!("Failed to set resolution {:?}: {:?}", resolution, e);
+                                continue;
+                            }
+
+                            //
+                            // Notify Encoders of new partition layout
+                            //
+                            for (tx, part) in self.state.encoder_command_txs.iter().zip(&partitions) {
+                                if let Err(e) = tx.send(encoder::Command::UpdateArea(*part)).await {
+                                    break 'select Err(e.into());
+                                }
+                            }
+
+                            //
+                            // Notify tracking buffer of resolution change and await confirmation
+                            //
+                            let (notify_complete_tx, notify_complete_rx) = oneshot::channel();
+                            if let Err(e) = self.state.resolution_tx.send(NewResolution {
+                                resolution,
+                                notify_complete_tx,
+                            }).await {
+                                break Err(e.into());
+                            }
+
+                            if let Err(e) = notify_complete_rx.await {
+                                break Err(e.into());
+                            }
+
+                            //
+                            // Notify Client of successful resolution change
+                            //
+                            let areas = partitions
+                                .iter()
+                                .enumerate()
+                                .map(|(id, b)| (id as u32, DecoderArea {
+                                    location: Some(Location::new(b.min.x as u64, b.min.y as u64)),
+                                    dimension: Some(Dimension::new(b.width() as u64, b.height() as u64)),
+                                }))
+                            .collect();
+
+                            display_config_id += 1;
+                            let msg = em_s2c::Message::DisplayConfiguration(DisplayConfiguration {
+                                id: display_config_id,
+                                display_size: Some(Dimension::new(resolution.width as u64, resolution.height as u64)),
+                                areas,
+                            });
+
+                            if let Err(err) = self.state.event_tx.send(msg).await {
+                                break Err(err.into())
+                            }
+                        } else if let Err(e) = self.state.backend.notify_event(event).await {
                             break Err(e);
                         }
                     },
@@ -182,7 +257,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                         };
 
                         if id != last_cursor_id {
-                            if let Err(err) = self.state.cursor_tx.send(msg).await {
+                            if let Err(err) = self.state.event_tx.send(msg).await {
                                 break 'select Err(err.into())
                             }
                             last_cursor_id = id;

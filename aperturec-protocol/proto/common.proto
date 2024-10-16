@@ -25,6 +25,17 @@ enum Codec {
   CODEC_JPEGXL = 3;
 }
 
+message DecoderArea {
+  Location location = 1;
+  Dimension dimension = 2;
+}
+
+message DisplayConfiguration {
+  uint64 id = 1;
+  Dimension display_size = 2;
+  map<uint32, DecoderArea> areas = 3;
+}
+
 message ClientCaps { repeated Codec supported_codecs = 1; }
 
 enum Cursor {

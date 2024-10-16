@@ -8,18 +8,28 @@ use ndarray::{prelude::*, Zip};
 
 #[derive(Debug, Clone)]
 pub struct Image {
+    pub display_config_id: u64,
     pub pixels: Pixel32Map,
     pub responsible_frames: Array2<usize>,
     pub update_history: BoxSet,
 }
 
 impl Image {
-    pub fn new(size: Size) -> Self {
+    pub fn new(size: Size, display_config_id: u64) -> Self {
         Image {
+            display_config_id,
             pixels: Pixel32Map::from_elem(size.as_shape(), Pixel32::default()),
             responsible_frames: Array2::zeros(size.as_shape()),
             update_history: BoxSet::default(),
         }
+    }
+
+    pub fn area(&self) -> Box2D {
+        Box2D::from_size(self.size())
+    }
+
+    pub fn size(&self) -> Size {
+        self.pixels.size()
     }
 
     pub fn clear_history(&mut self) {
@@ -28,18 +38,23 @@ impl Image {
 
     pub fn copy_updates(&mut self, src: &Image) -> Result<()> {
         ensure!(
-            self.pixels.size() == src.pixels.size(),
-            "mismatched dimensions"
+            src.display_config_id == self.display_config_id,
+            format!(
+                "src DCI {:?} != {:?}",
+                src.display_config_id, self.display_config_id
+            )
         );
 
         for area in &src.update_history {
-            self.pixels
-                .as_ndarray_mut()
-                .slice_mut(area.as_slice())
-                .assign(&src.pixels.as_ndarray().slice(area.as_slice()));
-            self.responsible_frames
-                .slice_mut(area.as_slice())
-                .assign(&src.responsible_frames.slice(area.as_slice()));
+            if let Some(isect) = self.area().intersection(area) {
+                self.pixels
+                    .as_ndarray_mut()
+                    .slice_mut(isect.as_slice())
+                    .assign(&src.pixels.as_ndarray().slice(isect.as_slice()));
+                self.responsible_frames
+                    .slice_mut(isect.as_slice())
+                    .assign(&src.responsible_frames.slice(isect.as_slice()));
+            }
         }
 
         // History is no longer valid now that we've copied updates from another Image
@@ -75,9 +90,15 @@ impl Image {
     }
 
     pub fn draw(&mut self, draw: &Draw) {
-        let src = &draw.pixels;
-        let mut dst = self.pixels.slice_mut(draw.area().as_slice());
-        let mut responsible = self.responsible_frames.slice_mut(draw.area().as_slice());
+        let isect = match self.area().intersection(&draw.area()) {
+            Some(isect) => isect,
+            None => return,
+        };
+
+        let src = draw.pixels.slice(Box2D::from_size(isect.size()).as_slice());
+        let mut dst = self.pixels.slice_mut(isect.as_slice());
+        let mut responsible = self.responsible_frames.slice_mut(isect.as_slice());
+
         let mut did_assignment = false;
         Zip::from(src)
             .and(&mut dst)
@@ -141,8 +162,8 @@ mod tests {
     #[test]
     fn copy_updates_simple() {
         let size = Size::new(1920, 1080);
-        let mut image1 = Image::new(size);
-        let mut image2 = Image::new(size);
+        let mut image1 = Image::new(size, 0);
+        let mut image2 = image1.clone();
 
         let draw = Draw {
             frame: 1,
@@ -168,8 +189,8 @@ mod tests {
     #[test]
     fn copy_updates_out_of_order_frames() {
         let size = Size::new(1920, 1080);
-        let mut image1 = Image::new(size);
-        let mut image2 = Image::new(size);
+        let mut image1 = Image::new(size, 1);
+        let mut image2 = image1.clone();
 
         let mut draw = Draw {
             frame: 2,
@@ -228,8 +249,8 @@ mod tests {
     #[test]
     fn copy_updates_partial_overlapping() {
         let size = Size::new(1920, 1080);
-        let mut image1 = Image::new(size);
-        let mut image2 = Image::new(size);
+        let mut image1 = Image::new(size, 2);
+        let mut image2 = image1.clone();
 
         let mut draw = Draw {
             frame: 1,

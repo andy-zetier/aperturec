@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package control;
 import "common.proto";
-import "google/protobuf/duration.proto";
-import "google/protobuf/timestamp.proto";
 
 enum Os {
   OS_UNSPECIFIED = 0;
@@ -28,12 +26,6 @@ enum Architecture {
   ARCHITECTURE_UNSPECIFIED = 0;
   ARCHITECTURE_X86 = 1;
   ARCHITECTURE_ARM = 2;
-}
-
-message DecoderArea {
-  uint32 decoder_id = 1;
-  common.Location location = 2;
-  common.Dimension Dimension = 3;
 }
 
 message ClientInfo {
@@ -86,8 +78,7 @@ message ClientToServer {
 message ServerInit {
   uint64 client_id = 1;
   string server_name = 2;
-  common.Dimension display_size = 3;
-  repeated DecoderArea decoder_areas = 4;
+  common.DisplayConfiguration display_configuration = 3;
 }
 
 enum ServerGoodbyeReason {

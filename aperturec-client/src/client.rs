@@ -8,27 +8,26 @@ use aperturec_graphics::prelude::*;
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
     server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder,
-    ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, DecoderArea,
-    Endianness, Os,
+    ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, Endianness,
+    Os,
 };
 use aperturec_protocol::event::{
     button, client_to_server as em_c2s, server_to_client as em_s2c, Button, ButtonStateBuilder,
-    KeyEvent, MappedButton, PointerEvent, PointerEventBuilder,
+    DisplayEvent, KeyEvent, MappedButton, PointerEvent, PointerEventBuilder,
 };
 use aperturec_state_machine::*;
 
-use anyhow::Result;
-use crossbeam::channel::{select, unbounded, Receiver, Sender};
+use anyhow::{anyhow, bail, Result};
+use crossbeam::channel::{never, select, unbounded, Receiver, Sender};
 use derive_builder::Builder;
 use gtk::glib;
 use openssl::x509::X509;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 use std::{assert, thread};
 use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
 use tracing::*;
@@ -107,6 +106,19 @@ impl KeyEventMessage {
     }
 }
 
+#[derive(Builder, Clone, Copy, Debug, Default)]
+pub struct DisplayEventMessage {
+    size: (u32, u32),
+}
+
+impl DisplayEventMessage {
+    pub fn to_display_event(&self) -> DisplayEvent {
+        DisplayEvent {
+            display_size: Some(Dimension::new(self.size.0.into(), self.size.1.into())),
+        }
+    }
+}
+
 #[derive(Builder, Clone, Default)]
 pub struct GoodbyeMessage {
     reason: String,
@@ -156,12 +168,14 @@ pub enum EventMessage {
     MouseButtonEventMessage(MouseButtonEventMessage),
     PointerEventMessage(PointerEventMessage),
     KeyEventMessage(KeyEventMessage),
+    DisplayEventMessage(DisplayEventMessage),
 }
 
 pub enum UiMessage {
     Quit(String),
     CursorImage { id: usize, cursor_data: CursorData },
     CursorChange { id: usize },
+    DisplayChange { dc_id: u64, display_size: Size },
 }
 
 impl TryFrom<em_s2c::Message> for UiMessage {
@@ -181,6 +195,19 @@ impl TryFrom<em_s2c::Message> for UiMessage {
                     y_hot: ci.y_hot.try_into()?,
                 },
             }),
+            em_s2c::Message::DisplayConfiguration(dc) => {
+                let config: DisplayConfig = dc.try_into()?;
+                Ok(config.into())
+            }
+        }
+    }
+}
+
+impl From<DisplayConfig> for UiMessage {
+    fn from(dc: DisplayConfig) -> UiMessage {
+        UiMessage::DisplayChange {
+            dc_id: dc.id,
+            display_size: dc.display_size,
         }
     }
 }
@@ -200,6 +227,59 @@ pub enum ControlMessage {
     SigintReceived,
 }
 
+pub struct DisplayConfig {
+    pub id: u64,
+    pub display_size: Size,
+    pub areas: BTreeMap<u32, Box2D>,
+}
+
+impl TryFrom<DisplayConfiguration> for DisplayConfig {
+    type Error = anyhow::Error;
+    fn try_from(display_config: DisplayConfiguration) -> Result<DisplayConfig> {
+        let decoder_ids_valid = display_config
+            .areas
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .eq(0..display_config.areas.len() as u32);
+        if !decoder_ids_valid {
+            bail!("Decoder IDs are not contiguous from 0..N");
+        }
+
+        let mut areas = BTreeMap::new();
+
+        for (id, decoder_area) in display_config.areas.into_iter() {
+            debug!(?decoder_area);
+            if let DecoderArea {
+                location: Some(location),
+                dimension: Some(dimension),
+                ..
+            } = decoder_area
+            {
+                let area = Rect {
+                    origin: Point::new(location.x_position as usize, location.y_position as usize),
+                    size: Size::new(dimension.width as usize, dimension.height as usize),
+                }
+                .to_box2d();
+                areas.insert(id, area);
+            } else {
+                bail!("Invalid decoder area: {:?}", decoder_area);
+            }
+        }
+
+        let display_size = display_config
+            .display_size
+            .ok_or_else(|| anyhow!("Missing display_size"))?;
+
+        Ok(DisplayConfig {
+            id: display_config.id,
+            display_size: Size::new(display_size.width as usize, display_size.height as usize),
+            areas,
+        })
+    }
+}
+
 //
 // Client structs
 //
@@ -209,7 +289,6 @@ pub struct Configuration {
     pub temp_id: u64,
     pub decoder_max: u16,
     pub server_addr: String,
-    pub max_fps: Duration,
     pub win_width: u64,
     pub win_height: u64,
     #[builder(setter(strip_option), default)]
@@ -238,7 +317,7 @@ pub struct Client {
     server_name: Option<String>,
     control_jh: Option<thread::JoinHandle<()>>,
     should_stop: Arc<AtomicBool>,
-    decoder_areas: Vec<Box2D>,
+    display_config: Option<DisplayConfig>,
     local_addr: Option<SocketAddr>,
 }
 
@@ -251,7 +330,7 @@ impl Client {
             id: None,
             server_name: None,
             control_jh: None,
-            decoder_areas: vec![],
+            display_config: None,
         }
     }
 
@@ -265,8 +344,14 @@ impl Client {
             itc.notify_control_tx.clone(),
             itc.notify_control_rx,
         )?;
-        this.setup_event_channel(ec, itc.notify_event_rx, itc.notify_control_tx, itc.ui_tx)?;
-        this.setup_media_channel(mc, itc.img_tx, itc.img_rx)?;
+        this.setup_event_channel(
+            ec,
+            itc.notify_event_rx,
+            itc.notify_control_tx,
+            itc.notify_media_tx,
+            itc.ui_tx,
+        )?;
+        this.setup_media_channel(mc, itc.notify_media_rx, itc.img_tx, itc.img_rx)?;
 
         Ok(this)
     }
@@ -361,6 +446,7 @@ impl Client {
     fn setup_media_channel(
         &mut self,
         mut mc: channel::ClientMedia,
+        notify_media_rx: Receiver<DisplayConfig>,
         img_tx: glib::Sender<Image>,
         img_rx: Receiver<Image>,
     ) -> Result<()> {
@@ -370,52 +456,74 @@ impl Client {
             mm_rx_tx.send(msg)?;
         });
 
-        let mut framer = Framer::new(&self.decoder_areas);
-        thread::spawn::<_, Result<()>>(move || loop {
-            let msg = mm_rx_rx.recv()?;
+        let mut framer = Framer::new(
+            self.display_config
+                .as_ref()
+                .unwrap()
+                .areas
+                .values()
+                .copied()
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
 
-            let msg = match msg.message {
-                Some(msg) => msg,
-                None => {
-                    warn!("media message with empty body");
-                    continue;
-                }
+        let mut display_config_id = self.display_config.as_ref().unwrap().id;
+
+        thread::spawn::<_, Result<()>>(move || loop {
+            let draw_recv = if framer.has_draws() {
+                Some(&img_rx)
+            } else {
+                None
             };
 
-            if let Err(e) = framer.report_mm(msg) {
-                warn!("Error processing media message: {}", e);
-            }
-
-            if !framer.has_draws() {
-                continue;
-            }
-
-            loop {
-                select! {
-                    recv(mm_rx_rx) -> msg_res => {
-                        let msg = match msg_res?.message {
-                            Some(msg) => msg,
-                            None => {
-                                warn!("media message with empty body");
-                                continue;
-                            }
-                        };
-                        if let Err(e) = framer.report_mm(msg) {
-                            warn!("Error processing media message: {}", e)
+            select! {
+                recv(mm_rx_rx) -> msg_res => {
+                    let msg = match msg_res?.message {
+                        Some(msg) => msg,
+                        None => {
+                            warn!("media message with empty body");
+                            continue;
                         }
-                    },
-                    recv(img_rx) -> img_res => {
-                        let mut img = img_res?;
-                        for draw in framer.get_draws_and_reset() {
-                            img.draw(&draw);
-                        }
-                        img_tx.send(img)?;
-                        break;
+                    };
+                    if let Err(e) = framer.report_mm(msg) {
+                        warn!("Error processing media message: {}", e)
                     }
-                }
+                },
+                recv(notify_media_rx) -> msg_res => {
+                    let new_config = msg_res?;
+
+                    framer = Framer::new(
+                        new_config
+                        .areas
+                        .values()
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                    );
+
+                    display_config_id = new_config.id;
+
+                    debug!("Display configuration id: {}", display_config_id);
+                },
+                recv(draw_recv.unwrap_or(&never())) -> img_res => {
+                    let mut img = img_res?;
+
+                    if img.display_config_id != display_config_id {
+                        if img.display_config_id < display_config_id {
+                            debug!("Dropping Image with DCI {:?} (< {:?})", img.display_config_id, display_config_id);
+                        } else {
+                            warn!("Dropping Image with unexpected DCI {:?}, current DCI is {:?}", img.display_config_id, display_config_id);
+                        }
+                        continue;
+                    }
+
+                    for draw in framer.get_draws_and_reset() {
+                        img.draw(&draw);
+                    }
+                    img_tx.send(img)?;
+                },
             }
         });
-
         Ok(())
     }
 
@@ -446,46 +554,22 @@ impl Client {
         //
         self.id = Some(si.client_id);
         self.server_name = Some(si.server_name);
-        let display_size = si.display_size.expect("No display size provided");
-        self.config.win_height = display_size.height;
-        self.config.win_width = display_size.width;
-
-        let decoder_ids_valid = si
-            .decoder_areas
-            .iter()
-            .map(|da| da.decoder_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .eq(0..si.decoder_areas.len() as u32);
-        if !decoder_ids_valid {
-            panic!("Decoder IDs are not contiguous from 0..N");
-        }
-
-        for decoder_area in si.decoder_areas.into_iter() {
-            debug!("Decoder area: {:?}", decoder_area);
-            if let DecoderArea {
-                location: Some(location),
-                dimension: Some(dimension),
-                ..
-            } = decoder_area
-            {
-                let area = Rect {
-                    origin: Point::new(location.x_position as usize, location.y_position as usize),
-                    size: Size::new(dimension.width as usize, dimension.height as usize),
-                }
-                .to_box2d();
-                self.decoder_areas.push(area);
-            } else {
-                panic!("Invalid decoder area: {:?}", decoder_area);
-            }
-        }
+        self.display_config = Some(
+            si.display_configuration
+                .expect("No decoder configuration provided")
+                .try_into()?,
+        );
 
         assert!(
-            self.decoder_areas.len() <= self.config.decoder_max.into(),
+            self.display_config.as_ref().unwrap().areas.keys().len()
+                <= self.config.decoder_max.into(),
             "Server returned {} decoders, but our max is {}",
-            self.decoder_areas.len(),
+            self.display_config.as_ref().unwrap().areas.len(),
             self.config.decoder_max
         );
+
+        self.config.win_height = self.display_config.as_ref().unwrap().display_size.height as u64;
+        self.config.win_width = self.display_config.as_ref().unwrap().display_size.width as u64;
 
         info!(
             "Connected to server @ {} ({}) as client {}!",
@@ -493,6 +577,13 @@ impl Client {
             &self.server_name.as_ref().unwrap(),
             &self.id.unwrap()
         );
+
+        ui_tx
+            .send(UiMessage::DisplayChange {
+                dc_id: self.display_config.as_ref().unwrap().id,
+                display_size: self.display_config.as_ref().unwrap().display_size,
+            })
+            .expect("Failed to send UI message");
 
         //
         // Setup Control Channel TX/RX threads
@@ -639,35 +730,25 @@ impl Client {
         client_ec: channel::ClientEvent,
         notify_event_rx: Receiver<EventMessage>,
         notify_control_tx: Sender<ControlMessage>,
+        notify_media_tx: Sender<DisplayConfig>,
         ui_tx: glib::Sender<UiMessage>,
     ) -> Result<()> {
         let (mut ec_rx, mut ec_tx) = client_ec.split();
         let should_stop = self.should_stop.clone();
 
-        thread::spawn(move || {
+        thread::spawn::<_, Result<()>>(move || {
             debug!("Event channel Rx started");
             loop {
-                match ec_rx.receive() {
-                    Ok(msg) => match msg.try_into() {
-                        Ok(cm) => {
-                            if let Err(err) = ui_tx.send(cm) {
-                                error!("Failed to send cursor message: {}", err);
-                                break;
-                            }
-                        }
-                        Err(err) => {
-                            error!("Failed to convert event message: {}", err);
-                            break;
-                        }
-                    },
-                    Err(err) => {
-                        error!("Failed to receive: {}", err);
-                        break;
-                    }
+                let msg = ec_rx.receive()?;
+
+                if let em_s2c::Message::DisplayConfiguration(ref display_config) = msg {
+                    notify_media_tx.send((*display_config).clone().try_into()?)?;
                 }
 
+                ui_tx.send(msg.try_into()?)?;
+
                 if should_stop.load(Ordering::Relaxed) {
-                    break;
+                    break Ok(());
                 }
             }
         });
@@ -684,6 +765,9 @@ impl Client {
                         em_c2s::Message::from(pem.to_pointer_event())
                     }
                     EventMessage::KeyEventMessage(kem) => em_c2s::Message::from(kem.to_key_event()),
+                    EventMessage::DisplayEventMessage(dem) => {
+                        em_c2s::Message::from(dem.to_display_event())
+                    }
                 };
 
                 if should_stop.load(Ordering::Relaxed) {
@@ -744,10 +828,6 @@ impl Client {
     pub fn get_width(&self) -> i32 {
         self.config.win_width.try_into().unwrap()
     }
-
-    pub fn get_fps(&self) -> Duration {
-        self.config.max_fps
-    }
 }
 
 pub fn run_client(config: Configuration) -> Result<()> {
@@ -768,8 +848,15 @@ pub fn run_client(config: Configuration) -> Result<()> {
         itc.gtk_half,
         client.get_width(),
         client.get_height(),
-        client.get_fps(),
-        &client.decoder_areas,
+        client
+            .display_config
+            .as_ref()
+            .unwrap()
+            .areas
+            .values()
+            .copied()
+            .collect::<Vec<_>>()
+            .as_slice(),
     );
 
     client.shutdown();
@@ -798,7 +885,6 @@ mod test {
             .server_addr(format!("127.0.0.1:{}", server_port))
             .win_width(width)
             .win_height(height)
-            .max_fps(Duration::from_secs((1 / 30u16).into()))
             .build()
             .expect("Failed to build Configuration!")
     }
@@ -849,8 +935,11 @@ mod test {
                 ServerInitBuilder::default()
                     .client_id(7890_u64)
                     .server_name(String::from("fake quic server"))
-                    .display_size(Dimension::new(800, 600))
-                    .decoder_areas(vec![])
+                    .display_configuration(DisplayConfiguration::new(
+                        0,
+                        Some(Dimension::new(800, 600)),
+                        BTreeMap::new(),
+                    ))
                     .build()
                     .unwrap()
                     .into(),

@@ -46,7 +46,7 @@ fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
         .lock()
         .expect("JxlDecoder")
         .0
-        .decode(&*encoded_data)?
+        .decode(&encoded_data)?
         .1;
     match pixels {
         jpegxl_rs::decode::Pixels::Uint8(vec) => Ok(vec),

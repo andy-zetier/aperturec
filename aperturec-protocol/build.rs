@@ -130,6 +130,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut config = prost_build::Config::new();
+    config.btree_map(["."]);
     let outdir = PathBuf::from(env::var("OUT_DIR")?);
     let raw_outdir = outdir.join(RAW_DIR);
 
