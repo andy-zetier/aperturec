@@ -6,7 +6,7 @@
 use crate::transport::stream;
 use crate::{AsyncReceiver, AsyncSender, Receiver, Sender};
 
-use aperturec_protocol::{control, event};
+use aperturec_protocol::{control, event, tunnel};
 
 use prost::Message;
 use std::error::Error;
@@ -507,6 +507,33 @@ pub type ClientEventChannelSendHalf = SenderSimplex<
     event::client_to_server::Message,
     event::ClientToServer,
 >;
+// Tunnel
+// Server
+pub type ServerTunnelChannel =
+    Duplex<stream::Transceiver, tunnel::Message, tunnel::Message, tunnel::Message, tunnel::Message>;
+pub type ServerTunnelChannelReceiveHalf = ReceiverSimplex<
+    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
+    tunnel::Message,
+    tunnel::Message,
+>;
+pub type ServerTunnelChannelSendHalf = SenderSimplex<
+    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    tunnel::Message,
+    tunnel::Message,
+>;
+// Client
+pub type ClientTunnelChannel =
+    Duplex<stream::Transceiver, tunnel::Message, tunnel::Message, tunnel::Message, tunnel::Message>;
+pub type ClientTunnelChannelReceiveHalf = ReceiverSimplex<
+    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
+    tunnel::Message,
+    tunnel::Message,
+>;
+pub type ClientTunnelChannelSendHalf = SenderSimplex<
+    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    tunnel::Message,
+    tunnel::Message,
+>;
 // Async
 // Control
 // Server
@@ -581,4 +608,41 @@ pub type AsyncClientEventChannelSendHalf = AsyncSenderSimplex<
     <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
     event::client_to_server::Message,
     event::ClientToServer,
+>;
+// Tunnel
+// Server
+pub type AsyncServerTunnelChannel = AsyncDuplex<
+    stream::AsyncTransceiver,
+    tunnel::Message,
+    tunnel::Message,
+    tunnel::Message,
+    tunnel::Message,
+>;
+pub type AsyncServerTunnelChannelReceiveHalf = AsyncReceiverSimplex<
+    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    tunnel::Message,
+    tunnel::Message,
+>;
+pub type AsyncServerTunnelChannelSendHalf = AsyncSenderSimplex<
+    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    tunnel::Message,
+    tunnel::Message,
+>;
+// Client
+pub type AsyncClientTunnelChannel = AsyncDuplex<
+    stream::AsyncTransceiver,
+    tunnel::Message,
+    tunnel::Message,
+    tunnel::Message,
+    tunnel::Message,
+>;
+pub type AsyncClientTunnelChannelReceiveHalf = AsyncReceiverSimplex<
+    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    tunnel::Message,
+    tunnel::Message,
+>;
+pub type AsyncClientTunnelChannelSendHalf = AsyncSenderSimplex<
+    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    tunnel::Message,
+    tunnel::Message,
 >;

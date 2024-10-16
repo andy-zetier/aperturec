@@ -24,3 +24,7 @@ pub mod event {
 pub mod media {
     include!(concat!(env!("OUT_DIR"), "/media.rs"));
 }
+
+pub mod tunnel {
+    include!(concat!(env!("OUT_DIR"), "/tunnel.rs"));
+}

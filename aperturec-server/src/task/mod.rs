@@ -5,3 +5,4 @@ pub mod event_channel_handler;
 pub mod frame_sync;
 pub mod media_channel_handler;
 pub mod rate_limit;
+pub mod tunnel_channel_handler;

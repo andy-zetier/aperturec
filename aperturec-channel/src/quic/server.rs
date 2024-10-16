@@ -65,6 +65,7 @@ pub mod states {
         pub(super) cc: ServerControl,
         pub(super) ec: ServerEvent,
         pub(super) mc: ServerMedia,
+        pub(super) tc: ServerTunnel,
         pub(super) quic_server: s2n_quic::Server,
         pub(super) async_rt: Arc<TokioRuntime>,
     }
@@ -75,6 +76,7 @@ pub mod states {
         pub(super) cc: AsyncServerControl,
         pub(super) ec: AsyncServerEvent,
         pub(super) mc: AsyncServerMedia,
+        pub(super) tc: AsyncServerTunnel,
         pub(super) quic_server: s2n_quic::Server,
     }
 
@@ -320,6 +322,23 @@ impl TryTransitionable<Ready, Accepted> for Server<Accepted> {
             self.state.async_rt.clone(),
         ));
 
+        let tc = ServerTunnel::new(stream::Transceiver::new(
+            try_recover!(
+                try_recover!(
+                    self.state
+                        .connection
+                        .accept_bidirectional_stream()
+                        .syncify(&self.state.async_rt),
+                    self,
+                    Accepted
+                )
+                .ok_or(anyhow!("no event channel")),
+                self,
+                Accepted
+            ),
+            self.state.async_rt.clone(),
+        ));
+
         let mc = ServerMedia::new(datagram::Transmitter::new(
             self.state.connection,
             self.state.async_rt.clone(),
@@ -330,6 +349,7 @@ impl TryTransitionable<Ready, Accepted> for Server<Accepted> {
                 cc,
                 ec,
                 mc,
+                tc,
                 quic_server: self.state.quic_server,
                 async_rt: self.state.async_rt,
             },
@@ -354,13 +374,23 @@ impl UnifiedServer for Server<Ready> {
     type Control = ServerControl;
     type Event = ServerEvent;
     type Media = ServerMedia;
+    type Tunnel = ServerTunnel;
     type Residual = Server<Listening>;
 
-    fn split(self) -> (Self::Control, Self::Event, Self::Media, Self::Residual) {
+    fn split(
+        self,
+    ) -> (
+        Self::Control,
+        Self::Event,
+        Self::Media,
+        Self::Tunnel,
+        Self::Residual,
+    ) {
         (
             self.state.cc,
             self.state.ec,
             self.state.mc,
+            self.state.tc,
             Server {
                 state: Listening {
                     quic_server: self.state.quic_server,
@@ -374,6 +404,7 @@ impl UnifiedServer for Server<Ready> {
         cc: Self::Control,
         ec: Self::Event,
         mc: Self::Media,
+        tc: Self::Tunnel,
         residual: Self::Residual,
     ) -> Self {
         Server {
@@ -381,6 +412,7 @@ impl UnifiedServer for Server<Ready> {
                 cc,
                 ec,
                 mc,
+                tc,
                 quic_server: residual.state.quic_server,
                 async_rt: residual.state.async_rt,
             },
@@ -456,7 +488,16 @@ impl AsyncTryTransitionable<AsyncReady, AsyncAccepted> for Server<AsyncAccepted>
             self,
             AsyncAccepted
         )));
-
+        let tc = AsyncServerTunnel::new(stream::AsyncTransceiver::new(try_recover!(
+            try_recover!(
+                self.state.connection.accept_bidirectional_stream().await,
+                self,
+                AsyncAccepted
+            )
+            .ok_or(anyhow!("no tc stream")),
+            self,
+            AsyncAccepted
+        )));
         let mc = AsyncServerMedia::new(datagram::AsyncTransmitter::new(self.state.connection));
 
         Ok(Server {
@@ -464,6 +505,7 @@ impl AsyncTryTransitionable<AsyncReady, AsyncAccepted> for Server<AsyncAccepted>
                 cc,
                 ec,
                 mc,
+                tc,
                 quic_server: self.state.quic_server,
             },
         })
@@ -486,13 +528,23 @@ impl AsyncUnifiedServer for Server<AsyncReady> {
     type Control = AsyncServerControl;
     type Event = AsyncServerEvent;
     type Media = AsyncServerMedia;
+    type Tunnel = AsyncServerTunnel;
     type Residual = Server<AsyncListening>;
 
-    fn split(self) -> (Self::Control, Self::Event, Self::Media, Self::Residual) {
+    fn split(
+        self,
+    ) -> (
+        Self::Control,
+        Self::Event,
+        Self::Media,
+        Self::Tunnel,
+        Self::Residual,
+    ) {
         (
             self.state.cc,
             self.state.ec,
             self.state.mc,
+            self.state.tc,
             Server {
                 state: AsyncListening {
                     quic_server: self.state.quic_server,
@@ -505,6 +557,7 @@ impl AsyncUnifiedServer for Server<AsyncReady> {
         cc: Self::Control,
         ec: Self::Event,
         mc: Self::Media,
+        tc: Self::Tunnel,
         residual: Self::Residual,
     ) -> Self {
         Server {
@@ -512,6 +565,7 @@ impl AsyncUnifiedServer for Server<AsyncReady> {
                 cc,
                 ec,
                 mc,
+                tc,
                 quic_server: residual.state.quic_server,
             },
         }

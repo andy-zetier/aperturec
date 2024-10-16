@@ -1,5 +1,4 @@
-use aperturec_client::metrics;
-use aperturec_client::{client, gtk3};
+use aperturec_client::{client, gtk3, metrics};
 use aperturec_metrics::exporters::{
     CsvExporter, Exporter, LogExporter, PrometheusExporter, PushgatewayExporter,
 };
@@ -114,6 +113,23 @@ struct Args {
     #[arg(short = 'k', long, action)]
     insecure: bool,
 
+    /// Specifies that connections to the given TCP port on the client side are to be forwarded to
+    /// the given host and port on the server side. Arguments are given in the form
+    /// `[bind_address:]bind_port:forward_address:forward_port`
+    ///
+    /// If `bind_address` is left unspecified, the socket will bind to 0.0.0.0.
+    #[arg(short = 'L', long)]
+    local: Vec<client::PortForwardArg>,
+
+    /// Specifies that connections to the given TCP port on the server side are to be forwarded to
+    /// the given host and port on the client side. Arguments are given in the form
+    /// `[bind_address:]bind_port:forward_address:forward_port`
+    ///
+    /// If `bind_address` is left unspecified, the socket will bind to 0.0.0.0. If `bind_port` is
+    /// set to 0, the server will dynamically allocate a bind port and log it.
+    #[arg(short = 'R', long)]
+    remote: Vec<client::PortForwardArg>,
+
     /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
     /// verbosity. The maximum is 3.
     #[arg(short, action = clap::ArgAction::Count)]
@@ -202,7 +218,9 @@ fn main() -> Result<()> {
         .win_height(height)
         .win_width(width)
         .temp_id(args.temp_client_id)
-        .allow_insecure_connection(args.insecure);
+        .allow_insecure_connection(args.insecure)
+        .client_bound_tunnel_reqs(args.local)
+        .server_bound_tunnel_reqs(args.remote);
     if let Some(program_cmdline) = args.program_cmdline {
         config_builder.program_cmdline(program_cmdline);
     }

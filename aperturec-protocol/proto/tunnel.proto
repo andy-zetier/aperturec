@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package tunnel;
+
+enum Side {
+  SIDE_CLIENT = 0;
+  SIDE_SERVER = 1;
+}
+
+enum Protocol { PROTOCOL_TCP = 0; }
+
+message Description {
+  Side side = 1;
+  Protocol protocol = 2;
+  string bind_address = 3;
+  uint32 bind_port = 4;
+  string forward_address = 5;
+  uint32 forward_port = 6;
+}
+
+message Response {
+  oneof message {
+    Description success = 1;
+    string failure = 2;
+  }
+}
+
+message OpenTcpStream {}
+
+message CloseTcpStream {}
+
+message TcpData {
+  bytes data = 2;
+}
+
+message Message {
+  uint64 tunnel_id = 1;
+  uint64 stream_id = 2;
+  oneof message {
+    OpenTcpStream open_tcp = 3;
+    CloseTcpStream close_tcp = 4;
+    TcpData tcp_data = 5;
+  }
+}

@@ -67,6 +67,7 @@ pub mod states {
         pub(super) cc: ClientControl,
         pub(super) ec: ClientEvent,
         pub(super) mc: ClientMedia,
+        pub(super) tc: ClientTunnel,
     }
 
     #[derive(State, Debug)]
@@ -75,6 +76,7 @@ pub mod states {
         pub(super) cc: AsyncClientControl,
         pub(super) ec: AsyncClientEvent,
         pub(super) mc: AsyncClientMedia,
+        pub(super) tc: AsyncClientTunnel,
     }
 }
 use states::*;
@@ -330,13 +332,24 @@ impl TryTransitionable<Ready, Connected> for Client<Connected> {
             self.state.async_rt.clone(),
         ));
 
+        let tc = ClientTunnel::new(stream::Transceiver::new(
+            try_recover!(
+                self.state
+                    .connection
+                    .open_bidirectional_stream()
+                    .syncify(&self.state.async_rt),
+                self
+            ),
+            self.state.async_rt.clone(),
+        ));
+
         let mc = ClientMedia::new(datagram::Receiver::new(
             self.state.connection,
             self.state.async_rt.clone(),
         ));
 
         Ok(Client {
-            state: Ready { cc, ec, mc },
+            state: Ready { cc, ec, mc, tc },
         })
     }
 }
@@ -345,15 +358,36 @@ impl UnifiedClient for Client<Ready> {
     type Control = ClientControl;
     type Event = ClientEvent;
     type Media = ClientMedia;
+    type Tunnel = ClientTunnel;
     type Residual = ();
 
-    fn split(self) -> (Self::Control, Self::Event, Self::Media, Self::Residual) {
-        (self.state.cc, self.state.ec, self.state.mc, ())
+    fn split(
+        self,
+    ) -> (
+        Self::Control,
+        Self::Event,
+        Self::Media,
+        Self::Tunnel,
+        Self::Residual,
+    ) {
+        (
+            self.state.cc,
+            self.state.ec,
+            self.state.mc,
+            self.state.tc,
+            (),
+        )
     }
 
-    fn unsplit(cc: Self::Control, ec: Self::Event, mc: Self::Media, _: Self::Residual) -> Self {
+    fn unsplit(
+        cc: Self::Control,
+        ec: Self::Event,
+        mc: Self::Media,
+        tc: Self::Tunnel,
+        _: Self::Residual,
+    ) -> Self {
         Client {
-            state: Ready { cc, ec, mc },
+            state: Ready { cc, ec, mc, tc },
         }
     }
 }
@@ -461,10 +495,15 @@ impl AsyncTryTransitionable<AsyncReady, AsyncConnected> for Client<AsyncConnecte
             self
         )));
 
+        let tc = AsyncClientTunnel::new(stream::AsyncTransceiver::new(try_recover!(
+            self.state.connection.open_bidirectional_stream().await,
+            self
+        )));
+
         let mc = AsyncClientMedia::new(datagram::AsyncReceiver::new(self.state.connection));
 
         Ok(Client {
-            state: AsyncReady { cc, ec, mc },
+            state: AsyncReady { cc, ec, mc, tc },
         })
     }
 }
@@ -473,14 +512,36 @@ impl AsyncUnifiedClient for Client<AsyncReady> {
     type Control = AsyncClientControl;
     type Event = AsyncClientEvent;
     type Media = AsyncClientMedia;
+    type Tunnel = AsyncClientTunnel;
+    type Residual = ();
 
-    fn split(self) -> (Self::Control, Self::Event, Self::Media) {
-        (self.state.cc, self.state.ec, self.state.mc)
+    fn split(
+        self,
+    ) -> (
+        Self::Control,
+        Self::Event,
+        Self::Media,
+        Self::Tunnel,
+        Self::Residual,
+    ) {
+        (
+            self.state.cc,
+            self.state.ec,
+            self.state.mc,
+            self.state.tc,
+            (),
+        )
     }
 
-    fn unsplit(cc: Self::Control, ec: Self::Event, mc: Self::Media) -> Self {
+    fn unsplit(
+        cc: Self::Control,
+        ec: Self::Event,
+        mc: Self::Media,
+        tc: Self::Tunnel,
+        _: Self::Residual,
+    ) -> Self {
         Client {
-            state: AsyncReady { cc, ec, mc },
+            state: AsyncReady { cc, ec, mc, tc },
         }
     }
 }

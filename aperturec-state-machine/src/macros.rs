@@ -128,7 +128,7 @@ macro_rules! return_recover {
 #[macro_export]
 macro_rules! return_recover_async {
     ($recoverable:expr, $fmt:literal $(, $args:tt )*) => {{
-        return_recover_async!($recoverable, _, $fmt, $(, $args )*)
+        return_recover_async!($recoverable, _, $fmt $(, $args )*)
     }};
     ($recoverable:expr, $target:ty, $fmt:literal $(, $args:tt )*) => {{
         return Err(

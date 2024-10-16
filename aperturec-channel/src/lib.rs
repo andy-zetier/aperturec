@@ -1,4 +1,4 @@
-use aperturec_protocol::{control, event, media};
+use aperturec_protocol::{control, event, media, tunnel};
 
 pub mod codec;
 pub mod gate;
@@ -13,24 +13,36 @@ pub use codec::in_order::AsyncClientControlChannelSendHalf as AsyncClientControl
 pub use codec::in_order::AsyncClientEventChannel as AsyncClientEvent;
 pub use codec::in_order::AsyncClientEventChannelReceiveHalf as AsyncClientEventReceiveHalf;
 pub use codec::in_order::AsyncClientEventChannelSendHalf as AsyncClientEventSendHalf;
+pub use codec::in_order::AsyncClientTunnelChannel as AsyncClientTunnel;
+pub use codec::in_order::AsyncClientTunnelChannelReceiveHalf as AsyncClientTunnelReceiveHalf;
+pub use codec::in_order::AsyncClientTunnelChannelSendHalf as AsyncClientTunnelSendHalf;
 pub use codec::in_order::AsyncServerControlChannel as AsyncServerControl;
 pub use codec::in_order::AsyncServerControlChannelReceiveHalf as AsyncServerControlReceiveHalf;
 pub use codec::in_order::AsyncServerControlChannelSendHalf as AsyncServerControlSendHalf;
 pub use codec::in_order::AsyncServerEventChannel as AsyncServerEvent;
 pub use codec::in_order::AsyncServerEventChannelReceiveHalf as AsyncServerEventReceiveHalf;
 pub use codec::in_order::AsyncServerEventChannelSendHalf as AsyncServerEventSendHalf;
+pub use codec::in_order::AsyncServerTunnelChannel as AsyncServerTunnel;
+pub use codec::in_order::AsyncServerTunnelChannelReceiveHalf as AsyncServerTunnelReceiveHalf;
+pub use codec::in_order::AsyncServerTunnelChannelSendHalf as AsyncServerTunnelSendHalf;
 pub use codec::in_order::ClientControlChannel as ClientControl;
 pub use codec::in_order::ClientControlChannelReceiveHalf as ClientControlReceiveHalf;
 pub use codec::in_order::ClientControlChannelSendHalf as ClientControlSendHalf;
 pub use codec::in_order::ClientEventChannel as ClientEvent;
 pub use codec::in_order::ClientEventChannelReceiveHalf as ClientEventReceiveHalf;
 pub use codec::in_order::ClientEventChannelSendHalf as ClientEventSendHalf;
+pub use codec::in_order::ClientTunnelChannel as ClientTunnel;
+pub use codec::in_order::ClientTunnelChannelReceiveHalf as ClientTunnelReceiveHalf;
+pub use codec::in_order::ClientTunnelChannelSendHalf as ClientTunnelSendHalf;
 pub use codec::in_order::ServerControlChannel as ServerControl;
 pub use codec::in_order::ServerControlChannelReceiveHalf as ServerControlReceiveHalf;
 pub use codec::in_order::ServerControlChannelSendHalf as ServerControlSendHalf;
 pub use codec::in_order::ServerEventChannel as ServerEvent;
 pub use codec::in_order::ServerEventChannelReceiveHalf as ServerEventReceiveHalf;
 pub use codec::in_order::ServerEventChannelSendHalf as ServerEventSendHalf;
+pub use codec::in_order::ServerTunnelChannel as ServerTunnel;
+pub use codec::in_order::ServerTunnelChannelReceiveHalf as ServerTunnelReceiveHalf;
+pub use codec::in_order::ServerTunnelChannelSendHalf as ServerTunnelSendHalf;
 pub use codec::out_of_order::AsyncClientMediaChannel as AsyncClientMedia;
 pub use codec::out_of_order::AsyncGatedServerMediaChannel as AsyncGatedServerMedia;
 pub use codec::out_of_order::AsyncServerMediaChannel as AsyncServerMedia;
@@ -76,20 +88,32 @@ pub trait UnifiedClient {
     type Control: Duplex
         + Sender<Message = control::client_to_server::Message>
         + Receiver<Message = control::server_to_client::Message>;
-    type Event: Sender<Message = event::client_to_server::Message>;
+    type Event: Duplex
+        + Sender<Message = event::client_to_server::Message>
+        + Receiver<Message = event::server_to_client::Message>;
     type Media: Receiver<Message = media::ServerToClient>;
+    type Tunnel: Duplex + Sender<Message = tunnel::Message> + Receiver<Message = tunnel::Message>;
 
     /// A leftover type that may be required to unsplit the channels back into [`Self`]
     type Residual;
 
     /// Split the Client into all channel types
-    fn split(self) -> (Self::Control, Self::Event, Self::Media, Self::Residual);
+    fn split(
+        self,
+    ) -> (
+        Self::Control,
+        Self::Event,
+        Self::Media,
+        Self::Tunnel,
+        Self::Residual,
+    );
 
     /// Combine all channel types back into the original Client type
     fn unsplit(
         cc: Self::Control,
         ec: Self::Event,
         mc: Self::Media,
+        tc: Self::Tunnel,
         residual: Self::Residual,
     ) -> Self;
 }
@@ -99,20 +123,32 @@ pub trait UnifiedServer {
     type Control: Duplex
         + Sender<Message = control::server_to_client::Message>
         + Receiver<Message = control::client_to_server::Message>;
-    type Event: Receiver<Message = event::client_to_server::Message>;
+    type Event: Duplex
+        + Sender<Message = event::server_to_client::Message>
+        + Receiver<Message = event::client_to_server::Message>;
     type Media: Sender<Message = media::ServerToClient>;
+    type Tunnel: Duplex + Sender<Message = tunnel::Message> + Receiver<Message = tunnel::Message>;
 
     /// A leftover type that may be required to unsplit the channels back into [`Self`]
     type Residual;
 
     /// Split the Server into all channel types
-    fn split(self) -> (Self::Control, Self::Event, Self::Media, Self::Residual);
+    fn split(
+        self,
+    ) -> (
+        Self::Control,
+        Self::Event,
+        Self::Media,
+        Self::Tunnel,
+        Self::Residual,
+    );
 
     /// Combine all channel types back into the original Server type
     fn unsplit(
         cc: Self::Control,
         ec: Self::Event,
         mc: Self::Media,
+        tc: Self::Tunnel,
         residual: Self::Residual,
     ) -> Self;
 }
@@ -171,11 +207,31 @@ mod async_variants {
         type Control: Duplex
             + Sender<Message = control::client_to_server::Message>
             + Receiver<Message = control::server_to_client::Message>;
-        type Event: Sender<Message = event::client_to_server::Message>;
+        type Event: Duplex
+            + Sender<Message = event::client_to_server::Message>
+            + Receiver<Message = event::server_to_client::Message>;
         type Media: Receiver<Message = media::ServerToClient>;
+        type Tunnel: Duplex
+            + Sender<Message = tunnel::Message>
+            + Receiver<Message = tunnel::Message>;
+        type Residual;
 
-        fn split(self) -> (Self::Control, Self::Event, Self::Media);
-        fn unsplit(cc: Self::Control, ec: Self::Event, mc: Self::Media) -> Self;
+        fn split(
+            self,
+        ) -> (
+            Self::Control,
+            Self::Event,
+            Self::Media,
+            Self::Tunnel,
+            Self::Residual,
+        );
+        fn unsplit(
+            cc: Self::Control,
+            ec: Self::Event,
+            mc: Self::Media,
+            tc: Self::Tunnel,
+            residual: Self::Residual,
+        ) -> Self;
     }
 
     #[trait_variant::make(UnifiedServer: Send)]
@@ -185,15 +241,29 @@ mod async_variants {
         type Control: Duplex
             + Sender<Message = control::server_to_client::Message>
             + Receiver<Message = control::client_to_server::Message>;
-        type Event: Receiver<Message = event::client_to_server::Message>;
+        type Event: Duplex
+            + Sender<Message = event::server_to_client::Message>
+            + Receiver<Message = event::client_to_server::Message>;
         type Media: Sender<Message = media::ServerToClient>;
+        type Tunnel: Duplex
+            + Sender<Message = tunnel::Message>
+            + Receiver<Message = tunnel::Message>;
         type Residual;
 
-        fn split(self) -> (Self::Control, Self::Event, Self::Media, Self::Residual);
+        fn split(
+            self,
+        ) -> (
+            Self::Control,
+            Self::Event,
+            Self::Media,
+            Self::Tunnel,
+            Self::Residual,
+        );
         fn unsplit(
             cc: Self::Control,
             ec: Self::Event,
             mc: Self::Media,
+            tc: Self::Tunnel,
             residual: Self::Residual,
         ) -> Self;
     }

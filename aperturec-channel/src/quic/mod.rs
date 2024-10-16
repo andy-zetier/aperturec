@@ -98,6 +98,7 @@ pub mod test {
         (control::server_to_client::Message, usize),
         (event::client_to_server::Message, usize),
         media::ServerToClient,
+        tunnel::Message,
     ) {
         let ci: control::client_to_server::Message = control::ClientInit::default().into();
         let si: control::server_to_client::Message = control::ServerInit::default().into();
@@ -108,11 +109,17 @@ pub mod test {
         let ci_len = ci.encoded_len();
         let si_len = si.encoded_len();
         let ke_len = ke.encoded_len();
+        let to = tunnel::Message {
+            tunnel_id: 1,
+            stream_id: 2,
+            message: Some(tunnel::OpenTcpStream::new().into()),
+        };
         (
             (ci, ci_len + prost::length_delimiter_len(ci_len)),
             (si, si_len + prost::length_delimiter_len(si_len)),
             (ke, ke_len + prost::length_delimiter_len(ke_len)),
             frag,
+            to,
         )
     }
 
@@ -124,14 +131,16 @@ pub mod test {
         let s_thread = std::thread::spawn(move || {
             let s = try_transition!(s, server::states::Accepted).expect("server accept");
             let s = try_transition!(s, server::states::Ready).expect("server ready");
-            let (mut cc, mut ec, mut mc, residual) = s.split();
+            let (mut cc, mut ec, mut mc, mut tc, residual) = s.split();
 
             assert_eq!(cc.receive_with_len().expect("server cc receive"), s_msgs.0);
             cc.send(s_msgs.1 .0).expect("server cc send");
             assert_eq!(ec.receive_with_len().expect("server ec receive"), s_msgs.2);
             mc.send(s_msgs.3).expect("server mc send");
+            tc.send(s_msgs.4.clone()).expect("server tc send");
+            assert_eq!(tc.receive().expect("server tc receive"), s_msgs.4);
 
-            <server::Server<_> as UnifiedServer>::unsplit(cc, ec, mc, residual)
+            <server::Server<_> as UnifiedServer>::unsplit(cc, ec, mc, tc, residual)
         });
 
         let c_thread = std::thread::spawn(move || {
@@ -139,14 +148,16 @@ pub mod test {
                 .map_err(|rec| rec.error)
                 .expect("client connect");
             let c = try_transition!(c, client::states::Ready).expect("client ready");
-            let (mut cc, mut ec, mut mc, _) = c.split();
+            let (mut cc, mut ec, mut mc, mut tc, _) = c.split();
 
             cc.send(c_msgs.0 .0).expect("client cc send");
             assert_eq!(cc.receive_with_len().expect("client cc receive"), c_msgs.1);
             ec.send(c_msgs.2 .0).expect("client ec send");
             assert_eq!(mc.receive().expect("client mc receive"), c_msgs.3);
+            assert_eq!(tc.receive().expect("client tc receive"), c_msgs.4);
+            tc.send(c_msgs.4).expect("client tc send");
 
-            <client::Client<_> as UnifiedClient>::unsplit(cc, ec, mc, ())
+            <client::Client<_> as UnifiedClient>::unsplit(cc, ec, mc, tc, ())
         });
 
         let _s = s_thread.join().expect("server thread");
@@ -161,7 +172,7 @@ pub mod test {
         let s_task = tokio::spawn(async move {
             let s = try_transition_async!(s, server::states::AsyncAccepted).expect("server accept");
             let s = try_transition_async!(s, server::states::AsyncReady).expect("server ready");
-            let (mut cc, mut ec, mut mc, residual) = s.split();
+            let (mut cc, mut ec, mut mc, mut tc, residual) = s.split();
 
             assert_eq!(
                 cc.receive_with_len().await.expect("server cc receive"),
@@ -173,8 +184,10 @@ pub mod test {
                 s_msgs.2
             );
             mc.send(s_msgs.3).await.expect("server mc send");
+            tc.send(s_msgs.4.clone()).await.expect("server tc send");
+            assert_eq!(tc.receive().await.expect("server tc receive"), s_msgs.4);
 
-            <server::Server<_> as AsyncUnifiedServer>::unsplit(cc, ec, mc, residual)
+            <server::Server<_> as AsyncUnifiedServer>::unsplit(cc, ec, mc, tc, residual)
         });
 
         let c_task = tokio::spawn(async move {
@@ -182,7 +195,7 @@ pub mod test {
                 .map_err(|rec| rec.error)
                 .expect("client connect");
             let c = try_transition_async!(c, client::states::AsyncReady).expect("client ready");
-            let (mut cc, mut ec, mut mc) = c.split();
+            let (mut cc, mut ec, mut mc, mut tc, _) = c.split();
 
             cc.send(c_msgs.0 .0).await.expect("client cc send");
             assert_eq!(
@@ -191,8 +204,10 @@ pub mod test {
             );
             ec.send(c_msgs.2 .0).await.expect("client ec send");
             assert_eq!(mc.receive().await.expect("client mc receive"), c_msgs.3);
+            assert_eq!(tc.receive().await.expect("client tc receive"), c_msgs.4);
+            tc.send(c_msgs.4).await.expect("client tc send");
 
-            <client::Client<_> as AsyncUnifiedClient>::unsplit(cc, ec, mc)
+            <client::Client<_> as AsyncUnifiedClient>::unsplit(cc, ec, mc, tc, ())
         });
 
         let _c = c_task.await.expect("client task");
@@ -214,20 +229,22 @@ pub mod test {
                 .map_err(|rec| rec.error)
                 .expect("client connect");
             let c = try_transition!(c, client::states::Ready).expect("client ready");
-            let (mut cc, mut ec, mut mc, _) = c.split();
+            let (mut cc, mut ec, mut mc, mut tc, _) = c.split();
 
             cc.send(c_msgs.0 .0).expect("client cc send");
             assert_eq!(cc.receive_with_len().expect("client cc receive"), c_msgs.1);
             ec.send(c_msgs.2 .0).expect("client ec send");
             assert_eq!(mc.receive().expect("client mc receive"), c_msgs.3);
+            assert_eq!(tc.receive().expect("client tc receive"), c_msgs.4);
+            tc.send(c_msgs.4).expect("client tc send");
 
-            <client::Client<_> as UnifiedClient>::unsplit(cc, ec, mc, ())
+            <client::Client<_> as UnifiedClient>::unsplit(cc, ec, mc, tc, ())
         });
 
         let _s = rt.block_on(async {
             let s = try_transition_async!(s, server::states::AsyncAccepted).expect("server accept");
             let s = try_transition_async!(s, server::states::AsyncReady).expect("server ready");
-            let (mut cc, mut ec, mut mc, residual) = s.split();
+            let (mut cc, mut ec, mut mc, mut tc, residual) = s.split();
 
             assert_eq!(
                 cc.receive_with_len().await.expect("server cc receive"),
@@ -239,8 +256,10 @@ pub mod test {
                 s_msgs.2
             );
             mc.send(s_msgs.3).await.expect("server mc send");
+            tc.send(s_msgs.4.clone()).await.expect("server tc send");
+            assert_eq!(tc.receive().await.expect("server tc receive"), s_msgs.4);
 
-            <server::Server<_> as AsyncUnifiedServer>::unsplit(cc, ec, mc, residual)
+            <server::Server<_> as AsyncUnifiedServer>::unsplit(cc, ec, mc, tc, residual)
         });
 
         let _c = c_thread.join().expect("client thread");
@@ -259,14 +278,16 @@ pub mod test {
         let s_thread = std::thread::spawn(move || {
             let s = try_transition!(s, server::states::Accepted).expect("server accept");
             let s = try_transition!(s, server::states::Ready).expect("server ready");
-            let (mut cc, mut ec, mut mc, residual) = s.split();
+            let (mut cc, mut ec, mut mc, mut tc, residual) = s.split();
 
             assert_eq!(cc.receive_with_len().expect("server cc receive"), s_msgs.0);
             cc.send(s_msgs.1 .0).expect("server cc send");
             assert_eq!(ec.receive_with_len().expect("server ec receive"), s_msgs.2);
             mc.send(s_msgs.3).expect("server mc send");
+            tc.send(s_msgs.4.clone()).expect("server tc send");
+            assert_eq!(tc.receive().expect("server tc receive"), s_msgs.4);
 
-            <server::Server<_> as UnifiedServer>::unsplit(cc, ec, mc, residual)
+            <server::Server<_> as UnifiedServer>::unsplit(cc, ec, mc, tc, residual)
         });
 
         let _c = rt.block_on(async {
@@ -274,7 +295,7 @@ pub mod test {
                 .map_err(|rec| rec.error)
                 .expect("client connect");
             let c = try_transition_async!(c, client::states::AsyncReady).expect("client ready");
-            let (mut cc, mut ec, mut mc) = c.split();
+            let (mut cc, mut ec, mut mc, mut tc, _) = c.split();
 
             cc.send(c_msgs.0 .0).await.expect("client cc send");
             assert_eq!(
@@ -283,8 +304,10 @@ pub mod test {
             );
             ec.send(c_msgs.2 .0).await.expect("client ec send");
             assert_eq!(mc.receive().await.expect("client mc receive"), c_msgs.3);
+            assert_eq!(tc.receive().await.expect("client tc receive"), c_msgs.4);
+            tc.send(c_msgs.4).await.expect("client tc send");
 
-            <client::Client<_> as AsyncUnifiedClient>::unsplit(cc, ec, mc)
+            <client::Client<_> as AsyncUnifiedClient>::unsplit(cc, ec, mc, tc, ())
         });
 
         let _s = s_thread.join().expect("server thread");

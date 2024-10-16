@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package control;
 import "common.proto";
+import "tunnel.proto";
 
 enum Os {
   OS_UNSPECIFIED = 0;
@@ -54,6 +55,7 @@ message ClientInit {
   bool is_caps_locked = 7;
   bool is_num_locked = 8;
   bool is_scroll_locked = 9;
+  map<uint64, tunnel.Description> tunnel_requests = 10;
 }
 
 enum ClientGoodbyeReason {
@@ -79,6 +81,7 @@ message ServerInit {
   uint64 client_id = 1;
   string server_name = 2;
   common.DisplayConfiguration display_configuration = 3;
+  map<uint64, tunnel.Response> tunnel_responses = 5;
 }
 
 enum ServerGoodbyeReason {
