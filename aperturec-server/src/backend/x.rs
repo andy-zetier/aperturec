@@ -1,5 +1,6 @@
 use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState};
 use crate::metrics::BackendEvent;
+use crate::process_utils;
 
 use aperturec_graphics::prelude::*;
 use aperturec_protocol::event as em;
@@ -53,6 +54,8 @@ pub struct X {
 async fn do_exec_command(display_name: &str, command: &mut Command) -> Result<Child> {
     command.env("DISPLAY", display_name);
     command.env("XDG_SESSION_TYPE", "x11");
+    command.stdout(process_utils::StdoutTracer::new(Level::TRACE));
+    command.stderr(process_utils::StderrTracer::new(Level::TRACE));
     debug!("Starting command `{:?}`", command);
     let process = command.spawn()?;
     debug!("Launched {:?}", process);
@@ -286,6 +289,7 @@ impl Backend for X {
             .arg("-displayfd")
             .arg("1") // stdout
             .stdout(Stdio::piped())
+            .stderr(process_utils::StderrTracer::new(Level::INFO))
             .kill_on_drop(true);
         debug!("Starting Xvfb with command `{:?}`", xvfb_cmd);
         let mut xvfb_proc = xvfb_cmd.spawn()?;
