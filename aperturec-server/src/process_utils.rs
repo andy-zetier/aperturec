@@ -36,7 +36,7 @@ macro_rules! construct_tracer {
             let mut s = String::default();
             loop {
                 match pipe_receiver.read_line(&mut s).await {
-                    Ok(_) => {
+                    Ok(nbytes) if nbytes != 0 => {
                         let output = s.trim_end();
                         span.in_scope(|| match $level {
                             Level::ERROR => error!(target: TARGET, %output),
@@ -47,17 +47,26 @@ macro_rules! construct_tracer {
                         });
                         s.clear();
                     },
+                    Ok(_) => {
+                        span.in_scope(|| warn!(target: TARGET, "stream closed"));
+                        break;
+                    }
                     Err(_) => {
                         let output = pipe_receiver.fill_buf().await.expect("fill_buf");
                         let len = output.len();
-                        span.in_scope(|| match $level {
-                            Level::ERROR => error!(target: TARGET, ?output, "non-utf8"),
-                            Level::WARN => warn!(target: TARGET, ?output, "non-utf8"),
-                            Level::INFO => info!(target: TARGET, ?output, "non-utf8"),
-                            Level::DEBUG => debug!(target: TARGET, ?output, "non-utf8"),
-                            Level::TRACE => trace!(target: TARGET, ?output, "non-utf8"),
-                        });
-                        pipe_receiver.consume(len);
+                        if len != 0 {
+                            span.in_scope(|| match $level {
+                                Level::ERROR => error!(target: TARGET, ?output, "non-utf8"),
+                                Level::WARN => warn!(target: TARGET, ?output, "non-utf8"),
+                                Level::INFO => info!(target: TARGET, ?output, "non-utf8"),
+                                Level::DEBUG => debug!(target: TARGET, ?output, "non-utf8"),
+                                Level::TRACE => trace!(target: TARGET, ?output, "non-utf8"),
+                            });
+                            pipe_receiver.consume(len);
+                        } else {
+                            span.in_scope(|| warn!(target: TARGET, "empty non-utf8 data, unrecoverable"));
+                            break;
+                        }
                     }
                 }
             }
