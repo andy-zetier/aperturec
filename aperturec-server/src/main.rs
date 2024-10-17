@@ -146,6 +146,7 @@ async fn main() -> Result<()> {
         2 => Level::DEBUG,
         _ => Level::TRACE,
     };
+    let (non_blocking, _nb_guard) = tracing_appender::non_blocking(std::io::stderr());
     let mut layers = vec![];
     #[cfg(feature = "tokio-console")]
     {
@@ -155,6 +156,7 @@ async fn main() -> Result<()> {
         tracing_subscriber::fmt::layer()
             .with_file(true)
             .with_line_number(true)
+            .with_writer(non_blocking)
             .with_filter(
                 EnvFilter::builder()
                     .with_default_directive(log_verbosity.into())
