@@ -48,7 +48,7 @@ macro_rules! construct_tracer {
                         s.clear();
                     },
                     Ok(_) => {
-                        span.in_scope(|| warn!(target: TARGET, "stream closed"));
+                        span.in_scope(|| debug!(target: TARGET, "stream closed"));
                         break;
                     }
                     Err(_) => {
