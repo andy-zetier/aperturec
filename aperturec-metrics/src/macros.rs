@@ -497,6 +497,7 @@ macro_rules! register_default_metric {
 mod test {
     use crate::MetricsInitializer;
     use std::sync::Once;
+    use test_log::test;
 
     //
     // Generate test Metrics

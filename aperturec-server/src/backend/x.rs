@@ -917,8 +917,9 @@ mod test {
     use super::*;
 
     use serial_test::serial;
+    use test_log::test;
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[test(tokio::test(flavor = "multi_thread"))]
     #[serial]
     async fn retrieve_damage_from_stream() {
         const NUM_UPDATES: usize = 20;
@@ -936,7 +937,7 @@ mod test {
         assert_eq!(count, NUM_UPDATES);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[test(tokio::test(flavor = "multi_thread"))]
     #[serial]
     async fn get_resolution() {
         let x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))
@@ -947,7 +948,7 @@ mod test {
         assert_eq!(res.height, 1080);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[test(tokio::test(flavor = "multi_thread"))]
     #[serial]
     async fn set_resolution() {
         let mut x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))

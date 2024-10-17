@@ -1317,6 +1317,7 @@ mod test {
     use crate::gtk3;
     use aperturec_channel::UnifiedServer;
     use aperturec_protocol::control::ServerInitBuilder;
+    use test_log::test;
 
     fn generate_configuration(
         temp_id: u64,

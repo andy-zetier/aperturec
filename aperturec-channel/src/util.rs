@@ -71,6 +71,7 @@ pub(crate) fn new_async_rt() -> Result<TokioRuntime> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn syncify_sleep() {

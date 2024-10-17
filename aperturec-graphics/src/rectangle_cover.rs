@@ -132,6 +132,7 @@ pub fn diff_rectangle_cover(
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn equal() {

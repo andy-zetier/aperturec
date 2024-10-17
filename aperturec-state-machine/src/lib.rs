@@ -254,6 +254,8 @@ where
 mod test {
     use crate::{Recovered, State, Stateful, Transitionable, TryTransitionable};
 
+    use test_log::test;
+
     macro_rules! empty_states {
         ($($state:ident),+) => {
             $(
@@ -324,7 +326,7 @@ mod test {
         assert_eq!(a.state, A);
     }
 
-    #[tokio::test]
+    #[test(tokio::test)]
     async fn fallible_transition() {
         empty_states!(A, B, C);
         transitions!(Machine, (A, B), (B, A), (C, A));

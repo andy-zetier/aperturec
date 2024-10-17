@@ -23,6 +23,7 @@ pub mod test {
 
     use aperturec_state_machine::*;
 
+    use test_log::test;
     use tokio::runtime::Runtime as TokioRuntime;
 
     fn server_builder() -> server::Builder {
@@ -164,7 +165,7 @@ pub mod test {
         let _c = c_thread.join().expect("client thread");
     }
 
-    #[tokio::test]
+    #[test(tokio::test)]
     async fn async_client_async_server() {
         let (c, s) = unconnected_async_client_async_server();
         let (c_msgs, s_msgs) = (test_messages(), test_messages());

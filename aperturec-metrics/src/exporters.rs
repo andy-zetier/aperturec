@@ -503,6 +503,7 @@ mod test {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use tempfile::NamedTempFile;
+    use test_log::test;
 
     fn generate_measurements() -> Vec<Measurement> {
         vec![
@@ -532,7 +533,7 @@ mod test {
     #[test]
     fn log_exporter() {
         let log_writer = Arc::new(TestWriter(Mutex::new(vec![])));
-        tracing_subscriber::fmt()
+        let subscriber = tracing_subscriber::fmt()
             .with_writer(log_writer.clone())
             .with_env_filter(
                 tracing_subscriber::EnvFilter::builder()
@@ -540,10 +541,12 @@ mod test {
                     .from_env()
                     .unwrap(),
             )
-            .init();
+            .finish();
 
-        let mut le = LogExporter::new(Level::DEBUG).expect("LogExporter");
-        le.do_export(&generate_measurements()).expect("export");
+        tracing::subscriber::with_default(subscriber, || {
+            let mut le = LogExporter::new(Level::DEBUG).expect("LogExporter");
+            le.do_export(&generate_measurements()).expect("export");
+        });
 
         assert!(
             String::from_utf8_lossy(&log_writer.0.lock().expect("lock")).contains(&format!(

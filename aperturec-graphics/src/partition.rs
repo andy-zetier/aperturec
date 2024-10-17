@@ -139,6 +139,7 @@ pub fn partition(client_resolution: &Size, max_decoder_count: usize) -> (Size, V
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn partitions() {

@@ -362,6 +362,7 @@ impl Transitionable<Terminated> for Task<Running> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     const DATA: [Pixel24; 4096] = [Pixel24 {
         blue: 0,
@@ -377,7 +378,7 @@ mod test {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn simple_encode_raw() {
         let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
         let enc_data: Vec<_> = encode(Codec::Raw, raw_data).await.expect("encode raw");
@@ -385,7 +386,7 @@ mod test {
         assert_eq_decoded(&enc_data);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn simple_encode_zlib() {
         let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
         let enc_data: Vec<_> = encode(Codec::Zlib, raw_data).await.expect("encode zlib");

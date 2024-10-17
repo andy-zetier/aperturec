@@ -35,6 +35,7 @@ features = ["provider-tls-rustls"]
 aperturec-channel = { path = ".", features = ["test-tls-material"] }
 prost-types = "0.12"
 rand = "0.8"
+test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
 
 [features]
 test-tls-material = ["once_cell"]

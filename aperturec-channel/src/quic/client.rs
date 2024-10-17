@@ -549,6 +549,7 @@ impl AsyncUnifiedClient for Client<AsyncReady> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     fn builder() -> Builder {
         Builder::default()
@@ -562,7 +563,7 @@ mod test {
         builder().build_sync().expect("client build");
     }
 
-    #[tokio::test]
+    #[test(tokio::test)]
     async fn async_build() {
         builder().build_async().expect("client build");
     }
@@ -573,7 +574,7 @@ mod test {
         builder().build_async().expect("client build");
     }
 
-    #[tokio::test]
+    #[test(tokio::test)]
     #[should_panic]
     async fn sync_build_from_async() {
         builder().build_sync().expect("client build");

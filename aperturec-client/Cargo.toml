@@ -33,6 +33,9 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"]}
 url = "2.5"
 
+[dev-dependencies]
+test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features=["Win32_UI_Input_KeyboardAndMouse"]}
 

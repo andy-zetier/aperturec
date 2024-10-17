@@ -195,6 +195,7 @@ impl FromIterator<Box2D> for Set {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn single_box() {

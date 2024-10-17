@@ -127,6 +127,7 @@ impl Metric for Idle {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     //
     // Round Duration to a const number of decimal places

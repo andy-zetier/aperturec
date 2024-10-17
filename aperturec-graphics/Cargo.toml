@@ -11,3 +11,6 @@ imageproc = "0.25"
 ndarray = { version = "0.16", features = ["rayon"] }
 nshare = "0.10"
 rayon = "1.10"
+
+[dev-dependencies]
+test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }

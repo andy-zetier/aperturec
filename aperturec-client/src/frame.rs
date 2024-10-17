@@ -581,6 +581,7 @@ impl Framer {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn decode_zlib() {

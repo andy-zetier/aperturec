@@ -923,6 +923,7 @@ mod test {
     use aperturec_protocol::control::*;
 
     use rand::Rng;
+    use test_log::test;
 
     fn client_init_msg(id: u64) -> cm_c2s::Message {
         ClientInitBuilder::default()
@@ -1054,7 +1055,7 @@ mod test {
         (server, client_cc, client_ec, client_mc, client_tc)
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[test(tokio::test(flavor = "multi_thread"))]
     async fn auth_fail() {
         let (server, mut client_cc, ..) = server_client_connected().await;
         client_cc
@@ -1064,12 +1065,12 @@ mod test {
         try_transition_async!(server, AuthenticatedClient<X>).expect_err("client authenticate");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[test(tokio::test(flavor = "multi_thread"))]
     async fn auth_pass() {
         let _ = server_client_authenticated().await;
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[test(tokio::test(flavor = "multi_thread"))]
     async fn client_init() {
         let (_, mut client_cc, ..) = server_client_authenticated().await;
         let msg = client_cc.receive().await.expect("receiving server init");

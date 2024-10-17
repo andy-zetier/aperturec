@@ -158,6 +158,7 @@ impl Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn copy_updates_simple() {

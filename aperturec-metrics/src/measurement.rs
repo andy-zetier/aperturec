@@ -86,6 +86,7 @@ impl Measurement {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn poll_result() {

@@ -403,6 +403,7 @@ impl SysinfoMetric for MemoryUsage {
 mod test {
     use super::*;
     use std::time::Duration;
+    use test_log::test;
 
     #[test]
     fn packet_loss() {
