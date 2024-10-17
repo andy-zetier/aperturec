@@ -230,6 +230,7 @@ pub enum ControlMessage {
     SigintReceived,
 }
 
+#[derive(Debug)]
 pub struct DisplayConfig {
     pub id: u64,
     pub display_size: Size,
@@ -947,7 +948,7 @@ impl Client {
 
                     display_config_id = new_config.id;
 
-                    debug!("Display configuration id: {}", display_config_id);
+                    debug!(?new_config);
                 },
                 recv(draw_recv.unwrap_or(&never())) -> img_res => {
                     let mut img = img_res?;

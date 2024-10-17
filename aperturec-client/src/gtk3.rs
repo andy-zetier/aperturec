@@ -24,6 +24,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VS
 
 pub mod image;
 
+pub const DEFAULT_RESOLUTION: (u64, u64) = (800, 600);
+
 pub struct ClientSideItcChannels {
     pub ui_tx: glib::Sender<UiMessage>,
     pub img_tx: glib::Sender<Image>,
@@ -294,7 +296,10 @@ fn build_ui(
     scrolled_window.add(&area);
     window.add(&scrolled_window);
 
-    area.set_size_request(initial_width, initial_height);
+    area.set_size_request(
+        DEFAULT_RESOLUTION.0.try_into().unwrap(),
+        DEFAULT_RESOLUTION.1.try_into().unwrap(),
+    );
     area.set_can_focus(true);
     area.add_events(
         EventMask::KEY_PRESS_MASK
@@ -305,8 +310,6 @@ fn build_ui(
             | EventMask::POINTER_MOTION_MASK
             | EventMask::FOCUS_CHANGE_MASK,
     );
-
-    window.add(&area);
 
     //
     // Setup Images
@@ -594,7 +597,7 @@ fn build_ui(
 
         const RESIZE_TIMER : Duration = Duration::from_millis(600);
         *resize_timeout.borrow_mut() = Some(glib::source::timeout_add_local(RESIZE_TIMER, move || {
-            debug!("New size: {:?}", new_size);
+            debug!("Generating DisplayEvent: {:?}", new_size);
             tx.send(EventMessage::DisplayEventMessage(
                 DisplayEventMessageBuilder::default()
                     .size(new_size)

@@ -16,14 +16,12 @@ use tracing::*;
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
-const DEFAULT_RESOLUTION: (u64, u64) = (800, 600);
-
 #[derive(Debug, clap::Args)]
 #[group(required = false, multiple = false)]
 pub struct ResolutionGroup {
-    /// Display size specified as WIDTHxHEIGHT [default 800x600].
-    #[arg(short, long)]
-    resolution: Option<String>,
+    /// Display size specified as WIDTHxHEIGHT
+    #[arg(short, long, default_value_t = format!("{}x{}", gtk3::DEFAULT_RESOLUTION.0, gtk3::DEFAULT_RESOLUTION.1))]
+    resolution: String,
 
     /// Set resolution to your primary display's current size and startup in fullscreen mode.
     /// Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
@@ -33,28 +31,24 @@ pub struct ResolutionGroup {
 
 impl From<ResolutionGroup> for (u64, u64) {
     fn from(g: ResolutionGroup) -> (u64, u64) {
-        match (g.resolution, g.fullscreen) {
-            (Some(resolution), false) => {
-                let dims: Vec<u64> = resolution
-                    .to_lowercase()
-                    .split('x')
-                    .map(|d| {
-                        d.parse().unwrap_or_else(|e| {
-                            panic!("Failed to parse resolution '{}': {}", resolution, e)
-                        })
+        if g.fullscreen {
+            let full = gtk3::get_fullscreen_dims();
+            (full.0 as u64, full.1 as u64)
+        } else {
+            let dims: Vec<u64> = g
+                .resolution
+                .to_lowercase()
+                .split('x')
+                .map(|d| {
+                    d.parse().unwrap_or_else(|e| {
+                        panic!("Failed to parse resolution '{}': {}", g.resolution, e)
                     })
-                    .collect();
-                if dims.len() != 2 {
-                    panic!("Invalid resolution: {}", resolution);
-                }
-                (dims[0], dims[1])
+                })
+                .collect();
+            if dims.len() != 2 {
+                panic!("Invalid resolution: {}", g.resolution);
             }
-            (None, true) => {
-                let full = gtk3::get_fullscreen_dims();
-                (full.0 as u64, full.1 as u64)
-            }
-            (None, false) => DEFAULT_RESOLUTION,
-            (Some(_), true) => unreachable!("screen-size and fullscreen are both set"),
+            (dims[0], dims[1])
         }
     }
 }
