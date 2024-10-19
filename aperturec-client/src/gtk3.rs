@@ -316,7 +316,7 @@ fn build_ui(
     //
     let image = init_image_green(
         Size::new(initial_width as usize, initial_height as usize),
-        0,
+        u64::MAX,
     );
 
     let workspace = Rc::new((RefCell::new(image), itc.img_tx));
@@ -372,12 +372,6 @@ fn build_ui(
     let lock_state = Rc::new(Cell::new(LockState::get_current()));
     let ls_in = lock_state.clone();
     let ls_out = lock_state.clone();
-
-    //
-    // Setup display size tracking
-    //
-    let last_display_size = Rc::new(RefCell::new((initial_width as u32, initial_height as u32)));
-    let sa_last_display_size = last_display_size.clone();
 
     //
     // Setup keyboard tracking
@@ -576,21 +570,21 @@ fn build_ui(
 
     let resize_timeout = Rc::new(RefCell::new(None::<glib::source::SourceId>));
 
-    area.connect_size_allocate(glib::clone!(@strong window => move |_, allocation| {
-        let new_size = (
-            allocation.width().try_into().unwrap(),
-            allocation.height().try_into().unwrap()
-        );
+    area.connect_size_allocate(glib::clone!(@strong window, @strong workspace => move |_, allocation| {
+        let (ref image, _) = *workspace;
 
         if let Some(source_id) = resize_timeout.borrow_mut().take() {
             source_id.remove();
         }
 
-        if new_size == *sa_last_display_size.borrow() {
+        let new_size = Size::new(
+            allocation.width().try_into().unwrap(),
+            allocation.height().try_into().unwrap()
+        );
+
+        if new_size == image.borrow().size() {
             return;
         }
-
-        *sa_last_display_size.borrow_mut() = new_size;
 
         let timeout = resize_timeout.clone();
         let tx = window_resize_tx.clone();
@@ -710,19 +704,18 @@ fn build_ui(
                 UiMessage::DisplayChange { dc_id, display_size } => {
                     let (ref image, ref tx) = *workspace;
 
-                    //
-                    // Re-create Images with new display_size. Set to render and send clone to
-                    // client
-                    //
-                    let new_image = init_image_black(display_size, dc_id);
-                    image.replace(new_image.clone());
-                    tx.send(new_image)
-                        .unwrap_or_else(|err| warn!("GTK failed to send image to client: {}", err));
-
-                    *last_display_size.borrow_mut() = (
-                        display_size.width.try_into().unwrap(),
-                        display_size.height.try_into().unwrap()
-                    );
+                    if dc_id != image.borrow().display_config_id {
+                        debug!("DisplayChange {{ dc_id: {:?}, display_size: {:?} }}", dc_id, display_size);
+                        //
+                        // Re-create Images. Set to render and send clone to client
+                        //
+                        let new_image = init_image_black(display_size, dc_id);
+                        image.replace(new_image.clone());
+                        tx.send(new_image)
+                            .unwrap_or_else(|err| warn!("GTK failed to send image to client: {}", err));
+                    } else {
+                        debug!("DisplayChange request matches current DCI {}, ignoring", dc_id);
+                    }
 
                     window.resize(display_size.width.try_into().unwrap(), display_size.height.try_into().unwrap());
                     window.queue_draw();

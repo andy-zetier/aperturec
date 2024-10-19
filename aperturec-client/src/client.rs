@@ -111,13 +111,16 @@ impl KeyEventMessage {
 
 #[derive(Builder, Clone, Copy, Debug, Default)]
 pub struct DisplayEventMessage {
-    size: (u32, u32),
+    size: Size,
 }
 
 impl DisplayEventMessage {
     pub fn to_display_event(&self) -> DisplayEvent {
         DisplayEvent {
-            display_size: Some(Dimension::new(self.size.0.into(), self.size.1.into())),
+            display_size: Some(Dimension::new(
+                self.size.width as u64,
+                self.size.height as u64,
+            )),
         }
     }
 }
@@ -174,6 +177,7 @@ pub enum EventMessage {
     DisplayEventMessage(DisplayEventMessage),
 }
 
+#[derive(Debug)]
 pub enum UiMessage {
     Quit(String),
     CursorImage { id: usize, cursor_data: CursorData },
@@ -965,6 +969,7 @@ impl Client {
                     for draw in framer.get_draws_and_reset() {
                         img.draw(&draw);
                     }
+
                     img_tx.send(img)?;
                 },
             }

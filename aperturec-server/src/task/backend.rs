@@ -107,11 +107,11 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         let mut damage_stream = try_recover_async!(self.state.backend.damage_stream(), self);
         let mut cursor_stream = try_recover_async!(self.state.backend.cursor_stream(), self);
-        let mut cursor_cache = HashMap::new();
-        let mut last_cursor_id = 0;
 
         let ct = self.state.ct.clone();
         let task = tokio::task::spawn(async move {
+            let mut cursor_cache = HashMap::new();
+            let mut last_cursor_id = 0;
             let mut display_config_id = 0;
             let res = 'select: loop {
                 tokio::select! {
@@ -128,6 +128,39 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                                 &size,
                                 self.state.encoder_command_txs.len(),
                             );
+
+                            let areas = partitions
+                                .iter()
+                                .enumerate()
+                                .map(|(id, b)| (id as u32, DecoderArea {
+                                    location: Some(Location::new(b.min.x as u64, b.min.y as u64)),
+                                    dimension: Some(Dimension::new(b.width() as u64, b.height() as u64)),
+                                }))
+                            .collect();
+
+                            //
+                            // Ensure requested resolution does not match current resolution
+                            //
+                            match self.state.backend.resolution().await {
+                                Ok(res) if res == resolution => {
+                                    debug!("Requested resolution matches current resolution {:?}", resolution);
+                                    let msg = em_s2c::Message::DisplayConfiguration(DisplayConfiguration {
+                                        id: display_config_id,
+                                        display_size: Some(Dimension::new(resolution.width as u64, resolution.height as u64)),
+                                        areas,
+                                    });
+
+                                    if let Err(err) = self.state.event_tx.send(msg).await {
+                                        break Err(err.into())
+                                    }
+                                    continue;
+                                },
+                                Ok(_) => (),
+                                Err(e) => {
+                                    warn!("Failed to get resolution: {:?}", e);
+                                    continue;
+                                },
+                            };
 
                             //
                             // Try to set the backend resolution
@@ -164,15 +197,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             //
                             // Notify Client of successful resolution change
                             //
-                            let areas = partitions
-                                .iter()
-                                .enumerate()
-                                .map(|(id, b)| (id as u32, DecoderArea {
-                                    location: Some(Location::new(b.min.x as u64, b.min.y as u64)),
-                                    dimension: Some(Dimension::new(b.width() as u64, b.height() as u64)),
-                                }))
-                            .collect();
-
                             display_config_id += 1;
                             let msg = em_s2c::Message::DisplayConfiguration(DisplayConfiguration {
                                 id: display_config_id,
