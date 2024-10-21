@@ -1,5 +1,8 @@
 use aperturec_metrics::create_metric;
 
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
 use s2n_quic::provider::event::{
     self,
     events::{self, Frame},
@@ -18,7 +21,11 @@ create_metric!(RttVariance);
 create_metric!(RttMax);
 pub struct MetricsSubscriber;
 pub struct MetricsSubscriberContext {
-    max_rtt: f64,
+    recent_rtts: BTreeMap<Instant, Duration>,
+}
+
+impl MetricsSubscriberContext {
+    const RTT_RETENTION_TIME: Duration = Duration::from_secs(1);
 }
 
 impl event::Subscriber for MetricsSubscriber {
@@ -34,7 +41,9 @@ impl event::Subscriber for MetricsSubscriber {
         RttVariance::register();
         RttMax::register();
 
-        MetricsSubscriberContext { max_rtt: f64::MIN }
+        MetricsSubscriberContext {
+            recent_rtts: BTreeMap::default(),
+        }
     }
 
     fn on_mtu_updated(
@@ -52,13 +61,34 @@ impl event::Subscriber for MetricsSubscriber {
         _: &event::ConnectionMeta,
         event: &event::events::RecoveryMetrics,
     ) {
-        RttAverage::update(event.smoothed_rtt.as_secs_f64());
-        RttVariance::update(event.rtt_variance.as_secs_f64());
+        let now = Instant::now();
 
-        if event.latest_rtt.as_secs_f64() > ctx.max_rtt {
-            ctx.max_rtt = event.latest_rtt.as_secs_f64();
-            RttMax::update(ctx.max_rtt);
-        }
+        ctx.recent_rtts.retain(|&record_time, _| {
+            now.duration_since(record_time) < Self::ConnectionContext::RTT_RETENTION_TIME
+        });
+        ctx.recent_rtts.insert(now, event.latest_rtt);
+        let mean = ctx
+            .recent_rtts
+            .values()
+            .map(Duration::as_secs_f64)
+            .sum::<f64>()
+            / ctx.recent_rtts.len() as f64;
+        RttAverage::update(mean);
+        let variance = ctx
+            .recent_rtts
+            .values()
+            .map(Duration::as_secs_f64)
+            .map(|x| (x - mean).powi(2))
+            .sum::<f64>()
+            / ctx.recent_rtts.len() as f64;
+        RttVariance::update(variance);
+        let max = ctx
+            .recent_rtts
+            .values()
+            .max()
+            .map(Duration::as_secs_f64)
+            .unwrap();
+        RttMax::update(max);
     }
 
     fn on_frame_sent(
@@ -108,5 +138,17 @@ impl event::Subscriber for MetricsSubscriber {
         _event: &events::PacketSent,
     ) {
         aperturec_metrics::builtins::packet_sent(1);
+    }
+
+    fn on_connection_closed(
+        &mut self,
+        _context: &mut Self::ConnectionContext,
+        _meta: &event::ConnectionMeta,
+        _event: &events::ConnectionClosed,
+    ) {
+        Mtu::update(f64::NAN);
+        RttAverage::update(f64::NAN);
+        RttVariance::update(f64::NAN);
+        RttMax::update(f64::NAN);
     }
 }
