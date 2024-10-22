@@ -5,8 +5,8 @@ members = [
   "aperturec-graphics",
   "aperturec-protocol",
   "aperturec-server",
-  "aperturec-state-machine"
-]
+  "aperturec-state-machine",
+  "aperturec-utils"]
 resolver = "2"
 
 [workspace.package]

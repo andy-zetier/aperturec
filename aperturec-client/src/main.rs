@@ -2,6 +2,7 @@ use aperturec_client::{client, gtk3, metrics};
 use aperturec_metrics::exporters::{
     CsvExporter, Exporter, LogExporter, PrometheusExporter, PushgatewayExporter,
 };
+use aperturec_utils::*;
 
 use anyhow::{anyhow, ensure, Result};
 use clap::Parser;
@@ -13,7 +14,7 @@ use std::iter;
 use std::path::PathBuf;
 use sysinfo::{CpuRefreshKind, RefreshKind, SystemExt};
 use tracing::*;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::prelude::*;
 use url::Url;
 
 #[derive(Debug, clap::Args)]
@@ -124,10 +125,8 @@ struct Args {
     #[arg(short = 'R', long)]
     remote: Vec<client::PortForwardArg>,
 
-    /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
-    /// verbosity. The maximum is 3.
-    #[arg(short, action = clap::ArgAction::Count)]
-    verbosity: u8,
+    #[clap(flatten)]
+    log: log::LogArgGroup,
 }
 
 fn args_from_uri(uri: &str) -> Result<Args> {
@@ -175,23 +174,9 @@ fn main() -> Result<()> {
         Ok(uri) => args_from_uri(&uri)?,
         Err(_) => Args::parse(),
     };
-    let log_verbosity = match args.verbosity {
-        0 => Level::WARN,
-        1 => Level::INFO,
-        2 => Level::DEBUG,
-        _ => Level::TRACE,
-    };
-    let (non_blocking, _nb_guard) = tracing_appender::non_blocking(std::io::stderr());
-    tracing_subscriber::fmt()
-        .with_file(true)
-        .with_line_number(true)
-        .with_writer(non_blocking)
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(log_verbosity.into())
-                .from_env()?,
-        )
-        .init();
+
+    let (log_layer, _guard) = args.log.as_tracing_layer()?;
+    tracing_subscriber::registry().with(log_layer).init();
 
     info!("ApertureC Client Startup");
 

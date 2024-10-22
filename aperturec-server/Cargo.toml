@@ -11,6 +11,7 @@ aperturec-graphics = { path = "../aperturec-graphics" }
 aperturec-protocol = { path = "../aperturec-protocol" }
 aperturec-state-machine = { path = "../aperturec-state-machine" }
 aperturec-metrics = { path = "../aperturec-metrics" }
+aperturec-utils = { path = "../aperturec-utils" }
 
 anyhow = "1.0"
 clap = { version = "4.3", features = ["derive", "env", "string"] }
@@ -32,8 +33,7 @@ tokio = { version = "1.38", features = ["full", "rt", "tracing"] }
 tokio-stream = { version = "0.1", features = ["sync", "fs", "net"] }
 tokio-util = "0.7"
 tracing = "0.1"
-tracing-appender = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = "0.3"
 trait-variant = "0.1"
 which = "6.0"
 xcb = { version = "1.2.2", features = ["damage", "randr", "xtest", "xfixes" ] }

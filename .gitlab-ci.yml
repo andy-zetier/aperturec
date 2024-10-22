@@ -11,7 +11,7 @@ stages:
 .crates:package:
   - aperturec-client
   - aperturec-server
-.crates:no-extra-dependencies: "aperturec-metrics,aperturec-protocol,aperturec-state-machine"
+.crates:no-extra-dependencies: "aperturec-metrics,aperturec-protocol,aperturec-state-machine,aperturec-utils"
 .crates:fips-dependencies: "aperturec-channel"
 .crates:server-dependencies: "aperturec-server"
 .crates:client-dependencies: "aperturec-client"

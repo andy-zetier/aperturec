@@ -11,6 +11,7 @@ aperturec-graphics = { path = "../aperturec-graphics" }
 aperturec-protocol = { path = "../aperturec-protocol" }
 aperturec-state-machine = { path = "../aperturec-state-machine" }
 aperturec-metrics = { path = "../aperturec-metrics" }
+aperturec-utils = { path = "../aperturec-utils" }
 
 anyhow = "1.0"
 build_id = "0.2.1"
@@ -29,8 +30,7 @@ paste = "1.0.14"
 range-set-blaze = "0.1"
 sysinfo = "0.29.10"
 tracing = "0.1"
-tracing-appender = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter"]}
+tracing-subscriber = "0.3"
 url = "2.5"
 
 [dev-dependencies]

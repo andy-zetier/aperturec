@@ -2,6 +2,7 @@ use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
 use aperturec_state_machine::*;
+use aperturec_utils::log;
 
 use anyhow::Result;
 use clap::Parser;
@@ -9,7 +10,7 @@ use futures::future;
 use gethostname::gethostname;
 use std::path::PathBuf;
 use tracing::*;
-use tracing_subscriber::{prelude::*, EnvFilter};
+use tracing_subscriber::prelude::*;
 
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false)]
@@ -114,11 +115,8 @@ struct Args {
     #[clap(flatten)]
     tls: TlsGroup,
 
-    /// Log level verbosity, defaults to Warning if not specified. Multiple -v options increase the
-    /// verbosity. The maximum is 3. Overwrites the behavior set via AC_TRACE_FILTER environment
-    /// variable and --trace-filter argument
-    #[arg(short, action = clap::ArgAction::Count)]
-    verbosity: u8,
+    #[clap(flatten)]
+    log: log::LogArgGroup,
 
     /// Log metric data at the DEBUG level (-vvv)
     #[arg(long)]
@@ -140,30 +138,14 @@ struct Args {
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let log_verbosity = match args.verbosity {
-        0 => Level::WARN,
-        1 => Level::INFO,
-        2 => Level::DEBUG,
-        _ => Level::TRACE,
-    };
-    let (non_blocking, _nb_guard) = tracing_appender::non_blocking(std::io::stderr());
-    let mut layers = vec![];
+
+    let (log_layer, _log_guard) = args.log.as_tracing_layer()?;
+    #[allow(unused_mut)]
+    let mut layers = vec![log_layer.boxed()];
     #[cfg(feature = "tokio-console")]
     {
         layers.push(console_subscriber::spawn().boxed());
     }
-    layers.push(
-        tracing_subscriber::fmt::layer()
-            .with_file(true)
-            .with_line_number(true)
-            .with_writer(non_blocking)
-            .with_filter(
-                EnvFilter::builder()
-                    .with_default_directive(log_verbosity.into())
-                    .from_env()?,
-            )
-            .boxed(),
-    );
     tracing_subscriber::registry().with(layers).init();
 
     let dims: Vec<usize> = args

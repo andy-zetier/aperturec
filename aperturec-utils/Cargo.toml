@@ -1,0 +1,15 @@
+[package]
+name = "aperturec-utils"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.3", features = ["derive", "env", "string"] }
+directories = "5.0"
+file-rotate = "0.7"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-journald = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
