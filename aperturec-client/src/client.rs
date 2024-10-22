@@ -1367,7 +1367,7 @@ mod test {
             .build_sync()
             .expect("Create qserver");
 
-        let (width, height) = gtk3::get_fullscreen_dims();
+        let (width, height) = gtk3::get_fullscreen_dims().expect("fullscreen dims");
 
         let mut config = generate_configuration(
             1234,

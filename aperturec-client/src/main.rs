@@ -33,7 +33,7 @@ pub struct ResolutionGroup {
 impl From<ResolutionGroup> for (u64, u64) {
     fn from(g: ResolutionGroup) -> (u64, u64) {
         if g.fullscreen {
-            let full = gtk3::get_fullscreen_dims();
+            let full = gtk3::get_fullscreen_dims().expect("fullscreen dims");
             (full.0 as u64, full.1 as u64)
         } else {
             let dims: Vec<u64> = g

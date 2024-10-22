@@ -7,6 +7,7 @@ use crate::gtk3::image::Image;
 
 use aperturec_graphics::prelude::*;
 
+use anyhow::Context as _;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use gtk::cairo::{Context, ImageSurface};
 use gtk::gdk::{keys, Display, EventMask, Keymap, ModifierType, ScrollDirection, WindowState};
@@ -114,21 +115,15 @@ impl LockState {
     }
 }
 
-pub fn get_fullscreen_dims() -> (i32, i32) {
-    gtk::init().expect("Failed to initialize GTK");
-    let display = Display::default().expect("Failed to get default GTK display");
-    let monitor = display.primary_monitor().unwrap_or_else(|| {
-        if display.n_monitors() > 0 {
-            display.monitor(0).expect("No GTK monitor 0")
-        } else {
-            display
-                .monitor_at_point(0, 0)
-                .expect("No GTK monitor at (0,0)")
-        }
-    });
+pub fn get_fullscreen_dims() -> anyhow::Result<(i32, i32)> {
+    gtk::init()?;
+    let display = Display::default().context("Failed to get default GTK display")?;
+    let monitor = display
+        .monitor_at_point(0, 0)
+        .context("Failed to get GTK monitor at (0,0)")?;
     let geo = monitor.geometry();
 
-    (geo.width(), geo.height())
+    Ok((geo.width(), geo.height()))
 }
 
 enum KeyboardShortcut {
@@ -728,7 +723,7 @@ fn build_ui(
     //
     // Set to fullscreen
     //
-    if get_fullscreen_dims() == (initial_width, initial_height) {
+    if get_fullscreen_dims().expect("fullscreen dims") == (initial_width, initial_height) {
         window.set_default_width(initial_width / 2);
         window.set_default_height(initial_height / 2);
         window.fullscreen();
