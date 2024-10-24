@@ -1,12 +1,12 @@
 use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState};
-use crate::metrics::BackendEvent;
+use crate::metrics::{BackendEvent, DisplayHeight, DisplayWidth};
 use crate::process_utils;
 
 use aperturec_graphics::prelude::*;
 use aperturec_protocol::event as em;
 
 use anyhow::{anyhow, bail, Result};
-use futures::{future, stream, Stream, StreamExt};
+use futures::{future, stream, Stream, StreamExt, TryFutureExt};
 use ndarray::{prelude::*, AssignElem};
 use rand::distributions::{Alphanumeric, DistString};
 use std::fmt::{self, Debug, Formatter};
@@ -45,6 +45,7 @@ pub struct X {
     max_width: usize,
     max_height: usize,
     connection: XConnection,
+    last_created_mode: Option<randr::Mode>,
     root_drawable: Drawable,
     root_process: Option<Child>,
     root_process_exited: bool,
@@ -331,6 +332,7 @@ impl Backend for X {
             max_width,
             max_height,
             connection,
+            last_created_mode: None,
             root_drawable,
             root_process,
             root_process_exited: false,
@@ -575,7 +577,7 @@ impl Backend for X {
             bail!("no modes for any output");
         }
 
-        trace!("{:#?}", screen_resources);
+        trace!(?screen_resources);
         let curr_output = screen_resources.outputs()[0];
         let curr_output_info = self
             .connection
@@ -608,6 +610,7 @@ impl Backend for X {
                 name: name.as_bytes(),
             })
             .await?;
+
         self.connection
             .checked_void_request(randr::AddOutputMode {
                 output: screen_resources.outputs()[0],
@@ -627,6 +630,27 @@ impl Backend for X {
                 outputs: &[curr_output],
             })
             .await?;
+
+        if let Some(mode) = self.last_created_mode.replace(create_mode_reply.mode()) {
+            if let Err(err) = self
+                .connection
+                .checked_void_request(randr::DeleteOutputMode {
+                    output: screen_resources.outputs()[0],
+                    mode,
+                })
+                .and_then(|_| {
+                    self.connection
+                        .checked_void_request(randr::DestroyMode { mode })
+                })
+                .await
+            {
+                warn!(?err);
+            }
+        }
+
+        DisplayWidth::update(resolution.width as f64);
+        DisplayHeight::update(resolution.height as f64);
+
         Ok(())
     }
 
@@ -954,11 +978,32 @@ mod test {
         let mut x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))
             .await
             .expect("x initialize");
-        let new = Size::new(1024, 768);
-        x.set_resolution(&new).await.expect("set resolution");
-        assert_eq!(new, x.resolution().await.expect("get resolution"));
-        let res = x.resolution().await.expect("resolution");
-        assert_eq!(res.width, 1024);
-        assert_eq!(res.height, 768);
+
+        let resolutions = vec![
+            Size::new(1024, 768),
+            Size::new(800, 600),
+            Size::new(1440, 900),
+            Size::new(1280, 1024),
+            Size::new(823, 688),
+            Size::new(800, 600),
+        ];
+
+        for new in resolutions {
+            x.set_resolution(&new).await.expect("set resolution");
+            assert_eq!(new, x.resolution().await.expect("get resolution"));
+            let res = x.resolution().await.expect("resolution");
+            assert_eq!(res.width, new.width);
+            assert_eq!(res.height, new.height);
+        }
+
+        // Ensure only the initial mode and the current mode still exist
+        assert_eq!(
+            x.screen_resources()
+                .await
+                .expect("screen resources")
+                .modes()
+                .len(),
+            2
+        );
     }
 }

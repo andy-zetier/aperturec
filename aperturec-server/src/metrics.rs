@@ -17,6 +17,8 @@ create_metric!(EncoderCount);
 create_metric!(TrackingBufferDisjointAreas);
 create_metric!(TrackingBufferUpdates);
 create_metric!(BackendEvent);
+create_metric!(DisplayWidth);
+create_metric!(DisplayHeight);
 
 create_histogram_metric_with_buckets!(
     TrackingBufferDamageRatio,
@@ -87,5 +89,7 @@ pub fn setup_server_metrics(
         TrackingBufferDisjointAreas::register();
         TrackingBufferUpdates::register();
         BackendEvent::register();
+        DisplayWidth::register();
+        DisplayHeight::register();
     }
 }
