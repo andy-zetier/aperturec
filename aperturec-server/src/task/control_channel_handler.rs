@@ -80,7 +80,7 @@ impl Transitionable<Running> for Task<Created> {
                                 warn!("Spurious ClientInit message");
                             }
                             Ok(cm_c2s::Message::ClientGoodbye(_)) => {
-                                info!("Client said goodbye");
+                                debug!("Client said goodbye");
                                 break Ok(());
                             }
                             Err(e) => bail!("control channel receive error: {}", e),

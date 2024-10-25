@@ -290,7 +290,7 @@ impl Backend for X {
             .arg("-displayfd")
             .arg("1") // stdout
             .stdout(Stdio::piped())
-            .stderr(process_utils::StderrTracer::new(Level::INFO))
+            .stderr(process_utils::StderrTracer::new(Level::DEBUG))
             .kill_on_drop(true);
         debug!("Starting Xvfb with command `{:?}`", xvfb_cmd);
         let mut xvfb_proc = xvfb_cmd.spawn()?;
@@ -357,7 +357,7 @@ impl Backend for X {
                     // hard-coded for same reasons as pointer event
                     3
                 } as u8;
-                info!("key_event.key: {}", key);
+                trace!(?key);
                 let req = xtest::FakeInput {
                     r#type: event_type_num,
                     detail: key as u8,

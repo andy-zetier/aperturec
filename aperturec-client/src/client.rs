@@ -1023,11 +1023,11 @@ impl Client {
         self.allocated_tunnels = si.tunnel_responses;
 
         info!(
-            "Connected to server @ {} ({}) as client {}!",
+            "Connected to server @ {} ({})!",
             &self.config.server_addr,
             &self.server_name.as_ref().unwrap(),
-            &self.id.unwrap()
         );
+        debug!(client_id = ?self.id.unwrap());
 
         ui_tx
             .send(UiMessage::DisplayChange {
@@ -1079,7 +1079,7 @@ impl Client {
         // Setup SIGINT handler
         //
         ctrlc::set_handler(move || {
-            warn!("SIGINT received, exiting");
+            info!("Received Ctrl-C, exiting");
             notify_control_tx
                 .send(ControlMessage::SigintReceived)
                 .expect("Failed to notify control channel of SIGINT");
@@ -1142,7 +1142,6 @@ impl Client {
                             control_tx_tx.send(gm.to_client_goodbye(client_id).into())
                                 .unwrap_or_else(|e| error!("Failed to send client goodbye to control channel: {}", e));
                             trace!("Sent ClientGoodbye: User Requested");
-                            info!("Disconnecting from server, sent ClientGoodbye");
                             break;
                         },
                         Ok(ControlMessage::EventChannelDied(gm)) => {

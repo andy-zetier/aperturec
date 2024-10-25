@@ -238,6 +238,20 @@ where
     }
 }
 
+impl Server<Accepted> {
+    /// Get the address of the connected client
+    pub fn remote_addr(&self) -> Result<SocketAddr> {
+        Ok(self.state.connection.remote_addr()?)
+    }
+}
+
+impl Server<AsyncAccepted> {
+    /// Get the address of the connected client
+    pub fn remote_addr(&self) -> Result<SocketAddr> {
+        Ok(self.state.connection.remote_addr()?)
+    }
+}
+
 impl TryTransitionable<Accepted, Listening> for Server<Listening> {
     type SuccessStateful = Server<Accepted>;
     type FailureStateful = Server<Listening>;

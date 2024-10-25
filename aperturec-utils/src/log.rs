@@ -17,7 +17,7 @@ use tracing_subscriber::{filter::Directive, fmt::format::FmtSpan, *};
 #[derive(Debug, clap::Args)]
 pub struct LogArgGroup {
     /// Log level verbosity for all log outputs. Multiple -v options increase the verbosity. The
-    /// maximum is 3. This can be overridden using the RUST_LOG environment variable. Overrides all
+    /// maximum is 2. This can be overridden using the RUST_LOG environment variable. Overrides all
     /// --log-*-directive arguments.
     #[arg(short, action = clap::ArgAction::Count)]
     verbosity: u8,
@@ -31,7 +31,7 @@ pub struct LogArgGroup {
     no_color: bool,
 
     /// stderr logging directive. Follows the format of RUST_LOG/EnvFilter
-    #[arg(long, conflicts_with = "quiet", default_value = "warn")]
+    #[arg(long, conflicts_with = "quiet", default_value = "info")]
     log_stderr_directive: String,
 
     /// Disable logging to journald
@@ -68,9 +68,8 @@ impl LogArgGroup {
     {
         let make_filter = |arg_verbosity, arg_directive| {
             let verbosity = match arg_verbosity {
-                0 => Level::WARN,
-                1 => Level::INFO,
-                2 => Level::DEBUG,
+                0 => Level::INFO,
+                1 => Level::DEBUG,
                 _ => Level::TRACE,
             };
 

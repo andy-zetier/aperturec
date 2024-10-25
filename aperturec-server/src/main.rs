@@ -148,6 +148,8 @@ async fn main() -> Result<()> {
     }
     tracing_subscriber::registry().with(layers).init();
 
+    info!("ApertureC Server Startup");
+
     let dims: Vec<usize> = args
         .screen_size
         .to_lowercase()
@@ -214,25 +216,35 @@ async fn main() -> Result<()> {
                 future::ready(error!("Error accepting client: {}", e))
             });
 
+            let remote_addr = accepted.remote_addr()?;
+            info!(
+                "Client connected from {}:{}",
+                remote_addr.ip(),
+                remote_addr.port()
+            );
+
             let authenticated =
                 try_transition_continue_async!(accepted, session_terminated, |e| future::ready(
                     error!("Error authenticating client: {}", e)
                 ));
+            info!("Client authenticated");
 
             let running = try_transition_continue_async!(authenticated, session_terminated, |e| {
                 future::ready(error!("Error starting session: {}", e))
             });
 
             session_terminated = match running.try_transition().await {
-                Ok(session_complete) => {
-                    info!("Session ended successfully");
-                    session_complete
-                }
+                Ok(session_complete) => session_complete,
                 Err(Recovered { stateful, error }) => {
                     error!("Session ended with error: {}", error);
                     stateful
                 }
             };
+            info!(
+                "Client disconnected from {}:{}",
+                remote_addr.ip(),
+                remote_addr.port()
+            );
         }
     });
 

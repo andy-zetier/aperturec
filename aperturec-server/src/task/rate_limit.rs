@@ -217,7 +217,7 @@ impl Transitionable<Running> for Task<Created> {
                 tokio::select! {
                     biased;
                     _ = task_ct.cancelled() => {
-                        info!("rate limit task canceled");
+                        debug!("rate limit task canceled");
                         break Ok(());
                     }
                     Some((cmd, num_bytes, response)) = cmd_rx.recv() => {

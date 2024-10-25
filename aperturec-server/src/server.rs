@@ -24,7 +24,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use ndarray::AssignElem;
 use std::collections::BTreeMap;
 use std::fs;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -244,6 +244,12 @@ impl Server<Created> {
             },
             config,
         })
+    }
+}
+
+impl<B: Backend> Server<Accepted<B>> {
+    pub fn remote_addr(&self) -> Result<SocketAddr> {
+        Ok(self.state.channel_server.remote_addr()?)
     }
 }
 
@@ -588,6 +594,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             recover_self!(cc, ec, mc, tc, listener, backend.into_root()),
             SessionTerminated::<B>
         );
+
         Ok(Server {
             state: AuthenticatedClient {
                 backend,
