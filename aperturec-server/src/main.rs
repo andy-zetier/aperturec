@@ -2,7 +2,7 @@ use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
 use aperturec_state_machine::*;
-use aperturec_utils::*;
+use aperturec_utils::args;
 
 use anyhow::Result;
 use clap::Parser;
@@ -112,26 +112,13 @@ struct Args {
     tls: TlsGroup,
 
     #[clap(flatten)]
-    log: log::LogArgGroup,
+    log: args::log::LogArgGroup,
 
     #[clap(flatten)]
-    auth_token: auth_token::AuthTokenFileArgGroup,
+    auth_token: args::auth_token::AuthTokenFileArgGroup,
 
-    /// Log metric data at the DEBUG level (-vvv)
-    #[arg(long)]
-    metrics_log: bool,
-
-    /// Log metric data to a CSV file at the provided path
-    #[arg(long, default_value = None)]
-    metrics_csv: Option<String>,
-
-    /// Serve Prometheus metrics at the given (optional) bind address. Defaults to 127.0.0.1:8080
-    #[arg(long, num_args = 0..=1, default_value = None, default_missing_value = "127.0.0.1:8080")]
-    metrics_prometheus: Option<String>,
-
-    /// Send metric data to Pushgateway instance at the provided URL
-    #[arg(long, default_value = None)]
-    metrics_pushgateway: Option<String>,
+    #[clap(flatten)]
+    metrics: args::metrics::MetricsArgGroup,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -163,13 +150,15 @@ async fn main() -> Result<()> {
         panic!("Invalid resolution");
     }
 
-    metrics::setup_server_metrics(
-        args.metrics_log,
-        args.metrics_csv,
-        args.metrics_pushgateway,
-        args.metrics_prometheus,
-        std::process::id(),
-    );
+    let metrics_exporters = args.metrics.to_exporters(env!("CARGO_CRATE_NAME"));
+    if !metrics_exporters.is_empty() {
+        aperturec_metrics::MetricsInitializer::default()
+            .with_poll_rate_from_secs(3)
+            .with_exporters(metrics_exporters)
+            .init()
+            .expect("Failed to setup metrics");
+        metrics::setup_server_metrics();
+    }
 
     let config = {
         // Scope config_builder to ensure it is dropped and any auth-token leaves memory
@@ -265,6 +254,7 @@ async fn main() -> Result<()> {
                 Ok(Err(e)) => error!("main task exited with error: {}", e),
                 Err(e) => error!("main task panicked with error: {}", e),
             }
+            aperturec_metrics::stop();
             panic!("main task exited");
         }
     }

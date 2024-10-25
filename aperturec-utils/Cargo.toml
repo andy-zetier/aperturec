@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+aperturec-metrics = { path = "../aperturec-metrics" }
+
 anyhow = "1.0"
 clap = { version = "4.3", features = ["derive", "env", "string"] }
 directories = "5.0"

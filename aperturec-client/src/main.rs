@@ -1,8 +1,5 @@
 use aperturec_client::{client, gtk3, metrics};
-use aperturec_metrics::exporters::{
-    CsvExporter, Exporter, LogExporter, PrometheusExporter, PushgatewayExporter,
-};
-use aperturec_utils::*;
+use aperturec_utils::args;
 
 use anyhow::{anyhow, ensure, Result};
 use clap::Parser;
@@ -65,22 +62,6 @@ struct Args {
     #[arg(short, long, default_value_t = 0)]
     decoder_max: u16,
 
-    /// Log metric data to a CSV file at the provided path
-    #[arg(long, default_value = None)]
-    metrics_csv: Option<String>,
-
-    /// Log metric data at the DEBUG level (-vvv)
-    #[arg(long)]
-    metrics_log: bool,
-
-    /// Serve Prometheus metrics at the given (optional) bind address. Defaults to 127.0.0.1:8080
-    #[arg(long, num_args = 0..=1, default_value = None, default_missing_value = "127.0.0.1:8080")]
-    metrics_prometheus: Option<String>,
-
-    /// Send metric data to Pushgateway instance at the provided URL
-    #[arg(long, default_value = None)]
-    metrics_pushgateway: Option<String>,
-
     /// Program to launch and display on connection.
     ///
     /// If left unspecified, the client will open the server-specified root program, resuming any
@@ -123,10 +104,13 @@ struct Args {
     remote: Vec<client::PortForwardArg>,
 
     #[clap(flatten)]
-    log: log::LogArgGroup,
+    log: args::log::LogArgGroup,
 
     #[clap(flatten)]
-    auth_token: auth_token::AuthTokenAllArgGroup,
+    auth_token: args::auth_token::AuthTokenAllArgGroup,
+
+    #[clap(flatten)]
+    metrics: args::metrics::MetricsArgGroup,
 }
 
 fn args_from_uri(uri: &str) -> Result<Args> {
@@ -221,57 +205,19 @@ fn main() -> Result<()> {
     };
     debug!(?config);
 
-    let mut metrics_started = false;
-
-    if args.metrics_log
-        || args.metrics_csv.is_some()
-        || args.metrics_pushgateway.is_some()
-        || args.metrics_prometheus.is_some()
-    {
-        let mut exporters: Vec<Exporter> = vec![];
-        if args.metrics_log {
-            match LogExporter::new(Level::DEBUG) {
-                Ok(le) => exporters.push(Exporter::Log(le)),
-                Err(err) => warn!("Failed to setup Log exporter: {}, disabling", err),
-            }
-        }
-        if let Some(path) = args.metrics_csv {
-            match CsvExporter::new(path) {
-                Ok(csve) => exporters.push(Exporter::Csv(csve)),
-                Err(err) => warn!("Failed to setup CSV exporter: {}, disabling", err),
-            }
-        }
-        if let Some(url) = args.metrics_pushgateway {
-            match PushgatewayExporter::new(
-                url.to_owned(),
-                "aperturec_client".to_owned(),
-                std::process::id(),
-            ) {
-                Ok(pge) => exporters.push(Exporter::Pushgateway(pge)),
-                Err(err) => warn!("Failed to setup Pushgateway exporter: {}, disabling", err),
-            }
-        }
-        if let Some(bind_addr) = args.metrics_prometheus {
-            match PrometheusExporter::new(&bind_addr) {
-                Ok(pe) => exporters.push(Exporter::Prometheus(pe)),
-                Err(err) => warn!("Failed to setup Prometheus exporter: {}, disabling", err),
-            }
-        }
-
+    let metrics_exporters = args.metrics.to_exporters(env!("CARGO_CRATE_NAME"));
+    if !metrics_exporters.is_empty() {
         aperturec_metrics::MetricsInitializer::default()
             .with_poll_rate_from_secs(3)
-            .with_exporters(exporters)
+            .with_exporters(metrics_exporters)
             .init()
             .expect("Failed to setup metrics");
-        metrics_started = true;
 
         metrics::setup_client_metrics();
     }
 
     client::run_client(config.clone())?;
-    if metrics_started {
-        aperturec_metrics::stop();
-    }
+    aperturec_metrics::stop();
 
     Ok(())
 }
