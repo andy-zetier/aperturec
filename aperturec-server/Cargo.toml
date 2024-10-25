@@ -23,10 +23,14 @@ futures = "0.3"
 gethostname = "0.4"
 jpegxl-rs = { version = "0.11", features = ["vendored"] }
 paste = "1.0.14"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+petname = "2.0"
 prometheus = "0.13.3"
 ndarray = "0.16"
 os_pipe = "1.2"
 rand = { version = "0.8", features = ["std", "std_rng"] }
+rpassword = "7.3"
+secrecy = "0.10"
 shlex = "1.2"
 simple-pool = "0.0"
 tokio = { version = "1.38", features = ["full", "rt", "tracing"] }

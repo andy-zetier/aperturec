@@ -13,8 +13,9 @@ use std::error::Error;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use zeroize::{Zeroize, Zeroizing};
 
-fn encode<SM: Message>(msg: SM, buf: &mut Vec<u8>) -> anyhow::Result<usize> {
+fn encode<SM: Message>(msg: &SM, buf: &mut Vec<u8>) -> anyhow::Result<usize> {
     let msg_len = msg.encoded_len();
     let delim_len = prost::length_delimiter_len(msg_len);
     let nbytes = msg_len + delim_len;
@@ -55,6 +56,7 @@ mod sync_impls {
         transport.read_exact(&mut buf[delim_len..])?;
 
         let msg = RM::decode(&buf[delim_len..])?;
+        buf.zeroize();
         buf.clear();
         Ok((msg, total_len))
     }
@@ -64,8 +66,10 @@ mod sync_impls {
         msg: SM,
         buf: &mut Vec<u8>,
     ) -> anyhow::Result<()> {
-        let nbytes = encode(msg, buf)?;
+        let nbytes = encode(&msg, buf)?;
         transport.write_all(&buf[..nbytes])?;
+        buf.zeroize();
+        buf.clear();
         Ok(())
     }
 }
@@ -99,6 +103,7 @@ mod async_impls {
         transport.read_exact(&mut buf[delim_len..]).await?;
 
         let msg = RM::decode(&buf[delim_len..])?;
+        buf.zeroize();
         buf.clear();
         Ok((msg, total_len))
     }
@@ -108,8 +113,10 @@ mod async_impls {
         msg: SM,
         buf: &mut Vec<u8>,
     ) -> anyhow::Result<()> {
-        let nbytes = encode(msg, buf)?;
+        let nbytes = encode(&msg, buf)?;
         transport.write_all(&buf[..nbytes]).await?;
+        buf.zeroize();
+        buf.clear();
         Ok(())
     }
 }
@@ -118,7 +125,7 @@ mod async_impls {
 #[derive(Debug)]
 pub struct ReceiverSimplex<T: Read, ApiRm, WireRm> {
     transport: T,
-    receive_buf: Vec<u8>,
+    receive_buf: Zeroizing<Vec<u8>>,
     _api_rm: PhantomData<ApiRm>,
     _wire_rm: PhantomData<WireRm>,
 }
@@ -128,7 +135,7 @@ impl<T: Read, ApiRm, WireRm> ReceiverSimplex<T, ApiRm, WireRm> {
     pub fn new(transport: T) -> Self {
         ReceiverSimplex {
             transport,
-            receive_buf: vec![],
+            receive_buf: Zeroizing::default(),
             _api_rm: PhantomData,
             _wire_rm: PhantomData,
         }
@@ -155,7 +162,7 @@ where
 #[derive(Debug)]
 pub struct AsyncReceiverSimplex<T: AsyncRead, ApiRm, WireRm> {
     transport: T,
-    receive_buf: Vec<u8>,
+    receive_buf: Zeroizing<Vec<u8>>,
     _api_rm: PhantomData<ApiRm>,
     _wire_rm: PhantomData<WireRm>,
 }
@@ -165,7 +172,7 @@ impl<T: AsyncRead, ApiRm, WireRm> AsyncReceiverSimplex<T, ApiRm, WireRm> {
     pub fn new(transport: T) -> Self {
         AsyncReceiverSimplex {
             transport,
-            receive_buf: vec![],
+            receive_buf: Zeroizing::default(),
             _api_rm: PhantomData,
             _wire_rm: PhantomData,
         }
@@ -192,7 +199,7 @@ where
 #[derive(Debug)]
 pub struct SenderSimplex<T: Write, ApiSm, WireSm> {
     transport: T,
-    send_buf: Vec<u8>,
+    send_buf: Zeroizing<Vec<u8>>,
     _api_sm: PhantomData<ApiSm>,
     _wire_sm: PhantomData<WireSm>,
 }
@@ -202,7 +209,7 @@ impl<T: Write, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm> {
     pub fn new(transport: T) -> Self {
         SenderSimplex {
             transport,
-            send_buf: vec![],
+            send_buf: Zeroizing::default(),
             _api_sm: PhantomData,
             _wire_sm: PhantomData,
         }
@@ -227,7 +234,7 @@ where
 #[derive(Debug)]
 pub struct AsyncSenderSimplex<T: AsyncWrite, ApiSm, WireSm> {
     transport: T,
-    send_buf: Vec<u8>,
+    send_buf: Zeroizing<Vec<u8>>,
     _api_sm: PhantomData<ApiSm>,
     _wire_sm: PhantomData<WireSm>,
 }
@@ -237,7 +244,7 @@ impl<T: AsyncWrite, ApiSm, WireSm> AsyncSenderSimplex<T, ApiSm, WireSm> {
     pub fn new(transport: T) -> Self {
         AsyncSenderSimplex {
             transport,
-            send_buf: vec![],
+            send_buf: Zeroizing::default(),
             _api_sm: PhantomData,
             _wire_sm: PhantomData,
         }
@@ -263,8 +270,8 @@ where
 #[derive(Debug)]
 pub struct Duplex<T: Read + Write, ApiRm, ApiSm, WireRm, WireSm> {
     transport: T,
-    receive_buf: Vec<u8>,
-    send_buf: Vec<u8>,
+    receive_buf: Zeroizing<Vec<u8>>,
+    send_buf: Zeroizing<Vec<u8>>,
     _api_rm: PhantomData<ApiRm>,
     _api_sm: PhantomData<ApiSm>,
     _wire_rm: PhantomData<WireRm>,
@@ -276,8 +283,8 @@ impl<T: Read + Write, ApiRm, ApiSm, WireRm, WireSm> Duplex<T, ApiRm, ApiSm, Wire
     pub fn new(transport: T) -> Self {
         Duplex {
             transport,
-            receive_buf: vec![],
-            send_buf: vec![],
+            receive_buf: Zeroizing::default(),
+            send_buf: Zeroizing::default(),
             _api_rm: PhantomData,
             _api_sm: PhantomData,
             _wire_rm: PhantomData,
@@ -351,8 +358,8 @@ where
 #[derive(Debug)]
 pub struct AsyncDuplex<T: AsyncRead + AsyncWrite, ApiRm, ApiSm, WireRm, WireSm> {
     transport: T,
-    receive_buf: Vec<u8>,
-    send_buf: Vec<u8>,
+    receive_buf: Zeroizing<Vec<u8>>,
+    send_buf: Zeroizing<Vec<u8>>,
     _api_rm: PhantomData<ApiRm>,
     _api_sm: PhantomData<ApiSm>,
     _wire_rm: PhantomData<WireRm>,
@@ -374,8 +381,8 @@ where
     pub fn new(transport: T) -> Self {
         AsyncDuplex {
             transport,
-            receive_buf: vec![],
-            send_buf: vec![],
+            receive_buf: Zeroizing::default(),
+            send_buf: Zeroizing::default(),
             _api_rm: PhantomData,
             _api_sm: PhantomData,
             _wire_rm: PhantomData,

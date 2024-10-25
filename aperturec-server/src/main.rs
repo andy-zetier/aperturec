@@ -2,7 +2,7 @@ use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
 use aperturec_state_machine::*;
-use aperturec_utils::log;
+use aperturec_utils::*;
 
 use anyhow::Result;
 use clap::Parser;
@@ -88,7 +88,7 @@ struct Args {
 
     /// Allow clients to specify programs to execute at connection time. See the client's
     /// `program` argument for details
-    #[arg(short, long, action = clap::ArgAction::SetTrue, default_value = "false")]
+    #[arg(long, action = clap::ArgAction::SetTrue, default_value = "false")]
     allow_client_exec: bool,
 
     /// External IP address for the server to listen on, optionally including a port
@@ -103,10 +103,6 @@ struct Args {
     #[arg(short, long, default_value = gethostname())]
     name: String,
 
-    /// Initial ID that a client can use to connect to the server
-    #[arg(short, long, default_value = "1234")]
-    temp_client_id: u64,
-
     /// Maximum data transmit rate in whole megabits per second (Mbps). Specifying "none" turns off
     /// max bit rate throttling.
     #[arg(long, default_value = "25")]
@@ -117,6 +113,9 @@ struct Args {
 
     #[clap(flatten)]
     log: log::LogArgGroup,
+
+    #[clap(flatten)]
+    auth_token: auth_token::AuthTokenFileArgGroup,
 
     /// Log metric data at the DEBUG level (-vvv)
     #[arg(long)]
@@ -172,24 +171,29 @@ async fn main() -> Result<()> {
         std::process::id(),
     );
 
-    let mut config_builder = ConfigurationBuilder::default();
-    config_builder
-        .bind_addr(args.bind_address)
-        .name(args.name)
-        .temp_client_id(args.temp_client_id)
-        .max_width(dims[0])
-        .max_height(dims[1])
-        .mbps_max(match args.mbps_max.to_uppercase().as_str() {
-            "NONE" => None,
-            mbps => Some(mbps.parse()?),
-        })
-        .tls_configuration(args.tls.into())
-        .allow_client_exec(args.allow_client_exec);
+    let config = {
+        // Scope config_builder to ensure it is dropped and any auth-token leaves memory
+        let mut config_builder = ConfigurationBuilder::default();
+        config_builder
+            .bind_addr(args.bind_address)
+            .name(args.name)
+            .max_width(dims[0])
+            .max_height(dims[1])
+            .mbps_max(match args.mbps_max.to_uppercase().as_str() {
+                "NONE" => None,
+                mbps => Some(mbps.parse()?),
+            })
+            .tls_configuration(args.tls.into())
+            .allow_client_exec(args.allow_client_exec);
 
-    if let Some(root_program_cmdline) = args.root_program_cmdline.into() {
-        config_builder.root_process_cmdline(root_program_cmdline);
-    }
-    let config = config_builder.build()?;
+        if let Some(root_program_cmdline) = args.root_program_cmdline.into() {
+            config_builder.root_process_cmdline(root_program_cmdline);
+        }
+        if let Some(token) = args.auth_token.into_token()? {
+            config_builder.auth_token(token);
+        }
+        config_builder.build()?
+    };
 
     let server = Server::<Created>::new(config)?;
 
@@ -211,6 +215,7 @@ async fn main() -> Result<()> {
                     break Err::<(), _>(recovered.error);
                 }
             };
+            info!("Listening for clients");
 
             let accepted = try_transition_continue_async!(listening, session_terminated, |e| {
                 future::ready(error!("Error accepting client: {}", e))

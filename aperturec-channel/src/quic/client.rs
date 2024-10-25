@@ -239,6 +239,8 @@ impl TryTransitionable<Connected, Closed> for Client<Closed> {
             let io = s2n_quic::provider::io::tokio::Provider::builder()
                 .with_gro_disabled()?
                 .with_gso_disabled()?
+                .with_internal_recv_buffer_size(0)?
+                .with_internal_send_buffer_size(0)?
                 .with_receive_address((local_ip, 0).into())?
                 .build()?;
             Ok::<_, anyhow::Error>(

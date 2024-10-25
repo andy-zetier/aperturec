@@ -8,6 +8,7 @@ use anyhow::{anyhow, ensure, Result};
 use clap::Parser;
 use gethostname::gethostname;
 use openssl::x509::X509;
+use secrecy::SecretString;
 use std::env;
 use std::fs;
 use std::iter;
@@ -100,10 +101,6 @@ struct Args {
     #[arg(short, long, default_values_os_t = Vec::<PathBuf>::new())]
     additional_tls_certificates: Vec<PathBuf>,
 
-    /// Initial ID of the client. Must match the server's --temp-client-id.
-    #[arg(short, long, default_value_t = 1234)]
-    temp_client_id: u64,
-
     /// Disable server certificate validation. Similar to `curl -k / --insecure`
     #[arg(short = 'k', long, action)]
     insecure: bool,
@@ -127,6 +124,9 @@ struct Args {
 
     #[clap(flatten)]
     log: log::LogArgGroup,
+
+    #[clap(flatten)]
+    auth_token: auth_token::AuthTokenAllArgGroup,
 }
 
 fn args_from_uri(uri: &str) -> Result<Args> {
@@ -191,26 +191,35 @@ fn main() -> Result<()> {
 
     let (width, height) = args.resolution.into();
 
-    let mut config_builder = client::ConfigurationBuilder::default();
-    config_builder
-        .decoder_max(decoder_max)
-        .name(gethostname().into_string().unwrap())
-        .server_addr(args.server_address)
-        .win_height(height)
-        .win_width(width)
-        .temp_id(args.temp_client_id)
-        .allow_insecure_connection(args.insecure)
-        .client_bound_tunnel_reqs(args.local)
-        .server_bound_tunnel_reqs(args.remote);
-    if let Some(program_cmdline) = args.program_cmdline {
-        config_builder.program_cmdline(program_cmdline);
-    }
-    for cert_path in args.additional_tls_certificates {
-        config_builder.additional_tls_certificate(X509::from_pem(&fs::read(cert_path)?)?);
-    }
-    let config = config_builder.build()?;
-
-    debug!("{:#?}", config);
+    let config = {
+        // Scope config_builder to ensure it is dropped and any auth-token leaves memory
+        let mut config_builder = client::ConfigurationBuilder::default();
+        let auth_token = match args.auth_token.into_token()? {
+            Some(token) => token,
+            None => SecretString::from(rpassword::prompt_password(format!(
+                "Authentication token for {}: ",
+                args.server_address
+            ))?),
+        };
+        config_builder
+            .decoder_max(decoder_max)
+            .name(gethostname().into_string().unwrap())
+            .server_addr(args.server_address)
+            .win_height(height)
+            .win_width(width)
+            .auth_token(auth_token)
+            .allow_insecure_connection(args.insecure)
+            .client_bound_tunnel_reqs(args.local)
+            .server_bound_tunnel_reqs(args.remote);
+        if let Some(program_cmdline) = args.program_cmdline {
+            config_builder.program_cmdline(program_cmdline);
+        }
+        for cert_path in args.additional_tls_certificates {
+            config_builder.additional_tls_certificate(X509::from_pem(&fs::read(cert_path)?)?);
+        }
+        config_builder.build()?
+    };
+    debug!(?config);
 
     let mut metrics_started = false;
 

@@ -22,10 +22,18 @@ use derive_builder::Builder;
 use futures::prelude::*;
 use futures::stream::{FuturesUnordered, StreamExt};
 use ndarray::AssignElem;
+use pbkdf2::{
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Pbkdf2,
+};
+use petname::{Generator, Petnames};
+use secrecy::{zeroize::Zeroize, ExposeSecret, SecretString};
 use std::collections::BTreeMap;
 use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::pin::pin;
+use std::sync::LazyLock;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -48,7 +56,8 @@ pub struct Configuration {
     name: String,
     bind_addr: String,
     tls_configuration: TlsConfiguration,
-    temp_client_id: u64,
+    #[builder(setter(strip_option), default)]
+    auth_token: Option<SecretString>,
     max_width: usize,
     max_height: usize,
     #[builder(setter(strip_option), default)]
@@ -62,6 +71,8 @@ pub struct Configuration {
 pub struct Server<S: State> {
     state: S,
     config: Configuration,
+    auth_token_hash: PasswordHash<'static>,
+    next_client_id: u64,
 }
 
 #[derive(State, Debug)]
@@ -228,7 +239,7 @@ fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material>
 }
 
 impl Server<Created> {
-    pub fn new(config: Configuration) -> Result<Self> {
+    pub fn new(mut config: Configuration) -> Result<Self> {
         let root_process_cmd = if let Some(ref rp) = config.root_process_cmdline {
             Some(parse_create_command(rp)?)
         } else {
@@ -237,12 +248,37 @@ impl Server<Created> {
 
         let tls_material = get_tls_material(&config.tls_configuration)?;
 
+        static DICTIONARY: LazyLock<Petnames> = LazyLock::new(Petnames::medium);
+        const NUM_WORDS: u8 = 3;
+        let auth_token = config.auth_token.take().unwrap_or_else(|| {
+            debug!(cardinality = DICTIONARY.cardinality(NUM_WORDS));
+            let auth_token = SecretString::new(
+                DICTIONARY
+                    .generate(&mut rand::thread_rng(), NUM_WORDS, "-")
+                    .expect("generate auth token")
+                    .into(),
+            );
+            println!(
+                "Generated Authentication Token: {}",
+                auth_token.expose_secret()
+            );
+            auth_token
+        });
+
+        static SALT: LazyLock<SaltString> =
+            LazyLock::new(|| SaltString::generate(rand::thread_rng()));
+        let auth_token_hash = Pbkdf2
+            .hash_password(auth_token.expose_secret().as_ref(), &*SALT)
+            .map_err(|e| anyhow!(e))?;
+
         Ok(Server {
+            auth_token_hash,
             state: Created {
                 root_process_cmd,
                 tls_material,
             },
             config,
+            next_client_id: 0,
         })
     }
 }
@@ -270,11 +306,13 @@ impl<B: Backend> AsyncTryTransitionable<BackendInitialized<B>, Created> for Serv
             self
         );
         Ok(Server {
+            auth_token_hash: self.auth_token_hash,
             state: BackendInitialized {
                 backend,
                 tls_material: self.state.tls_material,
             },
             config: self.config,
+            next_client_id: self.next_client_id,
         })
     }
 }
@@ -300,11 +338,13 @@ impl<B: Backend> TryTransitionable<Listening<B>, BackendInitialized<B>>
             self
         );
         Ok(Server {
+            auth_token_hash: self.auth_token_hash,
             state: Listening {
                 backend: self.state.backend,
                 channel_server,
             },
             config: self.config,
+            next_client_id: self.next_client_id,
         })
     }
 }
@@ -324,20 +364,24 @@ impl<B: Backend> AsyncTryTransitionable<Accepted<B>, SessionTerminated<B>>
             channel_states::AsyncListening,
             |channel_server| async {
                 Server {
+                    auth_token_hash: self.auth_token_hash,
                     state: SessionTerminated {
                         backend: Some(self.state.backend.into()),
                         channel_server,
                     },
                     config: self.config,
+                    next_client_id: self.next_client_id,
                 }
             }
         );
         Ok(Server {
+            auth_token_hash: self.auth_token_hash,
             state: Accepted {
                 backend: self.state.backend,
                 channel_server,
             },
             config: self.config,
+            next_client_id: self.next_client_id,
         })
     }
 }
@@ -349,11 +393,13 @@ impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<Accepted<B>> {
         let channel_server = transition!(self.state.channel_server, channel_states::AsyncListening);
 
         Server {
+            auth_token_hash: self.auth_token_hash,
             state: SessionTerminated {
                 backend: Some(self.state.backend.into()),
                 channel_server,
             },
             config: self.config,
+            next_client_id: self.next_client_id,
         }
     }
 }
@@ -376,11 +422,13 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
                 let server: channel::Server<_> =
                     AsyncUnifiedServer::unsplit($cc, $ec, $mc, $tc, $listener);
                 Server {
+                    auth_token_hash: self.auth_token_hash,
                     state: SessionTerminated {
                         backend: Some($backend.into()),
                         channel_server: transition!(server, channel_states::AsyncListening),
                     },
                     config: self.config,
+                    next_client_id: self.next_client_id,
                 }
             }};
         }
@@ -391,11 +439,13 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             channel_states::AsyncAccepted,
             |channel_server: channel::Server<channel_states::AsyncAccepted>| future::ready(
                 Server {
+                    auth_token_hash: self.auth_token_hash,
                     state: SessionTerminated {
                         backend: Some(self.state.backend.into()),
                         channel_server: transition!(channel_server, channel_states::AsyncListening),
                     },
-                    config: self.config
+                    config: self.config,
+                    next_client_id: self.next_client_id,
                 }
             )
         )
@@ -406,8 +456,9 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             recover_self!(cc, ec, mc, tc, listener),
             SessionTerminated::<B>
         );
-        let client_init = match msg {
-            cm_c2s::Message::ClientInit(client_init) => client_init,
+
+        let mut client_init = match msg {
+            cm_c2s::Message::ClientInit(client_init) => pin![client_init],
             _ => return_recover!(
                 recover_self!(cc, ec, mc, tc, listener),
                 SessionTerminated::<B>,
@@ -415,7 +466,17 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             ),
         };
         trace!("Client init: {:#?}", client_init);
-        if client_init.temp_id != self.config.temp_client_id {
+
+        let verified = {
+            // Scoped to ensure client auth token goes out of scope and is zeroed
+            let client_at = SecretString::from(client_init.auth_token.clone());
+            client_init.auth_token.zeroize();
+            Pbkdf2
+                .verify_password(client_at.expose_secret().as_ref(), &self.auth_token_hash)
+                .is_ok()
+        };
+
+        if !verified {
             let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::AuthenticationFailure);
             try_recover_async!(
                 cc.send(msg.into()),
@@ -425,7 +486,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             return_recover!(
                 recover_self!(cc, ec, mc, tc, listener),
                 SessionTerminated::<B>,
-                "mismatched temporary ID"
+                "incorrect authentication token"
             );
         }
         if client_init.max_decoder_count < 1 {
@@ -467,7 +528,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
 
         let mut backend = SwapableBackend::new(self.state.backend);
         if !client_init.client_specified_program_cmdline.is_empty() {
-            let cmdline = client_init.client_specified_program_cmdline;
+            let cmdline = &client_init.client_specified_program_cmdline;
 
             if !self.config.allow_client_exec {
                 let msg = cm::ServerGoodbye::from(cm::ServerGoodbyeReason::ClientExecDisallowed);
@@ -485,7 +546,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             }
 
             let client_backend = try_recover!(
-                future::ready(parse_create_command(&cmdline))
+                future::ready(parse_create_command(cmdline))
                     .and_then(|mut cmd| async move {
                         B::initialize(
                             self.config.max_width,
@@ -519,7 +580,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
         );
 
         let preferred_codec = match client_init.client_caps {
-            Some(caps) => {
+            Some(ref caps) => {
                 if caps.supported_codecs.contains(&Codec::Jpegxl.into()) {
                     Codec::Jpegxl
                 } else if caps.supported_codecs.contains(&Codec::Zlib.into()) {
@@ -556,7 +617,6 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
                 )
             })
             .collect();
-        let client_id: u64 = rand::random();
 
         let rl_config = rate_limit::Configuration::new(self.config.mbps_max, client_mbps_max);
 
@@ -572,7 +632,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
 
         let server_init = try_recover!(
             cm::ServerInitBuilder::default()
-                .client_id(client_id)
+                .client_id(self.next_client_id)
                 .server_name(self.config.name.clone())
                 .display_configuration(DisplayConfiguration::new(
                     0,
@@ -596,6 +656,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
         );
 
         Ok(Server {
+            auth_token_hash: self.auth_token_hash,
             state: AuthenticatedClient {
                 backend,
                 cc,
@@ -609,6 +670,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
                 tunnels,
             },
             config: self.config,
+            next_client_id: self.next_client_id + 1,
         })
     }
 }
@@ -675,6 +737,8 @@ where
                         channel_server: self.state.channel_server,
                     },
                     config: self.config,
+                    auth_token_hash: self.auth_token_hash,
+                    next_client_id: self.next_client_id,
                 }
             }
         );
@@ -704,6 +768,8 @@ where
                 encoder_tasks,
             },
             config: self.config,
+            auth_token_hash: self.auth_token_hash,
+            next_client_id: self.next_client_id,
         })
     }
 }
@@ -714,6 +780,8 @@ impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<AuthenticatedCl
     fn transition(self) -> Self::NextStateful {
         Server {
             config: self.config,
+            auth_token_hash: self.auth_token_hash,
+            next_client_id: self.next_client_id,
             state: SessionTerminated {
                 backend: Some(self.state.backend),
                 channel_server: self.state.channel_server,
@@ -834,6 +902,8 @@ impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<
 
         let stateful = Server {
             config: self.config,
+            auth_token_hash: self.auth_token_hash,
+            next_client_id: self.next_client_id,
             state: SessionTerminated {
                 backend,
                 channel_server: self.state.channel_server,
@@ -856,6 +926,8 @@ impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<Running<B>> {
     fn transition(self) -> Self::NextStateful {
         Server {
             config: self.config,
+            auth_token_hash: self.auth_token_hash,
+            next_client_id: self.next_client_id,
             state: SessionTerminated {
                 backend: None,
                 channel_server: self.state.channel_server,
@@ -877,6 +949,8 @@ impl<B: Backend> TryTransitionable<Listening<B>, SessionUnresumable>
         match self.state.backend {
             Some(backend) => Ok(Server {
                 config: self.config,
+                auth_token_hash: self.auth_token_hash,
+                next_client_id: self.next_client_id,
                 state: Listening {
                     backend: backend.into_root(),
                     channel_server: self.state.channel_server,
@@ -885,6 +959,8 @@ impl<B: Backend> TryTransitionable<Listening<B>, SessionUnresumable>
             None => Err(Recovered {
                 stateful: Server {
                     config: self.config,
+                    auth_token_hash: self.auth_token_hash,
+                    next_client_id: self.next_client_id,
                     state: SessionUnresumable,
                 },
                 error: anyhow!("backend unrecoverable"),
@@ -899,6 +975,8 @@ impl<B: Backend> Transitionable<SessionUnresumable> for Server<SessionTerminated
     fn transition(self) -> Self::NextStateful {
         Server {
             config: self.config,
+            auth_token_hash: self.auth_token_hash,
+            next_client_id: self.next_client_id,
             state: SessionUnresumable,
         }
     }
@@ -910,6 +988,8 @@ impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<Listening<B>> {
     fn transition(self) -> Self::NextStateful {
         Server {
             config: self.config,
+            auth_token_hash: self.auth_token_hash,
+            next_client_id: self.next_client_id,
             state: SessionTerminated {
                 backend: Some(self.state.backend.into()),
                 channel_server: self.state.channel_server,
@@ -929,12 +1009,12 @@ mod test {
     };
     use aperturec_protocol::control::*;
 
-    use rand::Rng;
+    use rand::{distributions::Alphanumeric, Rng};
     use test_log::test;
 
-    fn client_init_msg(id: u64) -> cm_c2s::Message {
+    fn client_init_msg(auth_token: SecretString) -> cm_c2s::Message {
         ClientInitBuilder::default()
-            .temp_id(id)
+            .auth_token(auth_token.expose_secret())
             .client_info(
                 ClientInfoBuilder::default()
                     .version(SemVer::new(0, 1, 2))
@@ -995,10 +1075,16 @@ mod test {
         AsyncClientEvent,
         AsyncClientMedia,
         AsyncClientTunnel,
-        u64,
+        SecretString,
     ) {
         let tlsdir = tempdir::TempDir::new("").expect("temp dir");
-        let client_id = rand::thread_rng().gen();
+        let auth_token: SecretString = SecretString::from(
+            rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(16)
+                .map(char::from)
+                .collect::<String>(),
+        );
         let server_config = ConfigurationBuilder::default()
             .bind_addr("127.0.0.1:0".to_string())
             .name("test server".into())
@@ -1006,7 +1092,7 @@ mod test {
                 save_directory: tlsdir.path().to_path_buf(),
                 external_addresses: vec![],
             })
-            .temp_client_id(client_id)
+            .auth_token(auth_token.clone())
             .max_width(1920)
             .max_height(1080)
             .allow_client_exec(false)
@@ -1042,7 +1128,7 @@ mod test {
         .await;
         let server = try_transition_async!(server, Accepted<X>).expect("accept");
         let (cc, ec, mc, tc, _) = client.split();
-        (server, cc, ec, mc, tc, client_id)
+        (server, cc, ec, mc, tc, auth_token)
     }
 
     async fn server_client_authenticated() -> (
@@ -1052,10 +1138,10 @@ mod test {
         AsyncClientMedia,
         AsyncClientTunnel,
     ) {
-        let (server, mut client_cc, client_ec, client_mc, client_tc, client_id) =
+        let (server, mut client_cc, client_ec, client_mc, client_tc, auth_token) =
             server_client_connected().await;
         client_cc
-            .send(client_init_msg(client_id))
+            .send(client_init_msg(auth_token))
             .await
             .expect("send ClientInit");
         let server = server.try_transition().await.expect("failed to auth");
@@ -1066,7 +1152,7 @@ mod test {
     async fn auth_fail() {
         let (server, mut client_cc, ..) = server_client_connected().await;
         client_cc
-            .send(client_init_msg(5678))
+            .send(client_init_msg(SecretString::default()))
             .await
             .expect("send ClientInit");
         try_transition_async!(server, AuthenticatedClient<X>).expect_err("client authenticate");

@@ -46,7 +46,7 @@ message ClientInfo {
 }
 
 message ClientInit {
-  uint64 temp_id = 1;
+  string auth_token = 1;
   ClientInfo client_info = 2;
   common.ClientCaps client_caps = 3;
   uint32 max_decoder_count = 4;
@@ -81,7 +81,7 @@ message ServerInit {
   uint64 client_id = 1;
   string server_name = 2;
   common.DisplayConfiguration display_configuration = 3;
-  map<uint64, tunnel.Response> tunnel_responses = 5;
+  map<uint64, tunnel.Response> tunnel_responses = 4;
 }
 
 enum ServerGoodbyeReason {

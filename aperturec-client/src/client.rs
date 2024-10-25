@@ -23,6 +23,7 @@ use crossbeam::channel::{bounded, never, select, unbounded, Receiver, RecvTimeou
 use derive_builder::Builder;
 use gtk::glib;
 use openssl::x509::X509;
+use secrecy::{zeroize::Zeroize, ExposeSecret, SecretString};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::{prelude::*, ErrorKind};
@@ -374,10 +375,10 @@ impl FromStr for PortForwardArg {
 //
 // Client structs
 //
-#[derive(Builder, Clone, Debug, PartialEq)]
+#[derive(Builder, Clone, Debug)]
 pub struct Configuration {
     pub name: String,
-    pub temp_id: u64,
+    pub auth_token: SecretString,
     pub decoder_max: u16,
     pub server_addr: String,
     pub win_width: u64,
@@ -526,10 +527,10 @@ impl Client {
             .expect("Failed to generate ClientInfo")
     }
 
-    fn generate_client_init(&self) -> ClientInit {
+    fn generate_client_init(&mut self) -> ClientInit {
         let lock_state = LockState::get_current();
-        ClientInitBuilder::default()
-            .temp_id(self.config.temp_id)
+        let ci = ClientInitBuilder::default()
+            .auth_token(self.config.auth_token.expose_secret())
             .client_info(self.generate_client_info())
             .client_caps(self.generate_client_caps())
             .max_decoder_count::<u32>(self.config.decoder_max.into())
@@ -544,7 +545,9 @@ impl Client {
             .is_scroll_locked(lock_state.is_scroll_locked)
             .tunnel_requests(self.requested_tunnels.clone())
             .build()
-            .expect("Failed to generate ClientInit!")
+            .expect("Failed to generate ClientInit!");
+        self.config.auth_token.zeroize();
+        ci
     }
 
     fn setup_tunnel_channel(&mut self, tc: channel::ClientTunnel) -> Result<()> {
@@ -984,11 +987,14 @@ impl Client {
         notify_control_tx: Sender<ControlMessage>,
         notify_control_rx: Receiver<ControlMessage>,
     ) -> Result<()> {
-        let ci = self.generate_client_init();
-        debug!("{:#?}", &ci);
-
         let (mut client_cc_read, mut client_cc_write) = client_cc.split();
-        client_cc_write.send(ci.into())?;
+
+        {
+            // Scope to ensure client init with any auth token data is dropped
+            let client_init = self.generate_client_init();
+            debug!(?client_init);
+            client_cc_write.send(client_init.into())?;
+        }
 
         debug!("Client Init sent, waiting for ServerInit...");
         let si = match client_cc_read.receive() {
@@ -1324,14 +1330,14 @@ mod test {
     use test_log::test;
 
     fn generate_configuration(
-        temp_id: u64,
+        auth_token: SecretString,
         dec_max: u16,
         width: u64,
         height: u64,
         server_port: u16,
     ) -> Configuration {
         ConfigurationBuilder::default()
-            .temp_id(temp_id)
+            .auth_token(auth_token)
             .decoder_max(dec_max)
             .name(String::from("test_client"))
             .server_addr(format!("127.0.0.1:{}", server_port))
@@ -1339,18 +1345,6 @@ mod test {
             .win_height(height)
             .build()
             .expect("Failed to build Configuration!")
-    }
-
-    fn generate_default_configuration() -> Configuration {
-        generate_configuration(1234, 4, 800, 600, 8765)
-    }
-
-    #[test]
-    fn client_initialization() {
-        let config = generate_default_configuration();
-        let client = Client::new(&config);
-
-        assert_eq!(client.config, config);
     }
 
     #[test]
@@ -1369,7 +1363,7 @@ mod test {
         let (width, height) = gtk3::get_fullscreen_dims().expect("fullscreen dims");
 
         let mut config = generate_configuration(
-            1234,
+            SecretString::default(),
             8,
             width.try_into().unwrap(),
             height.try_into().unwrap(),
