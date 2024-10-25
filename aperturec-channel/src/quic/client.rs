@@ -8,6 +8,8 @@ use crate::util::{new_async_rt, Syncify};
 use crate::*;
 
 use anyhow::{anyhow, Result};
+#[cfg(any(test, debug_assertions))]
+use std::env;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
@@ -148,7 +150,7 @@ impl Builder {
         #[cfg(any(test, debug_assertions))]
         {
             tls_config.key_log = Arc::new(KeyLogFile::new());
-            if tls_config.key_log.will_log("") {
+            if env::var(tls::SSLKEYLOGFILE_VAR).is_ok() {
                 warn!("Key logging enabled! This should never happen in production!");
             }
         }

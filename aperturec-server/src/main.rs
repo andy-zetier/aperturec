@@ -2,7 +2,7 @@ use aperturec_server::backend;
 use aperturec_server::metrics;
 use aperturec_server::server::*;
 use aperturec_state_machine::*;
-use aperturec_utils::args;
+use aperturec_utils::{args, paths};
 
 use anyhow::Result;
 use clap::Parser;
@@ -26,7 +26,7 @@ pub struct RootProgramGroup {
 }
 
 #[derive(Debug, clap::Args, Clone)]
-#[group(required = true, multiple = true)]
+#[group(required = false, multiple = true)]
 struct TlsGroup {
     /// Path to TLS certificate PEM file
     #[arg(short, long, requires = "private_key", conflicts_with_all = &["tls_save_directory", "external_addresses"])]
@@ -37,12 +37,12 @@ struct TlsGroup {
     private_key: Option<PathBuf>,
 
     /// Path to save TLS material which is generated at runtime
-    #[arg(short = 'd', long, conflicts_with_all = &["private_key", "certificate"])]
-    tls_save_directory: Option<PathBuf>,
+    #[arg(short = 'd', long, conflicts_with_all = &["private_key", "certificate"], default_value_os_t = paths::tls_dir())]
+    tls_save_directory: PathBuf,
 
     /// Domain names the server will operate on
-    #[arg(short, long = "external-address", requires = "tls_save_directory", conflicts_with_all =  &["private_key", "certificate"], default_value = gethostname())]
-    external_addresses: Option<Vec<String>>,
+    #[arg(short, long = "external-address", conflicts_with_all =  &["private_key", "certificate"], default_value = gethostname())]
+    external_addresses: Vec<String>,
 }
 
 impl From<RootProgramGroup> for Option<String> {
@@ -63,18 +63,14 @@ impl From<TlsGroup> for TlsConfiguration {
             g.tls_save_directory,
             g.external_addresses,
         ) {
-            (Some(certificate_path), Some(private_key_path), None, _) => {
-                TlsConfiguration::Provided {
-                    certificate_path,
-                    private_key_path,
-                }
-            }
-            (None, None, Some(save_directory), Some(external_addresses)) => {
-                TlsConfiguration::Generated {
-                    save_directory,
-                    external_addresses,
-                }
-            }
+            (Some(certificate_path), Some(private_key_path), _, _) => TlsConfiguration::Provided {
+                certificate_path,
+                private_key_path,
+            },
+            (None, None, save_directory, external_addresses) => TlsConfiguration::Generated {
+                save_directory,
+                external_addresses,
+            },
             cfg => unreachable!("invalid TLS configuration: {:?}", cfg),
         }
     }

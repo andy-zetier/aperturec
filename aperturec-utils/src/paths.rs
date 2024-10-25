@@ -9,8 +9,9 @@ const ORGANIZATION: &str = "zetier";
 const APPLICATION: &str = "aperturec";
 
 const LOG_DIR_NAME: &str = "logs";
+const TLS_DIR_NAME: &str = "tls";
 
-const PROJECT_DIRS: LazyLock<ProjectDirs> =
+static PROJECT_DIRS: LazyLock<ProjectDirs> =
     LazyLock::new(|| ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION).expect("ProjectDirs"));
 
 pub fn log_dir() -> PathBuf {
@@ -28,5 +29,11 @@ pub fn log_basename(dir: &Path) -> PathBuf {
         .to_str()
         .expect("to_str");
     pb.push(format!("{}.{}", exe_file_name, process::id()));
+    pb
+}
+
+pub fn tls_dir() -> PathBuf {
+    let mut pb = PROJECT_DIRS.data_dir().to_path_buf();
+    pb.push(TLS_DIR_NAME);
     pb
 }

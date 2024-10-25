@@ -121,9 +121,9 @@ impl LogArgGroup {
 
             let path = &self.log_file_directory;
             if !path.is_dir() {
-                fs::create_dir_all(&path)?;
+                fs::create_dir_all(path)?;
             }
-            let basename = paths::log_basename(&path);
+            let basename = paths::log_basename(path);
             let writer = FileRotate::new(
                 basename,
                 AppendTimestamp::default(FileLimit::MaxFiles(MAX_FILES)),

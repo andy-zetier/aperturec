@@ -6,6 +6,8 @@ use openssl::nid::Nid;
 use openssl::pkey::{PKey, Private};
 use openssl::x509::extension::SubjectAlternativeName;
 use openssl::x509::{X509NameBuilder, X509};
+use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fs;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
@@ -16,6 +18,8 @@ use rustls::pki_types::*;
 use rustls::Error;
 #[allow(deprecated)]
 use s2n_quic::provider::tls::rustls::rustls;
+
+pub const SSLKEYLOGFILE_VAR: &str = "SSLKEYLOGFILE";
 
 /// Custom certificate verifier allowing built-in and user-provided certificates
 #[derive(Debug, Default)]
@@ -200,6 +204,31 @@ impl Material {
         let certificate = builder.build();
 
         Ok(Material { certificate, pkey })
+    }
+
+    pub fn is_valid_for_sans<I: AsRef<str>>(&self, sans: impl IntoIterator<Item = I>) -> bool {
+        if !self.certificate.verify(&self.pkey).unwrap_or(false) {
+            return false;
+        }
+
+        let cert_sans = match self.certificate.subject_alt_names() {
+            Some(sans_stack) => {
+                let dnses = sans_stack
+                    .iter()
+                    .filter_map(|general_name| general_name.dnsname())
+                    .map(str::to_string);
+                let ips = sans_stack
+                    .iter()
+                    .filter_map(|general_name| general_name.ipaddress())
+                    .map(String::from_utf8_lossy)
+                    .map(Cow::into_owned);
+                dnses.chain(ips).collect()
+            }
+            None => BTreeSet::default(),
+        };
+
+        sans.into_iter()
+            .all(|provided| cert_sans.contains(provided.as_ref()))
     }
 }
 

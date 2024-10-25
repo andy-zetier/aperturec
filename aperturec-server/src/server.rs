@@ -198,6 +198,9 @@ fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material>
             save_directory,
             external_addresses,
         } => {
+            const CERT_PEM_FILENAME: &str = "cert.pem";
+            const KEY_PEM_FILENAME: &str = "pkey.pem";
+
             let mut domain_names = vec![];
             let mut ip_addresses = vec![];
             for addr in external_addresses {
@@ -208,9 +211,6 @@ fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material>
                 }
             }
 
-            let tls_material = channel::tls::Material::ec_self_signed(domain_names, ip_addresses)?;
-            let pem_material: channel::tls::PemMaterial = tls_material.clone().try_into()?;
-
             if save_directory.exists() && !save_directory.is_dir() {
                 bail!("{} is not a directory", save_directory.display());
             }
@@ -219,19 +219,41 @@ fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material>
                 fs::create_dir_all(save_directory)?;
             }
 
-            let mut path = save_directory.to_path_buf();
+            let mut cert_pem_path = save_directory.to_path_buf();
+            cert_pem_path.push(CERT_PEM_FILENAME);
 
-            path.push("cert.pem");
+            let mut key_pem_path = save_directory.to_path_buf();
+            key_pem_path.push(KEY_PEM_FILENAME);
+
+            if cert_pem_path.is_file() && key_pem_path.is_file() {
+                match channel::tls::Material::from_pem_files(&cert_pem_path, &key_pem_path) {
+                    Ok(tls_material) => {
+                        let sans = domain_names.iter().chain(ip_addresses.iter());
+                        if tls_material.is_valid_for_sans(sans) {
+                            info!("existing TLS material is valid, not regenerating");
+                            return Ok(tls_material);
+                        } else {
+                            warn!("existing TLS material is present but is invalid for provided external addresses");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("error loading existing TLS material: '{}'", e);
+                    }
+                }
+            }
+
+            info!("Generating TLS material");
+            let tls_material = channel::tls::Material::ec_self_signed(domain_names, ip_addresses)?;
+            let pem_material: channel::tls::PemMaterial = tls_material.clone().try_into()?;
+
             info!(
-                "Writing server self-signed certificate to {}",
-                path.display()
+                "Writing self-signed certificate to {}",
+                cert_pem_path.display()
             );
-            fs::write(&path, &pem_material.certificate)?;
-            path.pop();
+            fs::write(&cert_pem_path, &pem_material.certificate)?;
 
-            path.push("pkey.pem");
-            warn!("Writing server private key to {}", path.display());
-            fs::write(&path, &pem_material.pkey)?;
+            info!("Writing private key to {}", key_pem_path.display());
+            fs::write(&key_pem_path, &pem_material.pkey)?;
 
             Ok(tls_material)
         }
