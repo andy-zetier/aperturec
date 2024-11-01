@@ -29,6 +29,7 @@ use pbkdf2::{
 use petname::{Generator, Petnames};
 use secrecy::{zeroize::Zeroize, ExposeSecret, SecretString};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
@@ -74,6 +75,7 @@ pub struct Server<S: State> {
     config: Configuration,
     auth_token_hash: PasswordHash<'static>,
     next_client_id: u64,
+    cancellation_token: CancellationToken,
 }
 
 #[derive(State, Debug)]
@@ -95,7 +97,6 @@ pub struct Listening<B: Backend> {
     backend: B,
     channel_server: channel::Server<channel_states::AsyncListening>,
 }
-impl<B: Backend> SelfTransitionable for Server<Listening<B>> {}
 
 #[derive(State, Debug)]
 pub struct Accepted<B: Backend> {
@@ -134,12 +135,35 @@ pub struct Running<B: Backend> {
 #[derive(State, Debug)]
 pub struct SessionTerminated<B: Backend> {
     backend: Option<SwapableBackend<B>>,
-    channel_server: channel::Server<channel_states::AsyncListening>,
+    channel_server: Option<channel::Server<channel_states::AsyncListening>>,
 }
-impl<B: Backend> SelfTransitionable for Server<SessionTerminated<B>> {}
 
 #[derive(State)]
 pub struct SessionUnresumable;
+
+#[derive(Debug)]
+pub struct ServerStopped;
+
+impl fmt::Display for ServerStopped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        write!(f, "server stopped")
+    }
+}
+
+impl std::error::Error for ServerStopped {}
+
+#[derive(Clone)]
+pub struct Handle(CancellationToken);
+
+impl Handle {
+    pub fn stop(&self) {
+        self.0.cancel();
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.0.is_cancelled()
+    }
+}
 
 fn parse_create_command(cmdline: &str) -> Result<Command> {
     if let Some(tokens) = shlex::split(cmdline) {
@@ -261,6 +285,12 @@ fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material>
     }
 }
 
+impl<S: State> Server<S> {
+    pub fn handle(&self) -> Handle {
+        Handle(self.cancellation_token.clone())
+    }
+}
+
 impl Server<Created> {
     pub fn new(mut config: Configuration) -> Result<Self> {
         let root_process_cmd = if let Some(ref rp) = config.root_process_cmdline {
@@ -307,6 +337,7 @@ impl Server<Created> {
                 root_process_cmd,
                 tls_material,
             },
+            cancellation_token: CancellationToken::new(),
             config,
             next_client_id: 0,
         })
@@ -327,23 +358,35 @@ impl<B: Backend> AsyncTryTransitionable<BackendInitialized<B>, Created> for Serv
     async fn try_transition(
         mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let backend = try_recover_async!(
-            B::initialize(
-                self.config.max_width,
-                self.config.max_height,
-                self.state.root_process_cmd.as_mut(),
-            ),
-            self
+        let backend_fut = B::initialize(
+            self.config.max_width,
+            self.config.max_height,
+            self.state.root_process_cmd.as_mut(),
         );
-        Ok(Server {
-            auth_token_hash: self.auth_token_hash,
-            state: BackendInitialized {
-                backend,
-                tls_material: self.state.tls_material,
-            },
-            config: self.config,
-            next_client_id: self.next_client_id,
-        })
+        tokio::select! {
+            _ = self.cancellation_token.cancelled() => Err(Recovered {
+                stateful: self,
+                error: ServerStopped.into()
+            }),
+            backend_res = backend_fut => {
+                match backend_res {
+                    Ok(backend) => Ok(Server {
+                        auth_token_hash: self.auth_token_hash,
+                        cancellation_token: self.cancellation_token,
+                        config: self.config,
+                        next_client_id: self.next_client_id,
+                        state: BackendInitialized {
+                            backend,
+                            tls_material: self.state.tls_material,
+                        },
+                    }),
+                    Err(error) => Err(Recovered {
+                        stateful: self,
+                        error,
+                    })
+                }
+            }
+        }
     }
 }
 
@@ -357,25 +400,33 @@ impl<B: Backend> TryTransitionable<Listening<B>, BackendInitialized<B>>
     fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let pem_material: channel::tls::PemMaterial =
-            try_recover!(self.state.tls_material.clone().try_into(), self);
-        let channel_server = try_recover!(
-            channel::server::Builder::default()
-                .bind_addr(&self.config.bind_addr)
-                .tls_pem_certificate(&pem_material.certificate)
-                .tls_pem_private_key(&pem_material.pkey)
-                .build_async(),
-            self
-        );
-        Ok(Server {
-            auth_token_hash: self.auth_token_hash,
-            state: Listening {
-                backend: self.state.backend,
-                channel_server,
-            },
-            config: self.config,
-            next_client_id: self.next_client_id,
-        })
+        if self.cancellation_token.is_cancelled() {
+            Err(Recovered {
+                stateful: self,
+                error: ServerStopped.into(),
+            })
+        } else {
+            let pem_material: channel::tls::PemMaterial =
+                try_recover!(self.state.tls_material.clone().try_into(), self);
+            let channel_server = try_recover!(
+                channel::server::Builder::default()
+                    .bind_addr(&self.config.bind_addr)
+                    .tls_pem_certificate(&pem_material.certificate)
+                    .tls_pem_private_key(&pem_material.pkey)
+                    .build_async(),
+                self
+            );
+            Ok(Server {
+                auth_token_hash: self.auth_token_hash,
+                state: Listening {
+                    backend: self.state.backend,
+                    channel_server,
+                },
+                config: self.config,
+                next_client_id: self.next_client_id,
+                cancellation_token: self.cancellation_token,
+            })
+        }
     }
 }
 
@@ -389,30 +440,50 @@ impl<B: Backend> AsyncTryTransitionable<Accepted<B>, SessionTerminated<B>>
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let channel_server = try_transition_inner_recover_async!(
-            self.state.channel_server,
-            channel_states::AsyncListening,
-            |channel_server| async {
-                Server {
-                    auth_token_hash: self.auth_token_hash,
-                    state: SessionTerminated {
-                        backend: Some(self.state.backend.into()),
-                        channel_server,
+        tokio::select! {
+            _ = self.cancellation_token.cancelled() => {
+                Err(Recovered {
+                    stateful: Server {
+                        auth_token_hash: self.auth_token_hash,
+                        cancellation_token: self.cancellation_token,
+                        config: self.config,
+                        next_client_id: self.next_client_id,
+                        state: SessionTerminated {
+                            backend: Some(self.state.backend.into()),
+                            channel_server: None,
+                        }
                     },
-                    config: self.config,
-                    next_client_id: self.next_client_id,
+                    error: ServerStopped.into(),
+                })
+            },
+            channel_server_res = self.state.channel_server.try_transition() => {
+                match channel_server_res {
+                    Ok(channel_server_accepted) => Ok(Server {
+                        auth_token_hash: self.auth_token_hash,
+                        cancellation_token: self.cancellation_token,
+                        config: self.config,
+                        next_client_id: self.next_client_id,
+                        state: Accepted {
+                            backend: self.state.backend,
+                            channel_server: channel_server_accepted,
+                        },
+                    }),
+                    Err(Recovered { stateful, error }) => Err(Recovered {
+                        stateful: Server {
+                            auth_token_hash: self.auth_token_hash,
+                            cancellation_token: self.cancellation_token,
+                            config: self.config,
+                            next_client_id: self.next_client_id,
+                            state: SessionTerminated {
+                                backend: Some(self.state.backend.into()),
+                                channel_server: Some(stateful),
+                            }
+                        },
+                        error
+                    }),
                 }
             }
-        );
-        Ok(Server {
-            auth_token_hash: self.auth_token_hash,
-            state: Accepted {
-                backend: self.state.backend,
-                channel_server,
-            },
-            config: self.config,
-            next_client_id: self.next_client_id,
-        })
+        }
     }
 }
 
@@ -426,10 +497,11 @@ impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<Accepted<B>> {
             auth_token_hash: self.auth_token_hash,
             state: SessionTerminated {
                 backend: Some(self.state.backend.into()),
-                channel_server,
+                channel_server: Some(channel_server),
             },
             config: self.config,
             next_client_id: self.next_client_id,
+            cancellation_token: self.cancellation_token,
         }
     }
 }
@@ -449,16 +521,17 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
                 recover_self!($cc, $ec, $mc, $tc, $listener, self.state.backend)
             }};
             ($cc:expr, $ec:expr, $mc:expr, $tc:expr, $listener:expr, $backend: expr) => {{
-                let server: channel::Server<_> =
+                let server: channel::Server<channel_states::AsyncReady> =
                     AsyncUnifiedServer::unsplit($cc, $ec, $mc, $tc, $listener);
                 Server {
                     auth_token_hash: self.auth_token_hash,
-                    state: SessionTerminated {
-                        backend: Some($backend.into()),
-                        channel_server: transition!(server, channel_states::AsyncListening),
+                    state: Accepted {
+                        backend: $backend.into(),
+                        channel_server: transition!(server, channel_states::AsyncAccepted),
                     },
                     config: self.config,
                     next_client_id: self.next_client_id,
+                    cancellation_token: self.cancellation_token,
                 }
             }};
         }
@@ -472,10 +545,14 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
                     auth_token_hash: self.auth_token_hash,
                     state: SessionTerminated {
                         backend: Some(self.state.backend.into()),
-                        channel_server: transition!(channel_server, channel_states::AsyncListening),
+                        channel_server: Some(transition!(
+                            channel_server,
+                            channel_states::AsyncListening
+                        )),
                     },
                     config: self.config,
                     next_client_id: self.next_client_id,
+                    cancellation_token: self.cancellation_token,
                 }
             )
         )
@@ -701,6 +778,7 @@ impl<B: Backend> AsyncTryTransitionable<AuthenticatedClient<B>, SessionTerminate
             },
             config: self.config,
             next_client_id: self.next_client_id + 1,
+            cancellation_token: self.cancellation_token,
         })
     }
 }
@@ -764,11 +842,12 @@ where
                 Server {
                     state: SessionTerminated {
                         backend: Some(backend_created.into_backend()),
-                        channel_server: self.state.channel_server,
+                        channel_server: Some(self.state.channel_server),
                     },
                     config: self.config,
                     auth_token_hash: self.auth_token_hash,
                     next_client_id: self.next_client_id,
+                    cancellation_token: self.cancellation_token,
                 }
             }
         );
@@ -800,6 +879,7 @@ where
             config: self.config,
             auth_token_hash: self.auth_token_hash,
             next_client_id: self.next_client_id,
+            cancellation_token: self.cancellation_token,
         })
     }
 }
@@ -814,22 +894,17 @@ impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<AuthenticatedCl
             next_client_id: self.next_client_id,
             state: SessionTerminated {
                 backend: Some(self.state.backend),
-                channel_server: self.state.channel_server,
+                channel_server: Some(self.state.channel_server),
             },
+            cancellation_token: self.cancellation_token,
         }
     }
 }
 
-impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<B>>
-    for Server<Running<B>>
-{
-    type SuccessStateful = Server<SessionTerminated<B>>;
-    type FailureStateful = Server<SessionTerminated<B>>;
-    type Error = anyhow::Error;
+impl<B: Backend> AsyncTransitionable<SessionTerminated<B>> for Server<Running<B>> {
+    type NextStateful = Server<SessionTerminated<B>>;
 
-    async fn try_transition(
-        self,
-    ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
+    async fn transition(self) -> Self::NextStateful {
         let mut cts = vec![
             self.state.backend_task.cancellation_token().clone(),
             self.state.cc_handler_task.cancellation_token().clone(),
@@ -882,14 +957,14 @@ impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<
 
         let mut cleanup_started = false;
 
-        let ct = CancellationToken::new();
         let mut task_error = None;
+        let ct = CancellationToken::new();
         loop {
             tokio::select! {
                 biased;
                 _ = ct.cancelled(), if !cleanup_started => {
-                    debug!("server cancelled");
-                    let gb_reason = if task_error.is_some() {
+                    debug!("session cancelled");
+                    let gb_reason = if self.cancellation_token.is_cancelled() && task_error.is_none() {
                         cm::ServerGoodbyeReason::ShuttingDown
                     } else {
                         cm::ServerGoodbyeReason::InternalError
@@ -898,10 +973,15 @@ impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<
                         .send(cm::ServerGoodbye::from(gb_reason).into())
                         .await
                         .unwrap_or_else(|_| warn!("Control Channel closed before server could say goodbye"));
+
                     for ct in &cts {
                         ct.cancel();
                     }
                     cleanup_started = true;
+                }
+                _ = self.cancellation_token.cancelled(), if !cleanup_started => {
+                    debug!("server stopped");
+                    ct.cancel();
                 }
                 Some(res) = task_results.next() => {
                     trace!("Task finished");
@@ -910,7 +990,7 @@ impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<
                             task_error = Some(anyhow!("task error: {}", error));
                         }
                     }
-                    ct.cancel()
+                    ct.cancel();
                 }
                 Some(res) = backend_stream.next(), if backend.is_none() && task_error.is_none() => {
                     match res {
@@ -928,40 +1008,21 @@ impl<B: Backend> AsyncTryTransitionable<SessionTerminated<B>, SessionTerminated<
             }
         }
 
+        if let Some(e) = task_error {
+            error!(%e);
+        }
+
         debug!("Server tasks finished");
 
-        let stateful = Server {
-            config: self.config,
-            auth_token_hash: self.auth_token_hash,
-            next_client_id: self.next_client_id,
-            state: SessionTerminated {
-                backend,
-                channel_server: self.state.channel_server,
-            },
-        };
-
-        match task_error {
-            None => Ok(stateful),
-            Some(error) => Err(Recovered {
-                stateful,
-                error: anyhow!("server task error: {}", error),
-            }),
-        }
-    }
-}
-
-impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<Running<B>> {
-    type NextStateful = Server<SessionTerminated<B>>;
-
-    fn transition(self) -> Self::NextStateful {
         Server {
             config: self.config,
             auth_token_hash: self.auth_token_hash,
             next_client_id: self.next_client_id,
             state: SessionTerminated {
-                backend: None,
-                channel_server: self.state.channel_server,
+                backend,
+                channel_server: Some(self.state.channel_server),
             },
+            cancellation_token: self.cancellation_token,
         }
     }
 }
@@ -976,25 +1037,38 @@ impl<B: Backend> TryTransitionable<Listening<B>, SessionUnresumable>
     fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        match self.state.backend {
-            Some(backend) => Ok(Server {
+        if self.cancellation_token.is_cancelled() {}
+        match (
+            self.state.backend,
+            self.state.channel_server,
+            self.cancellation_token.is_cancelled(),
+        ) {
+            (Some(backend), Some(channel_server), false) => Ok(Server {
                 config: self.config,
                 auth_token_hash: self.auth_token_hash,
                 next_client_id: self.next_client_id,
                 state: Listening {
                     backend: backend.into_root(),
-                    channel_server: self.state.channel_server,
+                    channel_server,
                 },
+                cancellation_token: self.cancellation_token,
             }),
-            None => Err(Recovered {
-                stateful: Server {
+            (.., is_cancelled) => {
+                let stateful = Server {
                     config: self.config,
                     auth_token_hash: self.auth_token_hash,
                     next_client_id: self.next_client_id,
                     state: SessionUnresumable,
-                },
-                error: anyhow!("backend unrecoverable"),
-            }),
+                    cancellation_token: self.cancellation_token,
+                };
+                let error = if is_cancelled {
+                    ServerStopped.into()
+                } else {
+                    anyhow!("backend unrecoverable")
+                };
+
+                Err(Recovered { stateful, error })
+            }
         }
     }
 }
@@ -1008,6 +1082,7 @@ impl<B: Backend> Transitionable<SessionUnresumable> for Server<SessionTerminated
             auth_token_hash: self.auth_token_hash,
             next_client_id: self.next_client_id,
             state: SessionUnresumable,
+            cancellation_token: self.cancellation_token,
         }
     }
 }
@@ -1022,8 +1097,9 @@ impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<Listening<B>> {
             next_client_id: self.next_client_id,
             state: SessionTerminated {
                 backend: Some(self.state.backend.into()),
-                channel_server: self.state.channel_server,
+                channel_server: Some(self.state.channel_server),
             },
+            cancellation_token: self.cancellation_token,
         }
     }
 }

@@ -7,9 +7,9 @@ use aperturec_channel::{
 use aperturec_graphics::prelude::*;
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
-    server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder,
-    ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, Endianness,
-    Os,
+    self as cm, server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye,
+    ClientGoodbyeBuilder, ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit,
+    ClientInitBuilder, Endianness, Os,
 };
 use aperturec_protocol::event::{
     button, client_to_server as em_c2s, server_to_client as em_s2c, Button, ButtonStateBuilder,
@@ -1057,8 +1057,13 @@ impl Client {
             loop {
                 match client_cc_read.receive() {
                     Ok(cm_s2c) => {
+                        let is_server_gb = matches!(cm_s2c, cm_s2c::Message::ServerGoodbye(_));
                         if let Err(err) = control_rx_tx.send(Ok(cm_s2c)) {
                             error!("Failed to send: {}", err);
+                            break;
+                        }
+                        if is_server_gb {
+                            trace!("server goodbye, stopping CC rx thread");
                             break;
                         }
                     }
@@ -1104,12 +1109,17 @@ impl Client {
             loop {
                 select! {
                     recv(control_rx_rx) -> msg => match msg {
-                        Ok(Ok(cm_s2c::Message::ServerGoodbye(_))) => {
+                        Ok(Ok(cm_s2c::Message::ServerGoodbye(gb))) => {
                             if let Err(err) =
                                 ui_tx.send(UiMessage::Quit(String::from("Goodbye!")))
                                 {
                                     warn!("Failed to send QuitMessage: {}", err);
                                 }
+                            if gb.reason() == cm::ServerGoodbyeReason::ShuttingDown {
+                                warn!("Server is shutting down");
+                            } else {
+                                error!("Server sent goodbye with reason: {}", gb.reason().as_str_name());
+                            }
                             break;
                         },
                         Ok(Ok(_)) => {

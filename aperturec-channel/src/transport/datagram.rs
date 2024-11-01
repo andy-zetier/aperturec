@@ -89,6 +89,11 @@ macro_rules! dg_type_sync {
                     async_rt,
                 }
             }
+
+            /// Convert [`Self`] into the underlying QUIC connection
+            pub fn into_connection(self) -> Connection {
+                self.transport.connection
+            }
         }
     };
 }
@@ -107,6 +112,11 @@ macro_rules! dg_type_async {
                 Self {
                     transport: OutOfOrderTransport::new(conn),
                 }
+            }
+
+            /// Convert [`Self`] into the underlying QUIC connection
+            pub fn into_connection(self) -> Connection {
+                self.transport.connection
             }
         }
     };

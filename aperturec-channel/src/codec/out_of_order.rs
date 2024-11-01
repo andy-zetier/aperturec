@@ -146,6 +146,11 @@ impl<T: transport::Receive, ApiRm, WireRm> ReceiverSimplex<T, ApiRm, WireRm> {
             _wire_rm: PhantomData,
         }
     }
+
+    /// Convert [`Self`] into the underlying transport
+    pub fn into_transport(self) -> T {
+        self.transport
+    }
 }
 
 impl<T, ApiRm, WireRm> Receiver for ReceiverSimplex<T, ApiRm, WireRm>
@@ -177,6 +182,11 @@ impl<T: transport::AsyncReceive, ApiRm, WireRm> AsyncReceiverSimplex<T, ApiRm, W
             _api_rm: PhantomData,
             _wire_rm: PhantomData,
         }
+    }
+
+    /// Convert [`Self`] into the underlying transport
+    pub fn into_transport(self) -> T {
+        self.transport
     }
 }
 
@@ -210,6 +220,11 @@ impl<T: transport::Transmit, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm> {
             _api_sm: PhantomData,
             _wire_sm: PhantomData,
         }
+    }
+
+    /// Convert [`Self`] into the underlying transport
+    pub fn into_transport(self) -> T {
+        self.transport
     }
 }
 
@@ -265,6 +280,11 @@ impl<T: transport::AsyncTransmit, ApiSm, WireSm> AsyncSenderSimplex<T, ApiSm, Wi
         }
     }
 
+    /// Convert [`Self`] into the underlying transport
+    pub fn into_transport(self) -> T {
+        self.transport
+    }
+
     /// Create a [`Self`] which limits the rate at which messages are sent based on the
     /// provided [`Gate`]
     pub fn gated<G: AsyncGate>(self, gate: G) -> Gated<Self, G> {
@@ -315,6 +335,11 @@ impl<T: transport::Receive + transport::Transmit, ApiRm, ApiSm, WireRm, WireSm>
             _wire_rm: PhantomData,
             _wire_sm: PhantomData,
         }
+    }
+
+    /// Convert [`Self`] into the underlying transport
+    pub fn into_transport(self) -> T {
+        self.transport
     }
 
     /// Create a [`Self`] which limits the rate at which messages are sent based on the
@@ -385,6 +410,11 @@ impl<T: transport::AsyncReceive + transport::AsyncTransmit, ApiRm, ApiSm, WireRm
             _wire_rm: PhantomData,
             _wire_sm: PhantomData,
         }
+    }
+
+    /// Convert [`Self`] into the underlying transport
+    pub fn into_transport(self) -> T {
+        self.transport
     }
 
     /// Create a [`Self`] which limits the rate at which messages are sent based on the

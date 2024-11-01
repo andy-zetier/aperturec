@@ -3,9 +3,9 @@ use aperturec_channel::*;
 use aperturec_protocol::control::client_to_server as cm_c2s;
 use aperturec_protocol::control::server_to_client as cm_s2c;
 use aperturec_state_machine::*;
-use tokio::runtime::Handle;
+use futures::{future, prelude::*};
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
+use tokio::task::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::*;
 
@@ -24,7 +24,8 @@ pub struct Created {
 #[derive(State)]
 pub struct Running {
     ct: CancellationToken,
-    tasks: JoinSet<Result<()>>,
+    tx_task: JoinHandle<Result<()>>,
+    rx_task: JoinHandle<Result<()>>,
 }
 
 #[derive(State, Debug)]
@@ -54,28 +55,34 @@ impl Transitionable<Running> for Task<Created> {
     type NextStateful = Task<Running>;
 
     fn transition(mut self) -> Self::NextStateful {
-        let mut js = JoinSet::new();
-        let curr_rt = Handle::current();
+        let ct = CancellationToken::new();
 
         let (mut cc_rx, mut cc_tx) = self.state.cc.split();
 
-        {
-            js.spawn_on(
-                async move {
-                    while let Some(msg) = self.state.to_send_rx.recv().await {
+        let tx_ct = ct.clone();
+        let tx_task = task::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(msg) = self.state.to_send_rx.recv() => {
                         cc_tx.send(msg).await?;
                     }
-                    bail!("CC message stream exhausted");
-                },
-                &curr_rt,
-            );
-        }
+                    _ = tx_ct.cancelled() => {
+                        cc_tx.flush().await?;
+                        break Ok(());
+                    }
+                    else => bail!("CC Tx messages exhausted"),
+                }
+            }
+        });
 
-        {
-            js.spawn_on(
-                async move {
-                    loop {
-                        match cc_rx.receive().await {
+        let rx_ct = ct.clone();
+        let rx_task = task::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    cc_rx_res = cc_rx.receive() => {
+                        match cc_rx_res {
                             Ok(cm_c2s::Message::ClientInit(_)) => {
                                 warn!("Spurious ClientInit message");
                             }
@@ -83,18 +90,21 @@ impl Transitionable<Running> for Task<Created> {
                                 debug!("Client said goodbye");
                                 break Ok(());
                             }
-                            Err(e) => bail!("control channel receive error: {}", e),
+                            Err(e) => bail!("CC Rx error: {}", e),
                         }
                     }
-                },
-                &curr_rt,
-            );
-        }
+                    _ = rx_ct.cancelled() => {
+                        break Ok(());
+                    }
+                }
+            }
+        });
 
         Task {
             state: Running {
-                tasks: js,
-                ct: CancellationToken::new(),
+                tx_task,
+                rx_task,
+                ct,
             },
         }
     }
@@ -114,40 +124,29 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
     type Error = anyhow::Error;
 
     async fn try_transition(
-        mut self,
+        self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let stateful = Task { state: Terminated };
-        let mut errors = vec![];
+        let rx_res = self
+            .state
+            .rx_task
+            .map_err(|e| anyhow!("CC Rx panic: {}", e))
+            .and_then(|res| future::ready(res.map_err(|e| anyhow!("CC Rx error: {}", e))))
+            .inspect(|_| self.state.ct.cancel())
+            .boxed();
+        let tx_res = self
+            .state
+            .tx_task
+            .map_err(|e| anyhow!("CC Tx panic: {}", e))
+            .and_then(|res| future::ready(res.map_err(|e| anyhow!("CC Tx error: {}", e))))
+            .inspect(|_| self.state.ct.cancel())
+            .boxed();
 
-        loop {
-            tokio::select! {
-                _ = self.state.ct.cancelled() => {
-                    self.state.tasks.abort_all();
-                    break;
-                },
-                Some(task_res) = self.state.tasks.join_next() => {
-                    let error = match task_res {
-                        Ok(Ok(())) => {
-                            trace!("task exited");
-                            self.state.ct.cancel();
-                            continue;
-                        },
-                        Ok(Err(e)) => anyhow!("control channel handler task exited with internal error: {}", e),
-                        Err(e) => anyhow!("control channel handler task exited with panic: {}", e),
-                    };
-                    errors.push(error);
-                },
-                else => break,
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(stateful)
-        } else {
-            Err(Recovered {
-                stateful,
-                error: anyhow!("control channel handler errors: {:?}", errors),
+        future::try_join(rx_res, tx_res)
+            .await
+            .map(|_| Task { state: Terminated })
+            .map_err(|error| Recovered {
+                stateful: Task { state: Terminated },
+                error,
             })
-        }
     }
 }

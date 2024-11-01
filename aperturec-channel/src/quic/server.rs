@@ -390,6 +390,20 @@ impl Transitionable<Listening> for Server<Ready> {
     }
 }
 
+impl Transitionable<Accepted> for Server<Ready> {
+    type NextStateful = Server<Accepted>;
+
+    fn transition(self) -> Self::NextStateful {
+        Server {
+            state: Accepted {
+                quic_server: self.state.quic_server,
+                async_rt: self.state.async_rt,
+                connection: self.state.mc.into_transport().into_connection(),
+            },
+        }
+    }
+}
+
 impl UnifiedServer for Server<Ready> {
     type Control = ServerControl;
     type Event = ServerEvent;
@@ -539,6 +553,19 @@ impl Transitionable<AsyncListening> for Server<AsyncReady> {
         Server {
             state: AsyncListening {
                 quic_server: self.state.quic_server,
+            },
+        }
+    }
+}
+
+impl Transitionable<AsyncAccepted> for Server<AsyncReady> {
+    type NextStateful = Server<AsyncAccepted>;
+
+    fn transition(self) -> Self::NextStateful {
+        Server {
+            state: AsyncAccepted {
+                quic_server: self.state.quic_server,
+                connection: self.state.mc.into_transport().into_connection(),
             },
         }
     }

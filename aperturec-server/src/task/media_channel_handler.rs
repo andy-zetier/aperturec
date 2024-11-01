@@ -60,18 +60,27 @@ impl Transitionable<Running> for Task<Created> {
     type NextStateful = Task<Running>;
 
     fn transition(mut self) -> Self::NextStateful {
+        let ct = CancellationToken::new();
+
+        let tx_ct = ct.clone();
         let task = task::spawn(async move {
-            while let Some(msg) = self.state.mm_rx.recv().await {
-                self.state.mc.send(msg.into()).await?;
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(msg) = self.state.mm_rx.recv() => {
+                        self.state.mc.send(msg.into()).await?;
+                    }
+                    _ = tx_ct.cancelled() => {
+                        self.state.mc.flush().await?;
+                        break Ok(());
+                    }
+                    else => bail!("MC Tx messages exhausted"),
+                }
             }
-            bail!("media message stream exhausted");
         });
 
         Task {
-            state: Running {
-                task,
-                ct: CancellationToken::new(),
-            },
+            state: Running { ct, task },
         }
     }
 }
@@ -84,21 +93,17 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
     async fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let abort_handle = self.state.task.abort_handle();
         let stateful = Task { state: Terminated };
-        tokio::select! {
-            _ = self.state.ct.cancelled() => {
-                abort_handle.abort();
-                Ok(stateful)
-            },
-            task_res = self.state.task => {
-                let error = match task_res {
-                    Ok(Ok(())) => anyhow!("media channel handler task exited without internal error"),
-                    Ok(Err(e)) => anyhow!("media channel handler task exited with internal error: {}", e),
-                    Err(e) => anyhow!("media channel handler task exited with panic: {}", e),
-                };
-                Err(Recovered { stateful, error })
-            },
+        match self.state.task.await {
+            Err(e) => Err(Recovered {
+                stateful,
+                error: anyhow!("MC Tx error: {}", e),
+            }),
+            Ok(Err(e)) => Err(Recovered {
+                stateful,
+                error: anyhow!("MC Tx error: {}", e),
+            }),
+            _ => Ok(stateful),
         }
     }
 }

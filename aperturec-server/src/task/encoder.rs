@@ -304,6 +304,7 @@ impl Transitionable<Running> for Task<Created> {
                             }
                         }
                     }
+                    else => bail!("[encoder {}] exhausted", self.id),
                 }
             }
         });

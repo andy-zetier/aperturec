@@ -181,29 +181,36 @@ async fn main() -> Result<()> {
     };
 
     let server = Server::<Created>::new(config)?;
+    let handle = server.handle();
 
-    let backend_init = try_transition_async!(server, BackendInitialized::<backend::X>)
-        .map_err(|recovered| recovered.error)
-        .expect("failed initializing X backend");
-    let listening = try_transition!(backend_init, Listening::<_>)
-        .map_err(|recovered| recovered.error)
-        .expect("failed listening");
-    let mut session_terminated: Server<SessionTerminated<_>> =
-        transition!(listening, SessionTerminated::<_>);
+    let mut main_task = tokio::task::spawn(async {
+        let handle = server.handle();
 
-    let main_task = tokio::task::spawn(async {
-        loop {
+        let backend_init = try_transition_async!(server, BackendInitialized::<backend::X>)
+            .map_err(|recovered| recovered.error)?;
+        let listening =
+            try_transition!(backend_init, Listening::<_>).map_err(|recovered| recovered.error)?;
+
+        let mut session_terminated: Server<SessionTerminated<_>> =
+            transition!(listening, SessionTerminated::<_>);
+
+        let res = loop {
             let listening = match session_terminated.try_transition() {
                 Ok(listening) => listening,
                 Err(recovered) => {
-                    error!("Error preparing the server to listen: {}", recovered.error);
+                    if !handle.is_stopped() {
+                        error!("Error preparing the server to listen: {}", recovered.error);
+                    }
                     break Err::<(), _>(recovered.error);
                 }
             };
             info!("Listening for clients");
 
             let accepted = try_transition_continue_async!(listening, session_terminated, |e| {
-                future::ready(error!("Error accepting client: {}", e))
+                if !handle.is_stopped() {
+                    error!("Error accepting client: {}", e)
+                }
+                future::ready(())
             });
 
             let remote_addr = accepted.remote_addr()?;
@@ -223,35 +230,48 @@ async fn main() -> Result<()> {
                 future::ready(error!("Error starting session: {}", e))
             });
 
-            session_terminated = match running.try_transition().await {
-                Ok(session_complete) => session_complete,
-                Err(Recovered { stateful, error }) => {
-                    error!("Session ended with error: {}", error);
-                    stateful
-                }
-            };
+            session_terminated = transition_async!(running);
             info!(
                 "Client disconnected from {}:{}",
                 remote_addr.ip(),
                 remote_addr.port()
             );
+        };
+
+        if let Err(e) = res {
+            if handle.is_stopped() {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        } else {
+            Ok(())
         }
     });
 
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received Ctrl-C, exiting");
-            aperturec_metrics::stop();
-            Ok(())
-        }
-        main_task_res = main_task => {
-            match main_task_res {
-                Ok(Ok(())) => warn!("main task exited naturally"),
-                Ok(Err(e)) => error!("main task exited with error: {}", e),
-                Err(e) => error!("main task panicked with error: {}", e),
+    let res = loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c(), if !handle.is_stopped() => {
+                info!("Received Ctrl-C, exiting");
+                handle.stop();
+                aperturec_metrics::stop();
             }
-            aperturec_metrics::stop();
-            panic!("main task exited");
+            main_task_res = &mut main_task => {
+                match main_task_res {
+                    Ok(Ok(())) => break Ok(()),
+                    Ok(Err(e)) => break Err(e),
+                    Err(e) => break Err(e.into()),
+                }
+            }
+        }
+    };
+
+    if !handle.is_stopped() {
+        if let Err(e) = res {
+            error!(%e, "server exiting with error");
+            panic!("server error: {}", e);
         }
     }
+    info!("ApertureC Server exiting");
+    Ok(())
 }
