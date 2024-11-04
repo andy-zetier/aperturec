@@ -2,6 +2,7 @@
 use aperturec_protocol as protocol;
 use aperturec_state_machine::*;
 
+use crate::codec::*;
 use crate::quic::*;
 use crate::transport::{datagram, stream};
 use crate::util::{new_async_rt, Syncify};

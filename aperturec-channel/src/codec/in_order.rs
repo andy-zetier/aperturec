@@ -3,73 +3,70 @@
 //! Built on-top of the [`crate::transport::stream`] API, this provides methods for sending and
 //! receiving messages reliably and in-order.
 
-use crate::transport::stream;
-use crate::{AsyncReceiver, AsyncSender, Receiver, Sender};
+use crate::transport::{self, stream};
+
+use super::*;
 
 use aperturec_protocol::{control, event, tunnel};
 
+use anyhow::Result;
+use bytes::{Bytes, BytesMut};
 use prost::Message;
 use std::error::Error;
-use std::io::{Read, Write};
 use std::marker::PhantomData;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::{Zeroize, Zeroizing};
 
-fn encode<SM: Message>(msg: &SM, buf: &mut Vec<u8>) -> anyhow::Result<usize> {
+fn encode<SM: Message>(msg: &SM) -> Result<Bytes> {
     let msg_len = msg.encoded_len();
     let delim_len = prost::length_delimiter_len(msg_len);
     let nbytes = msg_len + delim_len;
 
-    if buf.len() < nbytes {
-        buf.resize(nbytes, 0);
-    }
-    msg.encode_length_delimited(&mut &mut buf[..])?;
-    Ok(nbytes)
+    let mut bytes = BytesMut::with_capacity(nbytes);
+    msg.encode_length_delimited(&mut bytes)?;
+    Ok(bytes.freeze())
 }
 
 mod sync_impls {
     use super::*;
 
-    pub(super) fn receive<T: Read, RM: Message + Default>(
-        mut transport: T,
+    pub(super) fn receive<T: transport::Receive, RM: Message + Default>(
+        transport: &mut T,
         buf: &mut Vec<u8>,
-    ) -> anyhow::Result<(RM, usize)> {
-        if buf.is_empty() {
-            buf.resize(1, 0);
-            transport.read_exact(&mut buf[..])?;
-        }
-
+    ) -> Result<(RM, usize)> {
+        let mut delim_len = 0;
         let msg_len = loop {
-            match prost::decode_length_delimiter(&**buf) {
+            match prost::decode_length_delimiter(&buf[..delim_len]) {
                 Ok(delim) => break delim,
                 Err(_) => {
-                    let cur_len = buf.len();
-                    buf.resize(cur_len + 1, 0);
-                    transport.read_exact(&mut buf[cur_len..])?;
+                    delim_len += 1;
+                    if delim_len > buf.len() {
+                        buf.extend(transport.receive()?);
+                    }
                 }
             }
         };
 
-        let delim_len = prost::length_delimiter_len(msg_len);
         let total_len = delim_len + msg_len;
-        buf.resize(total_len, 0);
-        transport.read_exact(&mut buf[delim_len..])?;
+        while total_len > buf.len() {
+            buf.extend(transport.receive()?);
+        }
+        let remaining_len = buf.len() - total_len;
 
-        let msg = RM::decode(&buf[delim_len..])?;
-        buf.zeroize();
-        buf.clear();
+        let msg = RM::decode(&buf[delim_len..total_len])?;
+
+        buf.rotate_left(total_len);
+        buf[remaining_len..].zeroize();
+        buf.truncate(remaining_len);
+
         Ok((msg, total_len))
     }
 
-    pub(super) fn send<T: Write, SM: Message>(
+    pub(super) fn send<T: transport::Transmit, SM: Message>(
         transport: &mut T,
         msg: SM,
-        buf: &mut Vec<u8>,
-    ) -> anyhow::Result<()> {
-        let nbytes = encode(&msg, buf)?;
-        transport.write_all(&buf[..nbytes])?;
-        buf.zeroize();
-        buf.clear();
+    ) -> Result<()> {
+        let bytes = encode(&msg)?;
+        transport.transmit(bytes)?;
         Ok(())
     }
 }
@@ -77,60 +74,58 @@ mod sync_impls {
 mod async_impls {
     use super::*;
 
-    pub async fn receive<T: AsyncRead + Unpin, RM: Message + Default>(
-        mut transport: T,
+    pub async fn receive<T: transport::AsyncReceive + Unpin, RM: Message + Default>(
+        transport: &mut T,
         buf: &mut Vec<u8>,
-    ) -> anyhow::Result<(RM, usize)> {
-        if buf.is_empty() {
-            buf.resize(1, 0);
-            transport.read_exact(&mut buf[..]).await?;
-        }
-
+    ) -> Result<(RM, usize)> {
+        let mut delim_len = 0;
         let msg_len = loop {
-            match prost::decode_length_delimiter(&**buf) {
+            match prost::decode_length_delimiter(&buf[..delim_len]) {
                 Ok(delim) => break delim,
                 Err(_) => {
-                    let cur_len = buf.len();
-                    buf.resize(cur_len + 1, 0);
-                    transport.read_exact(&mut buf[cur_len..]).await?;
+                    delim_len += 1;
+                    if delim_len > buf.len() {
+                        buf.extend(transport.receive().await?);
+                    }
                 }
             }
         };
 
-        let delim_len = prost::length_delimiter_len(msg_len);
         let total_len = delim_len + msg_len;
-        buf.resize(total_len, 0);
-        transport.read_exact(&mut buf[delim_len..]).await?;
+        while total_len > buf.len() {
+            buf.extend(transport.receive().await?);
+        }
+        let remaining_len = buf.len() - total_len;
 
-        let msg = RM::decode(&buf[delim_len..])?;
-        buf.zeroize();
-        buf.clear();
+        let msg = RM::decode(&buf[delim_len..total_len])?;
+
+        buf.rotate_left(total_len);
+        buf[remaining_len..].zeroize();
+        buf.truncate(remaining_len);
+
         Ok((msg, total_len))
     }
 
-    pub async fn send<T: AsyncWrite + Unpin, SM: Message>(
-        mut transport: T,
+    pub async fn send<T: transport::AsyncTransmit + Unpin, SM: Message>(
+        transport: &mut T,
         msg: SM,
-        buf: &mut Vec<u8>,
-    ) -> anyhow::Result<()> {
-        let nbytes = encode(&msg, buf)?;
-        transport.write_all(&buf[..nbytes]).await?;
-        buf.zeroize();
-        buf.clear();
+    ) -> Result<()> {
+        let bytes = encode(&msg)?;
+        transport.transmit(bytes).await?;
         Ok(())
     }
 }
 
 /// Receive-only channel
 #[derive(Debug)]
-pub struct ReceiverSimplex<T: Read, ApiRm, WireRm> {
+pub struct ReceiverSimplex<T: transport::Receive, ApiRm, WireRm> {
     transport: T,
     receive_buf: Zeroizing<Vec<u8>>,
     _api_rm: PhantomData<ApiRm>,
     _wire_rm: PhantomData<WireRm>,
 }
 
-impl<T: Read, ApiRm, WireRm> ReceiverSimplex<T, ApiRm, WireRm> {
+impl<T: transport::Receive, ApiRm, WireRm> ReceiverSimplex<T, ApiRm, WireRm> {
     /// Create a new [`Self`] with the provided underlying transport
     pub fn new(transport: T) -> Self {
         ReceiverSimplex {
@@ -144,14 +139,14 @@ impl<T: Read, ApiRm, WireRm> ReceiverSimplex<T, ApiRm, WireRm> {
 
 impl<T, ApiRm, WireRm> Receiver for ReceiverSimplex<T, ApiRm, WireRm>
 where
-    T: Read,
+    T: transport::Receive,
     WireRm: Message + Default,
     ApiRm: TryFrom<WireRm>,
     <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
 {
     type Message = ApiRm;
 
-    fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)> {
+    fn receive_with_len(&mut self) -> Result<(Self::Message, usize)> {
         let (msg, msg_len) =
             sync_impls::receive::<_, WireRm>(&mut self.transport, &mut self.receive_buf)?;
         Ok((msg.try_into()?, msg_len))
@@ -160,14 +155,14 @@ where
 
 /// Async variant of [`ReceiverSimplex`]
 #[derive(Debug)]
-pub struct AsyncReceiverSimplex<T: AsyncRead, ApiRm, WireRm> {
+pub struct AsyncReceiverSimplex<T: transport::AsyncReceive, ApiRm, WireRm> {
     transport: T,
     receive_buf: Zeroizing<Vec<u8>>,
     _api_rm: PhantomData<ApiRm>,
     _wire_rm: PhantomData<WireRm>,
 }
 
-impl<T: AsyncRead, ApiRm, WireRm> AsyncReceiverSimplex<T, ApiRm, WireRm> {
+impl<T: transport::AsyncReceive, ApiRm, WireRm> AsyncReceiverSimplex<T, ApiRm, WireRm> {
     /// Create a new [`Self`] with the provided underlying transport
     pub fn new(transport: T) -> Self {
         AsyncReceiverSimplex {
@@ -181,14 +176,14 @@ impl<T: AsyncRead, ApiRm, WireRm> AsyncReceiverSimplex<T, ApiRm, WireRm> {
 
 impl<T, ApiRm, WireRm> AsyncReceiver for AsyncReceiverSimplex<T, ApiRm, WireRm>
 where
-    T: AsyncRead + Unpin + Send + 'static,
+    T: transport::AsyncReceive + Unpin + Send + 'static,
     WireRm: Message + Default + 'static,
     ApiRm: TryFrom<WireRm> + Send + 'static,
     <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
 {
     type Message = ApiRm;
 
-    async fn receive_with_len(&mut self) -> anyhow::Result<(Self::Message, usize)> {
+    async fn receive_with_len(&mut self) -> Result<(Self::Message, usize)> {
         let (msg, msg_len) =
             async_impls::receive::<_, WireRm>(&mut self.transport, &mut self.receive_buf).await?;
         Ok((msg.try_into()?, msg_len))
@@ -197,19 +192,17 @@ where
 
 /// Send-only channel
 #[derive(Debug)]
-pub struct SenderSimplex<T: Write, ApiSm, WireSm> {
+pub struct SenderSimplex<T: transport::Transmit, ApiSm, WireSm> {
     transport: T,
-    send_buf: Zeroizing<Vec<u8>>,
     _api_sm: PhantomData<ApiSm>,
     _wire_sm: PhantomData<WireSm>,
 }
 
-impl<T: Write, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm> {
+impl<T: transport::Transmit, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm> {
     /// Create a new [`Self`] with the provided underlying transport
     pub fn new(transport: T) -> Self {
         SenderSimplex {
             transport,
-            send_buf: Zeroizing::default(),
             _api_sm: PhantomData,
             _wire_sm: PhantomData,
         }
@@ -218,33 +211,35 @@ impl<T: Write, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm> {
 
 impl<T, ApiSm, WireSm> Sender for SenderSimplex<T, ApiSm, WireSm>
 where
-    T: Write,
+    T: transport::Transmit,
     WireSm: Message,
     ApiSm: TryInto<WireSm>,
     <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
 {
     type Message = ApiSm;
 
-    fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-        sync_impls::send::<T, WireSm>(&mut self.transport, msg.try_into()?, &mut self.send_buf)
+    fn send(&mut self, msg: Self::Message) -> Result<()> {
+        sync_impls::send::<T, WireSm>(&mut self.transport, msg.try_into()?)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.transport.flush()
     }
 }
 
 /// Async variant of [`SenderSimplex`]
 #[derive(Debug)]
-pub struct AsyncSenderSimplex<T: AsyncWrite, ApiSm, WireSm> {
+pub struct AsyncSenderSimplex<T: transport::AsyncTransmit, ApiSm, WireSm> {
     transport: T,
-    send_buf: Zeroizing<Vec<u8>>,
     _api_sm: PhantomData<ApiSm>,
     _wire_sm: PhantomData<WireSm>,
 }
 
-impl<T: AsyncWrite, ApiSm, WireSm> AsyncSenderSimplex<T, ApiSm, WireSm> {
+impl<T: transport::AsyncTransmit, ApiSm, WireSm> AsyncSenderSimplex<T, ApiSm, WireSm> {
     /// Create a new [`Self`] with the provided underlying transport
     pub fn new(transport: T) -> Self {
         AsyncSenderSimplex {
             transport,
-            send_buf: Zeroizing::default(),
             _api_sm: PhantomData,
             _wire_sm: PhantomData,
         }
@@ -253,38 +248,41 @@ impl<T: AsyncWrite, ApiSm, WireSm> AsyncSenderSimplex<T, ApiSm, WireSm> {
 
 impl<T, ApiSm, WireSm> AsyncSender for AsyncSenderSimplex<T, ApiSm, WireSm>
 where
-    T: AsyncWrite + Unpin + Send + 'static,
+    T: transport::AsyncTransmit + Unpin + Send + 'static,
     WireSm: Message + 'static,
     ApiSm: TryInto<WireSm> + Send + 'static,
     <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync,
 {
     type Message = ApiSm;
 
-    async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-        async_impls::send::<_, WireSm>(&mut self.transport, msg.try_into()?, &mut self.send_buf)
-            .await
+    async fn send(&mut self, msg: Self::Message) -> Result<()> {
+        async_impls::send::<_, WireSm>(&mut self.transport, msg.try_into()?).await
+    }
+
+    async fn flush(&mut self) -> Result<()> {
+        self.transport.flush().await
     }
 }
 
 /// Receive and send channel
 #[derive(Debug)]
-pub struct Duplex<T: Read + Write, ApiRm, ApiSm, WireRm, WireSm> {
+pub struct Duplex<T: transport::Receive + transport::Transmit, ApiRm, ApiSm, WireRm, WireSm> {
     transport: T,
     receive_buf: Zeroizing<Vec<u8>>,
-    send_buf: Zeroizing<Vec<u8>>,
     _api_rm: PhantomData<ApiRm>,
     _api_sm: PhantomData<ApiSm>,
     _wire_rm: PhantomData<WireRm>,
     _wire_sm: PhantomData<WireSm>,
 }
 
-impl<T: Read + Write, ApiRm, ApiSm, WireRm, WireSm> Duplex<T, ApiRm, ApiSm, WireRm, WireSm> {
+impl<T: transport::Receive + transport::Transmit, ApiRm, ApiSm, WireRm, WireSm>
+    Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
+{
     /// Create a new [`Self`] with the provided underlying transport
     pub fn new(transport: T) -> Self {
         Duplex {
             transport,
             receive_buf: Zeroizing::default(),
-            send_buf: Zeroizing::default(),
             _api_rm: PhantomData,
             _api_sm: PhantomData,
             _wire_rm: PhantomData,
@@ -294,12 +292,17 @@ impl<T: Read + Write, ApiRm, ApiSm, WireRm, WireSm> Duplex<T, ApiRm, ApiSm, Wire
 }
 
 type DuplexReceiveHalf<T, ApiRm, WireRm> =
-    ReceiverSimplex<<T as stream::Splitable>::ReceiveHalf, ApiRm, WireRm>;
+    ReceiverSimplex<<T as transport::Splitable>::ReceiveHalf, ApiRm, WireRm>;
 type DuplexSendHalf<T, ApiSm, WireSm> =
-    SenderSimplex<<T as stream::Splitable>::TransmitHalf, ApiSm, WireSm>;
+    SenderSimplex<<T as transport::Splitable>::TransmitHalf, ApiSm, WireSm>;
 
-impl<T: Read + Write + stream::Splitable, ApiRm, ApiSm, WireRm, WireSm>
-    Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
+impl<
+        T: transport::Receive + transport::Transmit + transport::Splitable,
+        ApiRm,
+        ApiSm,
+        WireRm,
+        WireSm,
+    > Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
 {
     pub fn split(
         self,
@@ -318,7 +321,6 @@ impl<T: Read + Write + stream::Splitable, ApiRm, ApiSm, WireRm, WireSm>
             },
             SenderSimplex {
                 transport: wh,
-                send_buf: self.send_buf,
                 _api_sm: PhantomData,
                 _wire_sm: PhantomData,
             },
@@ -328,13 +330,13 @@ impl<T: Read + Write + stream::Splitable, ApiRm, ApiSm, WireRm, WireSm>
 
 impl<T, ApiRm, ApiSm, WireRm, WireSm> Receiver for Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
 where
-    T: Read + Write,
+    T: transport::Receive + transport::Transmit,
     WireRm: Message + Default,
     ApiRm: TryFrom<WireRm>,
     <ApiRm as TryFrom<WireRm>>::Error: Send + Sync + Error + 'static,
 {
     type Message = ApiRm;
-    fn receive_with_len(&mut self) -> anyhow::Result<(ApiRm, usize)> {
+    fn receive_with_len(&mut self) -> Result<(ApiRm, usize)> {
         let (msg, msg_len) =
             sync_impls::receive::<_, WireRm>(&mut self.transport, &mut self.receive_buf)?;
         Ok((msg.try_into()?, msg_len))
@@ -343,23 +345,32 @@ where
 
 impl<T, ApiRm, ApiSm, WireRm, WireSm> Sender for Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
 where
-    T: Read + Write,
+    T: transport::Receive + transport::Transmit,
     WireSm: Message,
     ApiSm: TryInto<WireSm>,
     <ApiSm as TryInto<WireSm>>::Error: Send + Sync + Error + 'static,
 {
     type Message = ApiSm;
-    fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-        sync_impls::send::<T, WireSm>(&mut self.transport, msg.try_into()?, &mut self.send_buf)
+    fn send(&mut self, msg: Self::Message) -> Result<()> {
+        sync_impls::send::<T, WireSm>(&mut self.transport, msg.try_into()?)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.transport.flush()
     }
 }
 
 /// Async variant of [`Duplex`]
 #[derive(Debug)]
-pub struct AsyncDuplex<T: AsyncRead + AsyncWrite, ApiRm, ApiSm, WireRm, WireSm> {
+pub struct AsyncDuplex<
+    T: transport::AsyncReceive + transport::AsyncTransmit,
+    ApiRm,
+    ApiSm,
+    WireRm,
+    WireSm,
+> {
     transport: T,
     receive_buf: Zeroizing<Vec<u8>>,
-    send_buf: Zeroizing<Vec<u8>>,
     _api_rm: PhantomData<ApiRm>,
     _api_sm: PhantomData<ApiSm>,
     _wire_rm: PhantomData<WireRm>,
@@ -368,21 +379,20 @@ pub struct AsyncDuplex<T: AsyncRead + AsyncWrite, ApiRm, ApiSm, WireRm, WireSm> 
 
 /// Send half of a split [`AsyncDuplex`]
 pub type AsyncDuplexSendHalf<T, ApiSm, WireSm> =
-    AsyncSenderSimplex<<T as stream::AsyncSplitable>::TransmitHalf, ApiSm, WireSm>;
+    AsyncSenderSimplex<<T as transport::AsyncSplitable>::TransmitHalf, ApiSm, WireSm>;
 /// Receive half of a split [`AsyncDuplex`]
 pub type AsyncDuplexReceiveHalf<T, ApiRm, WireRm> =
-    AsyncReceiverSimplex<<T as stream::AsyncSplitable>::ReceiveHalf, ApiRm, WireRm>;
+    AsyncReceiverSimplex<<T as transport::AsyncSplitable>::ReceiveHalf, ApiRm, WireRm>;
 
 impl<T, ApiRm, ApiSm, WireRm, WireSm> AsyncDuplex<T, ApiRm, ApiSm, WireRm, WireSm>
 where
-    T: AsyncRead + AsyncWrite + stream::AsyncSplitable + Unpin,
+    T: transport::AsyncReceive + transport::AsyncTransmit + transport::AsyncSplitable + Unpin,
 {
     /// Create a new [`Self`] with the provided underlying transport
     pub fn new(transport: T) -> Self {
         AsyncDuplex {
             transport,
             receive_buf: Zeroizing::default(),
-            send_buf: Zeroizing::default(),
             _api_rm: PhantomData,
             _api_sm: PhantomData,
             _wire_rm: PhantomData,
@@ -393,7 +403,7 @@ where
 
 impl<T, ApiRm, ApiSm, WireRm, WireSm> AsyncDuplex<T, ApiRm, ApiSm, WireRm, WireSm>
 where
-    T: AsyncRead + AsyncWrite + stream::AsyncSplitable + Unpin,
+    T: transport::AsyncReceive + transport::AsyncTransmit + transport::AsyncSplitable + Unpin,
 {
     /// Split into [`Sender`] and [`Receiver`] simplexes
     pub fn split(
@@ -409,7 +419,7 @@ where
 
 impl<T, ApiRm, ApiSm, WireRm, WireSm> AsyncReceiver for AsyncDuplex<T, ApiRm, ApiSm, WireRm, WireSm>
 where
-    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    T: transport::AsyncReceive + transport::AsyncTransmit + Send + Unpin + 'static,
     WireRm: Message + Default + Send + 'static,
     ApiRm: TryFrom<WireRm> + Send + 'static,
     <ApiRm as TryFrom<WireRm>>::Error: Send + Sync + Error + 'static,
@@ -417,7 +427,7 @@ where
     WireSm: Send + 'static,
 {
     type Message = ApiRm;
-    async fn receive_with_len(&mut self) -> anyhow::Result<(ApiRm, usize)> {
+    async fn receive_with_len(&mut self) -> Result<(ApiRm, usize)> {
         let (msg, msg_len) =
             async_impls::receive::<_, WireRm>(&mut self.transport, &mut self.receive_buf).await?;
         Ok((msg.try_into()?, msg_len))
@@ -426,7 +436,7 @@ where
 
 impl<T, ApiRm, ApiSm, WireRm, WireSm> AsyncSender for AsyncDuplex<T, ApiRm, ApiSm, WireRm, WireSm>
 where
-    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    T: transport::AsyncReceive + transport::AsyncTransmit + Send + Unpin + 'static,
     WireSm: Message + Send + 'static,
     ApiSm: TryInto<WireSm> + Send + 'static,
     <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
@@ -434,8 +444,12 @@ where
     WireRm: Message + Send + 'static,
 {
     type Message = ApiSm;
-    async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()> {
-        async_impls::send(&mut self.transport, msg.try_into()?, &mut self.send_buf).await
+    async fn send(&mut self, msg: Self::Message) -> Result<()> {
+        async_impls::send(&mut self.transport, msg.try_into()?).await
+    }
+
+    async fn flush(&mut self) -> Result<()> {
+        self.transport.flush().await
     }
 }
 
@@ -450,12 +464,12 @@ pub type ServerControlChannel = Duplex<
     control::ServerToClient,
 >;
 pub type ServerControlChannelReceiveHalf = ReceiverSimplex<
-    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    <stream::Transceiver as transport::Splitable>::TransmitHalf,
     control::client_to_server::Message,
     control::ClientToServer,
 >;
 pub type ServerControlChannelSendHalf = SenderSimplex<
-    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    <stream::Transceiver as transport::Splitable>::TransmitHalf,
     control::server_to_client::Message,
     control::ClientToServer,
 >;
@@ -468,12 +482,12 @@ pub type ClientControlChannel = Duplex<
     control::ClientToServer,
 >;
 pub type ClientControlChannelReceiveHalf = ReceiverSimplex<
-    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
+    <stream::Transceiver as transport::Splitable>::ReceiveHalf,
     control::server_to_client::Message,
     control::ClientToServer,
 >;
 pub type ClientControlChannelSendHalf = SenderSimplex<
-    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    <stream::Transceiver as transport::Splitable>::TransmitHalf,
     control::client_to_server::Message,
     control::ClientToServer,
 >;
@@ -487,12 +501,12 @@ pub type ServerEventChannel = Duplex<
     event::ServerToClient,
 >;
 pub type ServerEventChannelReceiveHalf = ReceiverSimplex<
-    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
+    <stream::Transceiver as transport::Splitable>::ReceiveHalf,
     event::client_to_server::Message,
     event::ClientToServer,
 >;
 pub type ServerEventChannelSendHalf = SenderSimplex<
-    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    <stream::Transceiver as transport::Splitable>::TransmitHalf,
     event::server_to_client::Message,
     event::ServerToClient,
 >;
@@ -505,12 +519,12 @@ pub type ClientEventChannel = Duplex<
     event::ClientToServer,
 >;
 pub type ClientEventChannelReceiveHalf = ReceiverSimplex<
-    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
+    <stream::Transceiver as transport::Splitable>::ReceiveHalf,
     event::server_to_client::Message,
     event::ServerToClient,
 >;
 pub type ClientEventChannelSendHalf = SenderSimplex<
-    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    <stream::Transceiver as transport::Splitable>::TransmitHalf,
     event::client_to_server::Message,
     event::ClientToServer,
 >;
@@ -519,12 +533,12 @@ pub type ClientEventChannelSendHalf = SenderSimplex<
 pub type ServerTunnelChannel =
     Duplex<stream::Transceiver, tunnel::Message, tunnel::Message, tunnel::Message, tunnel::Message>;
 pub type ServerTunnelChannelReceiveHalf = ReceiverSimplex<
-    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
+    <stream::Transceiver as transport::Splitable>::ReceiveHalf,
     tunnel::Message,
     tunnel::Message,
 >;
 pub type ServerTunnelChannelSendHalf = SenderSimplex<
-    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    <stream::Transceiver as transport::Splitable>::TransmitHalf,
     tunnel::Message,
     tunnel::Message,
 >;
@@ -532,12 +546,12 @@ pub type ServerTunnelChannelSendHalf = SenderSimplex<
 pub type ClientTunnelChannel =
     Duplex<stream::Transceiver, tunnel::Message, tunnel::Message, tunnel::Message, tunnel::Message>;
 pub type ClientTunnelChannelReceiveHalf = ReceiverSimplex<
-    <stream::Transceiver as stream::Splitable>::ReceiveHalf,
+    <stream::Transceiver as transport::Splitable>::ReceiveHalf,
     tunnel::Message,
     tunnel::Message,
 >;
 pub type ClientTunnelChannelSendHalf = SenderSimplex<
-    <stream::Transceiver as stream::Splitable>::TransmitHalf,
+    <stream::Transceiver as transport::Splitable>::TransmitHalf,
     tunnel::Message,
     tunnel::Message,
 >;
@@ -552,12 +566,12 @@ pub type AsyncServerControlChannel = AsyncDuplex<
     control::ServerToClient,
 >;
 pub type AsyncServerControlChannelReceiveHalf = AsyncReceiverSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::AsyncSplitable>::TransmitHalf,
     control::client_to_server::Message,
     control::ClientToServer,
 >;
 pub type AsyncServerControlChannelSendHalf = AsyncSenderSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::AsyncSplitable>::TransmitHalf,
     control::server_to_client::Message,
     control::ClientToServer,
 >;
@@ -570,12 +584,12 @@ pub type AsyncClientControlChannel = AsyncDuplex<
     control::ClientToServer,
 >;
 pub type AsyncClientControlChannelReceiveHalf = AsyncReceiverSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::AsyncSplitable>::TransmitHalf,
     control::server_to_client::Message,
     control::ClientToServer,
 >;
 pub type AsyncClientControlChannelSendHalf = AsyncSenderSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::AsyncSplitable>::TransmitHalf,
     control::client_to_server::Message,
     control::ClientToServer,
 >;
@@ -589,12 +603,12 @@ pub type AsyncServerEventChannel = AsyncDuplex<
     event::ServerToClient,
 >;
 pub type AsyncServerEventChannelReceiveHalf = AsyncReceiverSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::ReceiveHalf,
+    <stream::AsyncTransceiver as transport::AsyncSplitable>::ReceiveHalf,
     event::client_to_server::Message,
     event::ClientToServer,
 >;
 pub type AsyncServerEventChannelSendHalf = AsyncSenderSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::AsyncSplitable>::TransmitHalf,
     event::server_to_client::Message,
     event::ServerToClient,
 >;
@@ -607,12 +621,12 @@ pub type AsyncClientEventChannel = AsyncDuplex<
     event::ClientToServer,
 >;
 pub type AsyncClientEventChannelReceiveHalf = AsyncReceiverSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::ReceiveHalf,
+    <stream::AsyncTransceiver as transport::Splitable>::ReceiveHalf,
     event::server_to_client::Message,
     event::ServerToClient,
 >;
 pub type AsyncClientEventChannelSendHalf = AsyncSenderSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::Splitable>::TransmitHalf,
     event::client_to_server::Message,
     event::ClientToServer,
 >;
@@ -626,12 +640,12 @@ pub type AsyncServerTunnelChannel = AsyncDuplex<
     tunnel::Message,
 >;
 pub type AsyncServerTunnelChannelReceiveHalf = AsyncReceiverSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::Splitable>::TransmitHalf,
     tunnel::Message,
     tunnel::Message,
 >;
 pub type AsyncServerTunnelChannelSendHalf = AsyncSenderSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::Splitable>::TransmitHalf,
     tunnel::Message,
     tunnel::Message,
 >;
@@ -644,12 +658,12 @@ pub type AsyncClientTunnelChannel = AsyncDuplex<
     tunnel::Message,
 >;
 pub type AsyncClientTunnelChannelReceiveHalf = AsyncReceiverSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::AsyncSplitable>::TransmitHalf,
     tunnel::Message,
     tunnel::Message,
 >;
 pub type AsyncClientTunnelChannelSendHalf = AsyncSenderSimplex<
-    <stream::AsyncTransceiver as stream::Splitable>::TransmitHalf,
+    <stream::AsyncTransceiver as transport::AsyncSplitable>::TransmitHalf,
     tunnel::Message,
     tunnel::Message,
 >;

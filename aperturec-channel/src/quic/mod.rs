@@ -1,8 +1,8 @@
 //! QUIC client & server
-pub mod client;
-pub mod server;
 
+pub mod client;
 pub mod provider;
+pub mod server;
 
 /// Default port the server will bind to
 pub const DEFAULT_SERVER_BIND_PORT: u16 = 46452;
@@ -18,9 +18,9 @@ pub use server::Server;
 
 #[cfg(test)]
 pub mod test {
-    use super::*;
     use crate::*;
 
+    use aperturec_protocol::*;
     use aperturec_state_machine::*;
 
     use test_log::test;
@@ -186,6 +186,7 @@ pub mod test {
             );
             mc.send(s_msgs.3).await.expect("server mc send");
             tc.send(s_msgs.4.clone()).await.expect("server tc send");
+            tc.flush().await.expect("server tc flush");
             assert_eq!(tc.receive().await.expect("server tc receive"), s_msgs.4);
 
             <server::Server<_> as AsyncUnifiedServer>::unsplit(cc, ec, mc, tc, residual)

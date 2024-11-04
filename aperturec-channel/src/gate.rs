@@ -1,9 +1,9 @@
-/// A trait to gate how fast a [`Sender`] can send messages.
+/// A trait to gate how fast a [`crate::codec::Sender`] can send messages.
 ///
-/// This trait assumes that the [`Sender`]'s messages will serialize to some number of bytes. The
+/// This trait assumes that the [`crate::codec::Sender`]'s messages will serialize to some number of bytes. The
 /// [`Gate`] limits the number of bytes which can be sent at any given time.
 pub trait Gate {
-    /// Called before sending a message of [`msg_size`] bytes
+    /// Called before sending a message of `msg_size` bytes
     fn wait(&self, msg_size: usize) -> anyhow::Result<()>;
 }
 
