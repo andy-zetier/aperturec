@@ -17,6 +17,7 @@ use aperturec_protocol::event::{
 };
 use aperturec_protocol::tunnel;
 use aperturec_state_machine::*;
+use aperturec_utils::log::*;
 
 use anyhow::{anyhow, bail, Error, Result};
 use crossbeam::channel::{bounded, never, select, unbounded, Receiver, RecvTimeoutError, Sender};
@@ -573,7 +574,7 @@ impl Client {
                     } else {
                         tunnel::Side::Client
                     };
-                    println!(
+                    info_always!(
                         "allocated {:?} port {}:{} for forward to {}:{} on {:?}",
                         this_side,
                         desc.bind_address,

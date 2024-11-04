@@ -30,6 +30,7 @@ use petname::{Generator, Petnames};
 use secrecy::{zeroize::Zeroize, ExposeSecret, SecretString};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::pin::pin;
@@ -280,10 +281,17 @@ impl Server<Created> {
                     .expect("generate auth token")
                     .into(),
             );
-            println!(
-                "Generated Authentication Token: {}",
-                auth_token.expose_secret()
-            );
+            info!("Generated Authentication Token available via stdout");
+            print!("{}", auth_token.expose_secret());
+            io::stdout().flush().expect("flush stdout");
+
+            // SAFETY: Close itself is not memory unsafe. There may be some strange behavior
+            // if we try to use stdout again (e.g. writes do not actually work), but that is
+            // outside the scope of the safety of this call.
+            #[cfg(unix)]
+            unsafe {
+                libc::close(libc::STDOUT_FILENO);
+            }
             auth_token
         });
 

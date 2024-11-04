@@ -264,6 +264,7 @@ dependencies = [
  "futures",
  "gethostname",
  "jpegxl-rs",
+ "libc",
  "ndarray",
  "os_pipe",
  "paste",

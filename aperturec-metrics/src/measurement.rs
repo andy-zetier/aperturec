@@ -104,15 +104,12 @@ mod test {
     #[test]
     #[should_panic(expected = "Title is required")]
     fn title_is_required() {
-        let er = Measurement::new(
+        let _ = Measurement::new(
             "",
             Some(56.7),
             "shipped cans",
             "Counts the total cans of beans",
         );
-
-        // This shouldn't ever be executed, but we don't want `er` optimized out
-        println!("{}", er);
     }
 
     #[test]
