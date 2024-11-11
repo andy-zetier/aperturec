@@ -474,22 +474,12 @@ impl Backend for X {
             .checked_request_with_reply(x::GetModifierMapping {})
             .await?;
 
-        //
-        // keycodes_per_modifier() is a private function in GetModifierMappingReply, but we need
-        // this value to properly iterate the keycode array in chunks. According to the X
-        // [documentation](https://www.x.org/releases/X11R7.7/doc/xproto/x11protocol.html#requests:GetModifierMapping),
-        // we know the length of the keycode array is 8 * keycodes_per_modifier. Therefore, we can
-        // derive keycodes_per_modifier by dividing the length of the keycode slice by 8.
-        //
-        // The visibility issue has been reported to the rust-x-binding maintainers as [issue
-        // 271](https://github.com/rust-x-bindings/rust-xcb/issues/271).
-        //
-        let keycodes_per_modifier = reply.keycodes().len() / 8;
+        let keycodes_per_modifier = reply.keycodes_per_modifier();
 
         for l in &mut locks {
             match reply
                 .keycodes()
-                .chunks(keycodes_per_modifier)
+                .chunks(keycodes_per_modifier.into())
                 .nth(l.map_index as usize)
                 .and_then(|codes| codes.first().cloned())
             {

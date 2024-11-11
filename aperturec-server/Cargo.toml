@@ -41,7 +41,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 trait-variant = "0.1"
 which = "6.0"
-xcb = { version = "1.2.2", features = ["damage", "randr", "xtest", "xfixes" ] }
+xcb = { version = "1.5.0", features = ["damage", "randr", "xtest", "xfixes" ] }
 
 [dev-dependencies]
 criterion = "0.5"
