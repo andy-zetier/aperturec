@@ -27,7 +27,11 @@ pub trait Sender {
 
     /// Send a message, potentially blocking and returning an error one occurred
     fn send(&mut self, msg: Self::Message) -> anyhow::Result<()>;
+}
 
+/// A trait for all type which can flush messages, blocking until the messages which have been sent
+/// have been received by the other end.
+pub trait Flushable: Sender {
     /// Ensure all messages which have been sent are received by the other side
     fn flush(&mut self) -> anyhow::Result<()>;
 }
@@ -140,7 +144,6 @@ mod async_variants {
         type Message: Send;
 
         async fn send(&mut self, msg: Self::Message) -> anyhow::Result<()>;
-        async fn flush(&mut self) -> anyhow::Result<()>;
 
         fn sink(self) -> impl Sink<Self::Message, Error = anyhow::Error> {
             sink::unfold(self, |mut sender, msg| async {
@@ -148,6 +151,13 @@ mod async_variants {
                 Ok(sender)
             })
         }
+    }
+
+    #[trait_variant::make(Flushable: Send)]
+    #[allow(dead_code)]
+    /// Async variant of [`super::Flushable`]
+    pub trait LocalFlushable: Sender + Send + Sized {
+        async fn flush(&mut self) -> anyhow::Result<()>;
     }
 
     #[trait_variant::make(Duplex: Send)]
@@ -226,6 +236,7 @@ mod async_variants {
 }
 
 pub use async_variants::Duplex as AsyncDuplex;
+pub use async_variants::Flushable as AsyncFlushable;
 pub use async_variants::Receiver as AsyncReceiver;
 pub use async_variants::Sender as AsyncSender;
 pub use async_variants::UnifiedClient as AsyncUnifiedClient;

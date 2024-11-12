@@ -8,7 +8,7 @@ use futures::{
     future::BoxFuture,
     prelude::{stream::FuturesUnordered, *},
 };
-use s2n_quic::{connection::Connection, stream::SendStream};
+use s2n_quic::connection::Connection;
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
 
@@ -16,7 +16,6 @@ use tokio::runtime::Runtime as TokioRuntime;
 struct OutOfOrderTransport {
     connection: Connection,
     rx_streams: FuturesUnordered<BoxFuture<'static, Result<Bytes>>>,
-    tx_streams: Vec<SendStream>,
 }
 
 impl OutOfOrderTransport {
@@ -24,7 +23,6 @@ impl OutOfOrderTransport {
         OutOfOrderTransport {
             connection,
             rx_streams: FuturesUnordered::new(),
-            tx_streams: Vec::new(),
         }
     }
 }
@@ -60,14 +58,6 @@ impl AsyncTransmit for OutOfOrderTransport {
         let mut stream = self.connection.open_send_stream().await?;
         stream.send(data).await?;
         stream.finish()?;
-        self.tx_streams.push(stream);
-        Ok(())
-    }
-
-    async fn flush(&mut self) -> Result<()> {
-        while let Some(mut stream) = self.tx_streams.pop() {
-            stream.flush().await?;
-        }
         Ok(())
     }
 }

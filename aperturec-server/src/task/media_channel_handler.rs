@@ -71,7 +71,6 @@ impl Transitionable<Running> for Task<Created> {
                         self.state.mc.send(msg.into()).await?;
                     }
                     _ = tx_ct.cancelled() => {
-                        self.state.mc.flush().await?;
                         break Ok(());
                     }
                     else => bail!("MC Tx messages exhausted"),

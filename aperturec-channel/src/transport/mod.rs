@@ -15,8 +15,11 @@ pub trait Receive {
 pub trait Transmit {
     /// Send some bytes or return an error
     fn transmit(&mut self, data: Bytes) -> Result<()>;
+}
 
-    /// Ensure all bytes which have been sent are received by the other side
+/// A trait for types which can ensure all bytes have been received by the other side
+pub trait Flush: Transmit {
+    /// Block and ensure all bytes which have been sent are received by the other side
     fn flush(&mut self) -> Result<()>;
 }
 
@@ -50,6 +53,12 @@ mod async_variants {
     /// Async variant of [`super::Transmit`]
     pub trait LocalTransmit: Send + Sized {
         async fn transmit(&mut self, data: Bytes) -> Result<()>;
+    }
+
+    #[trait_variant::make(Flush: Send)]
+    #[allow(dead_code)]
+    /// Async variant of [`super::Flush`]
+    pub trait LocalFlush: Transmit + Send + Sized {
         async fn flush(&mut self) -> Result<()>;
     }
 
@@ -73,6 +82,7 @@ mod async_variants {
     impl<T: Transmit + Receive> Duplex for T {}
 }
 pub use async_variants::Duplex as AsyncDuplex;
+pub use async_variants::Flush as AsyncFlush;
 pub use async_variants::Receive as AsyncReceive;
 pub use async_variants::Splitable as AsyncSplitable;
 pub use async_variants::Transmit as AsyncTransmit;
@@ -104,10 +114,6 @@ mod macros {
                 fn transmit(&mut self, data: Bytes) -> Result<()> {
                     AsyncTransmit::transmit(&mut self.transport, data).syncify(&self.async_rt)
                 }
-
-                fn flush(&mut self) -> Result<()> {
-                    AsyncTransmit::flush(&mut self.transport).syncify(&self.async_rt)
-                }
             }
         };
     }
@@ -118,9 +124,25 @@ mod macros {
                 async fn transmit(&mut self, data: Bytes) -> Result<()> {
                     AsyncTransmit::transmit(&mut self.transport, data).await
                 }
+            }
+        };
+    }
 
+    macro_rules! delegate_transport_flush_sync {
+        ($type:ident) => {
+            impl crate::transport::Flush for $type {
+                fn flush(&mut self) -> Result<()> {
+                    AsyncFlush::flush(&mut self.transport).syncify(&self.async_rt)
+                }
+            }
+        };
+    }
+
+    macro_rules! delegate_transport_flush_async {
+        ($type:ident) => {
+            impl crate::transport::AsyncFlush for $type {
                 async fn flush(&mut self) -> Result<()> {
-                    AsyncTransmit::flush(&mut self.transport).await
+                    AsyncFlush::flush(&mut self.transport).await
                 }
             }
         };
@@ -167,7 +189,8 @@ mod macros {
     }
 
     pub(crate) use {
-        delegate_transport_rx_async, delegate_transport_rx_sync, delegate_transport_split_async,
-        delegate_transport_split_sync, delegate_transport_tx_async, delegate_transport_tx_sync,
+        delegate_transport_flush_async, delegate_transport_flush_sync, delegate_transport_rx_async,
+        delegate_transport_rx_sync, delegate_transport_split_async, delegate_transport_split_sync,
+        delegate_transport_tx_async, delegate_transport_tx_sync,
     };
 }

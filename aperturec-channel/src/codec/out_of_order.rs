@@ -33,10 +33,6 @@ where
         self.ungated.send(msg)?;
         Ok(())
     }
-
-    fn flush(&mut self) -> Result<()> {
-        self.ungated.flush()
-    }
 }
 
 impl<S: AsyncSender, G: AsyncGate + Send> AsyncSender for Gated<S, G>
@@ -51,7 +47,12 @@ where
         self.ungated.send(msg).await?;
         Ok(())
     }
+}
 
+impl<S: AsyncFlushable, G: AsyncGate + Send> AsyncFlushable for Gated<S, G>
+where
+    S::Message: Message,
+{
     async fn flush(&mut self) -> Result<()> {
         self.ungated.flush().await
     }
@@ -256,10 +257,6 @@ where
     fn send(&mut self, msg: Self::Message) -> Result<()> {
         sync_impls::do_send(&mut self.transport, msg)
     }
-
-    fn flush(&mut self) -> Result<()> {
-        self.transport.flush()
-    }
 }
 
 /// Async variant of [`SenderSimplex`]
@@ -306,10 +303,6 @@ where
 
     async fn send(&mut self, msg: Self::Message) -> Result<()> {
         async_impls::do_send(&mut self.transport, msg).await
-    }
-
-    async fn flush(&mut self) -> Result<()> {
-        self.transport.flush().await
     }
 }
 
@@ -375,10 +368,6 @@ where
     type Message = ApiSm;
     fn send(&mut self, msg: Self::Message) -> Result<()> {
         sync_impls::do_send(&mut self.transport, msg)
-    }
-
-    fn flush(&mut self) -> Result<()> {
-        self.transport.flush()
     }
 }
 
@@ -456,10 +445,6 @@ where
 
     async fn send(&mut self, msg: Self::Message) -> Result<()> {
         async_impls::do_send(&mut self.transport, msg).await
-    }
-
-    async fn flush(&mut self) -> Result<()> {
-        self.transport.flush().await
     }
 }
 

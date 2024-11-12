@@ -1,5 +1,5 @@
 //! Byte-oriented, reliable, in-order transport
-use super::{macros::*, AsyncReceive, AsyncSplitable, AsyncTransmit};
+use super::{macros::*, AsyncFlush, AsyncReceive, AsyncSplitable, AsyncTransmit};
 use crate::util::Syncify;
 
 use anyhow::{bail, Result};
@@ -35,7 +35,9 @@ impl AsyncTransmit for InOrderTransport<SendStream> {
     async fn transmit(&mut self, data: Bytes) -> Result<()> {
         Ok(self.stream.send(data).await?)
     }
+}
 
+impl AsyncFlush for InOrderTransport<SendStream> {
     async fn flush(&mut self) -> Result<()> {
         Ok(self.stream.flush().await?)
     }
@@ -45,7 +47,9 @@ impl AsyncTransmit for InOrderTransport<BidirectionalStream> {
     async fn transmit(&mut self, data: Bytes) -> Result<()> {
         Ok(self.stream.send(data).await?)
     }
+}
 
+impl AsyncFlush for InOrderTransport<BidirectionalStream> {
     async fn flush(&mut self) -> Result<()> {
         Ok(self.stream.flush().await?)
     }
@@ -111,10 +115,12 @@ stream_type_sync!(
 );
 delegate_transport_rx_sync!(Transceiver);
 delegate_transport_tx_sync!(Transceiver);
+delegate_transport_flush_sync!(Transceiver);
 delegate_transport_split_sync!(Transceiver);
 
 stream_type_sync!(Transmitter, SendStream, "A byte-oriented sender");
 delegate_transport_tx_sync!(Transmitter);
+delegate_transport_flush_sync!(Transmitter);
 
 stream_type_sync!(Receiver, ReceiveStream, "A byte-oriented receiver");
 delegate_transport_rx_sync!(Receiver);
@@ -126,6 +132,7 @@ stream_type_async!(
 );
 delegate_transport_rx_async!(AsyncTransceiver);
 delegate_transport_tx_async!(AsyncTransceiver);
+delegate_transport_flush_async!(AsyncTransceiver);
 delegate_transport_split_async!(AsyncTransceiver);
 
 stream_type_async!(
@@ -134,6 +141,7 @@ stream_type_async!(
     "Async variant of [`Transmitter`]"
 );
 delegate_transport_tx_async!(AsyncTransmitter);
+delegate_transport_flush_async!(AsyncTransmitter);
 
 stream_type_async!(
     AsyncReceiver,

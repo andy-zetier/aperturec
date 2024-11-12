@@ -314,4 +314,216 @@ pub mod test {
 
         let _s = s_thread.join().expect("server thread");
     }
+
+    const PUSH_MEDIA_NUM_MESSAGES: usize = 4096;
+    const PUSH_MEDIA_FRAGMENT_SIZE: usize = 4096;
+
+    #[test]
+    fn sync_client_sync_server_push_media() {
+        let (c, s) = unconnected_sync_client_sync_server();
+
+        let s_thread = std::thread::spawn(move || {
+            let s = try_transition!(s, server::states::Accepted).expect("server accept");
+            let s = try_transition!(s, server::states::Ready).expect("server ready");
+            let (_, _, mut mc, _, _) = s.split();
+
+            for _ in 0..PUSH_MEDIA_NUM_MESSAGES {
+                let frag = media::ServerToClient {
+                    message: Some(
+                        media::FrameFragment {
+                            data: (0..PUSH_MEDIA_FRAGMENT_SIZE)
+                                .map(|_| rand::random::<u8>())
+                                .collect(),
+                            ..Default::default()
+                        }
+                        .into(),
+                    ),
+                };
+                mc.send(frag).expect("send");
+            }
+            mc
+        });
+
+        let c_thread = std::thread::spawn(move || {
+            let c = try_transition!(c, client::states::Connected)
+                .map_err(|rec| rec.error)
+                .expect("client connect");
+            let c = try_transition!(c, client::states::Ready).expect("client ready");
+            let (_, _, mut mc, _, _) = c.split();
+
+            for _ in 0..PUSH_MEDIA_NUM_MESSAGES {
+                let frag_message = mc.receive().expect("receive").message.expect("message");
+                if let media::server_to_client::Message::Fragment(frag) = frag_message {
+                    assert_eq!(frag.data.len(), PUSH_MEDIA_FRAGMENT_SIZE);
+                } else {
+                    panic!("unexpected message");
+                }
+            }
+            mc
+        });
+
+        let _c = c_thread.join().expect("client thread");
+        let _s = s_thread.join().expect("server thread");
+    }
+
+    #[test(tokio::test)]
+    async fn async_client_async_server_push_media() {
+        let (c, s) = unconnected_async_client_async_server();
+
+        let s_task = tokio::spawn(async move {
+            let s = try_transition_async!(s, server::states::AsyncAccepted).expect("server accept");
+            let s = try_transition_async!(s, server::states::AsyncReady).expect("server ready");
+            let (_, _, mut mc, _, _) = s.split();
+
+            for _ in 0..PUSH_MEDIA_NUM_MESSAGES {
+                let frag = media::ServerToClient {
+                    message: Some(
+                        media::FrameFragment {
+                            data: (0..PUSH_MEDIA_FRAGMENT_SIZE)
+                                .map(|_| rand::random::<u8>())
+                                .collect(),
+                            ..Default::default()
+                        }
+                        .into(),
+                    ),
+                };
+                mc.send(frag).await.expect("send");
+            }
+            mc
+        });
+
+        let c_task = tokio::spawn(async move {
+            let c = try_transition_async!(c, client::states::AsyncConnected)
+                .map_err(|rec| rec.error)
+                .expect("client connect");
+            let c = try_transition_async!(c, client::states::AsyncReady).expect("client ready");
+            let (_, _, mut mc, _, _) = c.split();
+
+            for _ in 0..PUSH_MEDIA_NUM_MESSAGES {
+                let frag_message = mc
+                    .receive()
+                    .await
+                    .expect("receive")
+                    .message
+                    .expect("message");
+                if let media::server_to_client::Message::Fragment(frag) = frag_message {
+                    assert_eq!(frag.data.len(), PUSH_MEDIA_FRAGMENT_SIZE);
+                } else {
+                    panic!("unexpected message");
+                }
+            }
+            mc
+        });
+
+        let _c = c_task.await.expect("client task");
+        let _s = s_task.await.expect("server task");
+    }
+
+    #[test]
+    fn sync_client_async_server_push_media() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+
+        let (c, s) = unconnected_sync_client_async_server(&rt);
+
+        let c_thread = std::thread::spawn(move || {
+            let c = try_transition!(c, client::states::Connected)
+                .map_err(|rec| rec.error)
+                .expect("client connect");
+            let c = try_transition!(c, client::states::Ready).expect("client ready");
+            let (_, _, mut mc, _, _) = c.split();
+
+            for _ in 0..PUSH_MEDIA_NUM_MESSAGES {
+                let frag_message = mc.receive().expect("receive").message.expect("message");
+                if let media::server_to_client::Message::Fragment(frag) = frag_message {
+                    assert_eq!(frag.data.len(), PUSH_MEDIA_FRAGMENT_SIZE);
+                } else {
+                    panic!("unexpected message");
+                }
+            }
+            mc
+        });
+
+        let _s = rt.block_on(async move {
+            let s = try_transition_async!(s, server::states::AsyncAccepted).expect("server accept");
+            let s = try_transition_async!(s, server::states::AsyncReady).expect("server ready");
+            let (_, _, mut mc, _, _) = s.split();
+
+            for _ in 0..PUSH_MEDIA_NUM_MESSAGES {
+                let frag = media::ServerToClient {
+                    message: Some(
+                        media::FrameFragment {
+                            data: (0..PUSH_MEDIA_FRAGMENT_SIZE)
+                                .map(|_| rand::random::<u8>())
+                                .collect(),
+                            ..Default::default()
+                        }
+                        .into(),
+                    ),
+                };
+                mc.send(frag).await.expect("send");
+            }
+            mc
+        });
+
+        let _c = c_thread.join().expect("client thread");
+    }
+
+    #[test]
+    fn async_client_sync_server_push_media() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
+
+        let (c, s) = unconnected_async_client_sync_server(&rt);
+        let s_thread = std::thread::spawn(move || {
+            let s = try_transition!(s, server::states::Accepted).expect("server accept");
+            let s = try_transition!(s, server::states::Ready).expect("server ready");
+            let (_, _, mut mc, _, _) = s.split();
+
+            for _ in 0..PUSH_MEDIA_NUM_MESSAGES {
+                let frag = media::ServerToClient {
+                    message: Some(
+                        media::FrameFragment {
+                            data: (0..PUSH_MEDIA_FRAGMENT_SIZE)
+                                .map(|_| rand::random::<u8>())
+                                .collect(),
+                            ..Default::default()
+                        }
+                        .into(),
+                    ),
+                };
+                mc.send(frag).expect("send");
+            }
+            mc
+        });
+
+        let _c = rt.block_on(async {
+            let c = try_transition_async!(c, client::states::AsyncConnected)
+                .map_err(|rec| rec.error)
+                .expect("client connect");
+            let c = try_transition_async!(c, client::states::AsyncReady).expect("client ready");
+            let (_, _, mut mc, _, _) = c.split();
+
+            for _ in 0..PUSH_MEDIA_NUM_MESSAGES {
+                let frag_message = mc
+                    .receive()
+                    .await
+                    .expect("receive")
+                    .message
+                    .expect("message");
+                if let media::server_to_client::Message::Fragment(frag) = frag_message {
+                    assert_eq!(frag.data.len(), PUSH_MEDIA_FRAGMENT_SIZE);
+                } else {
+                    panic!("unexpected message");
+                }
+            }
+            mc
+        });
+
+        let _s = s_thread.join().expect("server thread");
+    }
 }

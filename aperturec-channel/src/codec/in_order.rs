@@ -221,7 +221,15 @@ where
     fn send(&mut self, msg: Self::Message) -> Result<()> {
         sync_impls::send::<T, WireSm>(&mut self.transport, msg.try_into()?)
     }
+}
 
+impl<T, ApiSm, WireSm> Flushable for SenderSimplex<T, ApiSm, WireSm>
+where
+    T: transport::Flush,
+    WireSm: Message,
+    ApiSm: TryInto<WireSm>,
+    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
+{
     fn flush(&mut self) -> Result<()> {
         self.transport.flush()
     }
@@ -258,7 +266,15 @@ where
     async fn send(&mut self, msg: Self::Message) -> Result<()> {
         async_impls::send::<_, WireSm>(&mut self.transport, msg.try_into()?).await
     }
+}
 
+impl<T, ApiSm, WireSm> AsyncFlushable for AsyncSenderSimplex<T, ApiSm, WireSm>
+where
+    T: transport::AsyncFlush + Unpin + Send + 'static,
+    WireSm: Message + 'static,
+    ApiSm: TryInto<WireSm> + Send + 'static,
+    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync,
+{
     async fn flush(&mut self) -> Result<()> {
         self.transport.flush().await
     }
@@ -354,7 +370,15 @@ where
     fn send(&mut self, msg: Self::Message) -> Result<()> {
         sync_impls::send::<T, WireSm>(&mut self.transport, msg.try_into()?)
     }
+}
 
+impl<T, ApiRm, ApiSm, WireRm, WireSm> Flushable for Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
+where
+    T: transport::Receive + transport::Flush,
+    WireSm: Message,
+    ApiSm: TryInto<WireSm>,
+    <ApiSm as TryInto<WireSm>>::Error: Send + Sync + Error + 'static,
+{
     fn flush(&mut self) -> Result<()> {
         self.transport.flush()
     }
@@ -447,7 +471,18 @@ where
     async fn send(&mut self, msg: Self::Message) -> Result<()> {
         async_impls::send(&mut self.transport, msg.try_into()?).await
     }
+}
 
+impl<T, ApiRm, ApiSm, WireRm, WireSm> AsyncFlushable
+    for AsyncDuplex<T, ApiRm, ApiSm, WireRm, WireSm>
+where
+    T: transport::AsyncReceive + transport::AsyncFlush + Send + Unpin + 'static,
+    WireSm: Message + Send + 'static,
+    ApiSm: TryInto<WireSm> + Send + 'static,
+    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
+    ApiRm: TryFrom<WireRm> + Send + 'static,
+    WireRm: Message + Send + 'static,
+{
     async fn flush(&mut self) -> Result<()> {
         self.transport.flush().await
     }
