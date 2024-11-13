@@ -1,6 +1,4 @@
 //! High-level, message-oriented API
-use aperturec_protocol::{control, event, media, tunnel};
-
 pub mod in_order;
 pub mod out_of_order;
 
@@ -42,78 +40,8 @@ pub trait Flushable: Sender {
 pub trait Duplex: Sender + Receiver {}
 
 impl<T: Sender + Receiver> Duplex for T {}
-/// A trait for the Client-side of a channel, consisting of all channel types
-pub trait UnifiedClient {
-    type Control: Duplex
-        + Sender<Message = control::client_to_server::Message>
-        + Receiver<Message = control::server_to_client::Message>;
-    type Event: Duplex
-        + Sender<Message = event::client_to_server::Message>
-        + Receiver<Message = event::server_to_client::Message>;
-    type Media: Receiver<Message = media::ServerToClient>;
-    type Tunnel: Duplex + Sender<Message = tunnel::Message> + Receiver<Message = tunnel::Message>;
-
-    /// A leftover type that may be required to unsplit the channels back into [`Self`]
-    type Residual;
-
-    /// Split the Client into all channel types
-    fn split(
-        self,
-    ) -> (
-        Self::Control,
-        Self::Event,
-        Self::Media,
-        Self::Tunnel,
-        Self::Residual,
-    );
-
-    /// Combine all channel types back into the original Client type
-    fn unsplit(
-        cc: Self::Control,
-        ec: Self::Event,
-        mc: Self::Media,
-        tc: Self::Tunnel,
-        residual: Self::Residual,
-    ) -> Self;
-}
-
-/// A trait for the Server-side of a channel, consisting of all channel types
-pub trait UnifiedServer {
-    type Control: Duplex
-        + Sender<Message = control::server_to_client::Message>
-        + Receiver<Message = control::client_to_server::Message>;
-    type Event: Duplex
-        + Sender<Message = event::server_to_client::Message>
-        + Receiver<Message = event::client_to_server::Message>;
-    type Media: Sender<Message = media::ServerToClient>;
-    type Tunnel: Duplex + Sender<Message = tunnel::Message> + Receiver<Message = tunnel::Message>;
-
-    /// A leftover type that may be required to unsplit the channels back into [`Self`]
-    type Residual;
-
-    /// Split the Server into all channel types
-    fn split(
-        self,
-    ) -> (
-        Self::Control,
-        Self::Event,
-        Self::Media,
-        Self::Tunnel,
-        Self::Residual,
-    );
-
-    /// Combine all channel types back into the original Server type
-    fn unsplit(
-        cc: Self::Control,
-        ec: Self::Event,
-        mc: Self::Media,
-        tc: Self::Tunnel,
-        residual: Self::Residual,
-    ) -> Self;
-}
 
 mod async_variants {
-    use super::*;
     use futures::sink::{self, Sink};
     use futures::stream::{self, Stream};
     use futures::{Future, FutureExt};
@@ -165,79 +93,8 @@ mod async_variants {
     /// Async variant of [`super::Duplex`]
     pub trait LocalDuplex: Sender + Receiver {}
     impl<T: Sender + Receiver> Duplex for T {}
-
-    #[trait_variant::make(UnifiedClient: Send)]
-    #[allow(dead_code)]
-    /// Async variant of [`super::UnifiedClient`]
-    pub trait LocalUnifiedClient {
-        type Control: Duplex
-            + Sender<Message = control::client_to_server::Message>
-            + Receiver<Message = control::server_to_client::Message>;
-        type Event: Duplex
-            + Sender<Message = event::client_to_server::Message>
-            + Receiver<Message = event::server_to_client::Message>;
-        type Media: Receiver<Message = media::ServerToClient>;
-        type Tunnel: Duplex
-            + Sender<Message = tunnel::Message>
-            + Receiver<Message = tunnel::Message>;
-        type Residual;
-
-        fn split(
-            self,
-        ) -> (
-            Self::Control,
-            Self::Event,
-            Self::Media,
-            Self::Tunnel,
-            Self::Residual,
-        );
-        fn unsplit(
-            cc: Self::Control,
-            ec: Self::Event,
-            mc: Self::Media,
-            tc: Self::Tunnel,
-            residual: Self::Residual,
-        ) -> Self;
-    }
-
-    #[trait_variant::make(UnifiedServer: Send)]
-    #[allow(dead_code)]
-    /// Async variant of [`super::UnifiedServer`]
-    pub trait LocalUnifiedServer {
-        type Control: Duplex
-            + Sender<Message = control::server_to_client::Message>
-            + Receiver<Message = control::client_to_server::Message>;
-        type Event: Duplex
-            + Sender<Message = event::server_to_client::Message>
-            + Receiver<Message = event::client_to_server::Message>;
-        type Media: Sender<Message = media::ServerToClient>;
-        type Tunnel: Duplex
-            + Sender<Message = tunnel::Message>
-            + Receiver<Message = tunnel::Message>;
-        type Residual;
-
-        fn split(
-            self,
-        ) -> (
-            Self::Control,
-            Self::Event,
-            Self::Media,
-            Self::Tunnel,
-            Self::Residual,
-        );
-        fn unsplit(
-            cc: Self::Control,
-            ec: Self::Event,
-            mc: Self::Media,
-            tc: Self::Tunnel,
-            residual: Self::Residual,
-        ) -> Self;
-    }
 }
-
 pub use async_variants::Duplex as AsyncDuplex;
 pub use async_variants::Flushable as AsyncFlushable;
 pub use async_variants::Receiver as AsyncReceiver;
 pub use async_variants::Sender as AsyncSender;
-pub use async_variants::UnifiedClient as AsyncUnifiedClient;
-pub use async_variants::UnifiedServer as AsyncUnifiedServer;

@@ -1,9 +1,7 @@
 use crate::frame::*;
 use crate::gtk3::{image::Image, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
 
-use aperturec_channel::{
-    self as channel, client::states as channel_states, Receiver as _, Sender as _, UnifiedClient,
-};
+use aperturec_channel::{self as channel, Receiver as _, Sender as _, Unified};
 use aperturec_graphics::prelude::*;
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
@@ -16,7 +14,6 @@ use aperturec_protocol::event::{
     DisplayEvent, KeyEvent, MappedButton, PointerEvent, PointerEventBuilder,
 };
 use aperturec_protocol::tunnel;
-use aperturec_state_machine::*;
 use aperturec_utils::log::*;
 
 use anyhow::{anyhow, bail, Error, Result};
@@ -1269,24 +1266,19 @@ impl Client {
             None => (&*self.config.server_addr, None),
         };
 
-        let mut channel_builder = channel::client::Builder::default().server_addr(server_addr);
-        if let Some(port) = server_port {
-            channel_builder = channel_builder.server_port(port);
-        }
+        let mut channel_client_builder = channel::endpoint::ClientBuilder::default();
         for cert in &self.config.additional_tls_certificates {
             debug!("Adding cert: {:?}", cert);
-            channel_builder = channel_builder
+            channel_client_builder = channel_client_builder
                 .additional_tls_pem_certificate(&String::from_utf8_lossy(&cert.to_pem()?));
         }
         if self.config.allow_insecure_connection {
-            channel_builder = channel_builder.allow_insecure_connection();
+            channel_client_builder = channel_client_builder.allow_insecure_connection();
         }
-        let channel = channel_builder.build_sync()?;
-        let channel = try_transition!(channel, channel_states::Connected).map_err(|r| r.error)?;
-        self.local_addr = Some(channel.local_addr()?);
-        let channel = try_transition!(channel, channel_states::Ready).map_err(|r| r.error)?;
-        let (cc, ec, mc, tc, _) = channel.split();
-        Ok((cc, ec, mc, tc))
+        let mut channel_client = channel_client_builder.build_sync()?;
+        let channel_session = channel_client.connect(server_addr, server_port)?;
+        self.local_addr = Some(channel_session.local_addr()?);
+        Ok(channel_session.split())
     }
 
     pub fn get_height(&self) -> i32 {
@@ -1336,7 +1328,6 @@ pub fn run_client(config: Configuration) -> Result<()> {
 mod test {
     use super::*;
     use crate::gtk3;
-    use aperturec_channel::UnifiedServer;
     use aperturec_protocol::control::ServerInitBuilder;
     use test_log::test;
 
@@ -1364,7 +1355,7 @@ mod test {
             channel::tls::Material::ec_self_signed::<_, &str>([], []).expect("tls material");
         let pem_material: channel::tls::PemMaterial =
             material.clone().try_into().expect("convert to PEM");
-        let qserver = channel::server::Builder::default()
+        let mut qserver = channel::endpoint::ServerBuilder::default()
             .bind_addr("0.0.0.0:0")
             .tls_pem_certificate(&pem_material.certificate)
             .tls_pem_private_key(&pem_material.pkey)
@@ -1384,9 +1375,8 @@ mod test {
             .additional_tls_certificates
             .push(material.certificate);
         let _sthread = thread::spawn(move || {
-            let qserver = try_transition!(qserver).expect("server listen");
-            let qserver = try_transition!(qserver).expect("server ready");
-            let (mut cc, _ec, _mc, _tc, _residual) = qserver.split();
+            let qsession = qserver.accept().expect("server accept");
+            let (mut cc, _ec, _mc, _tc) = qsession.split();
             let _ = cc.receive().expect("Receive ClientInit");
             cc.send(
                 ServerInitBuilder::default()

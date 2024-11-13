@@ -4,18 +4,18 @@ use crate::util::Syncify;
 
 use anyhow::{Error, Result};
 use bytes::Bytes;
-use futures::{
-    future::BoxFuture,
-    prelude::{stream::FuturesUnordered, *},
-};
+use futures::prelude::{stream::FuturesUnordered, *};
 use s2n_quic::connection::Connection;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
+
+type RxStreamFuture = Pin<Box<dyn Future<Output = Result<Bytes>> + Send + Sync>>;
 
 #[derive(Debug)]
 struct OutOfOrderTransport {
     connection: Connection,
-    rx_streams: FuturesUnordered<BoxFuture<'static, Result<Bytes>>>,
+    rx_streams: FuturesUnordered<RxStreamFuture>,
 }
 
 impl OutOfOrderTransport {
@@ -35,10 +35,10 @@ impl AsyncReceive for OutOfOrderTransport {
                     match new_stream_res {
                         Ok(Some(mut stream)) => {
                             let mut data = vec![];
-                            self.rx_streams.push(async move {
+                            self.rx_streams.push(Box::pin(async move {
                                 stream.read_to_end(&mut data).await?;
                                 Ok(data.into())
-                            }.boxed());
+                            }));
                         }
                         Ok(None) => break Err(Error::msg("closed connection")),
                         Err(e) => break Err(e.into()),
@@ -85,6 +85,12 @@ macro_rules! dg_type_sync {
                 self.transport.connection
             }
         }
+
+        impl AsRef<Connection> for $type {
+            fn as_ref(&self) -> &Connection {
+                &self.transport.connection
+            }
+        }
     };
 }
 
@@ -107,6 +113,12 @@ macro_rules! dg_type_async {
             /// Convert [`Self`] into the underlying QUIC connection
             pub fn into_connection(self) -> Connection {
                 self.transport.connection
+            }
+        }
+
+        impl AsRef<Connection> for $type {
+            fn as_ref(&self) -> &Connection {
+                &self.transport.connection
             }
         }
     };

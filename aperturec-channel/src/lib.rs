@@ -1,12 +1,11 @@
 pub mod codec;
+pub mod endpoint;
 pub mod gate;
 mod quic;
+pub mod session;
 pub mod tls;
 pub mod transport;
 mod util;
-
-pub use codec::*;
-pub use quic::*;
 
 pub use codec::in_order::AsyncClientControlChannel as AsyncClientControl;
 pub use codec::in_order::AsyncClientControlChannelReceiveHalf as AsyncClientControlReceiveHalf;
@@ -50,3 +49,10 @@ pub use codec::out_of_order::AsyncServerMediaChannel as AsyncServerMedia;
 pub use codec::out_of_order::ClientMediaChannel as ClientMedia;
 pub use codec::out_of_order::GatedServerMediaChannel as GatedServerMedia;
 pub use codec::out_of_order::ServerMediaChannel as ServerMedia;
+
+pub use codec::{
+    AsyncDuplex, AsyncFlushable, AsyncReceiver, AsyncSender, Duplex, Flushable, Receiver, Sender,
+};
+
+pub use endpoint::{AsyncClient, AsyncServer, Client, Server};
+pub use session::Unified;

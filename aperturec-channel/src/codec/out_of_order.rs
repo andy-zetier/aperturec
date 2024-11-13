@@ -154,6 +154,12 @@ impl<T: transport::Receive, ApiRm, WireRm> ReceiverSimplex<T, ApiRm, WireRm> {
     }
 }
 
+impl<T: transport::Receive, ApiRm, WireRm> AsRef<T> for ReceiverSimplex<T, ApiRm, WireRm> {
+    fn as_ref(&self) -> &T {
+        &self.transport
+    }
+}
+
 impl<T, ApiRm, WireRm> Receiver for ReceiverSimplex<T, ApiRm, WireRm>
 where
     T: transport::Receive,
@@ -188,6 +194,14 @@ impl<T: transport::AsyncReceive, ApiRm, WireRm> AsyncReceiverSimplex<T, ApiRm, W
     /// Convert [`Self`] into the underlying transport
     pub fn into_transport(self) -> T {
         self.transport
+    }
+}
+
+impl<T: transport::AsyncReceive, ApiRm, WireRm> AsRef<T>
+    for AsyncReceiverSimplex<T, ApiRm, WireRm>
+{
+    fn as_ref(&self) -> &T {
+        &self.transport
     }
 }
 
@@ -226,6 +240,12 @@ impl<T: transport::Transmit, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm> {
     /// Convert [`Self`] into the underlying transport
     pub fn into_transport(self) -> T {
         self.transport
+    }
+}
+
+impl<T: transport::Transmit, ApiSm, WireSm> AsRef<T> for SenderSimplex<T, ApiSm, WireSm> {
+    fn as_ref(&self) -> &T {
+        &self.transport
     }
 }
 
@@ -292,6 +312,12 @@ impl<T: transport::AsyncTransmit, ApiSm, WireSm> AsyncSenderSimplex<T, ApiSm, Wi
     }
 }
 
+impl<T: transport::AsyncTransmit, ApiSm, WireSm> AsRef<T> for AsyncSenderSimplex<T, ApiSm, WireSm> {
+    fn as_ref(&self) -> &T {
+        &self.transport
+    }
+}
+
 impl<T, ApiSm, WireSm> AsyncSender for AsyncSenderSimplex<T, ApiSm, WireSm>
 where
     T: transport::AsyncTransmit + 'static,
@@ -308,7 +334,7 @@ where
 
 /// Receive and send channel
 #[derive(Debug)]
-pub struct Duplex<T: transport::Receive + transport::Transmit, ApiRm, ApiSm, WireRm, WireSm> {
+pub struct Duplex<T: transport::Duplex, ApiRm, ApiSm, WireRm, WireSm> {
     transport: T,
     _api_rm: PhantomData<ApiRm>,
     _api_sm: PhantomData<ApiSm>,
@@ -316,9 +342,7 @@ pub struct Duplex<T: transport::Receive + transport::Transmit, ApiRm, ApiSm, Wir
     _wire_sm: PhantomData<WireSm>,
 }
 
-impl<T: transport::Receive + transport::Transmit, ApiRm, ApiSm, WireRm, WireSm>
-    Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
-{
+impl<T: transport::Duplex, ApiRm, ApiSm, WireRm, WireSm> Duplex<T, ApiRm, ApiSm, WireRm, WireSm> {
     /// Create a new [`Self`] with the provided underlying transport
     pub fn new(transport: T) -> Self {
         Duplex {
@@ -342,6 +366,14 @@ impl<T: transport::Receive + transport::Transmit, ApiRm, ApiSm, WireRm, WireSm>
             gate,
             ungated: self,
         }
+    }
+}
+
+impl<T: transport::Duplex, ApiRm, ApiSm, WireRm, WireSm> AsRef<T>
+    for Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
+{
+    fn as_ref(&self) -> &T {
+        &self.transport
     }
 }
 
@@ -373,13 +405,7 @@ where
 
 /// Async variant of [`Duplex`]
 #[derive(Debug)]
-pub struct AsyncDuplex<
-    T: transport::AsyncReceive + transport::AsyncTransmit,
-    ApiRm,
-    ApiSm,
-    WireRm,
-    WireSm,
-> {
+pub struct AsyncDuplex<T: transport::AsyncDuplex, ApiRm, ApiSm, WireRm, WireSm> {
     transport: T,
     _api_rm: PhantomData<ApiRm>,
     _api_sm: PhantomData<ApiSm>,
@@ -387,7 +413,7 @@ pub struct AsyncDuplex<
     _wire_sm: PhantomData<WireSm>,
 }
 
-impl<T: transport::AsyncReceive + transport::AsyncTransmit, ApiRm, ApiSm, WireRm, WireSm>
+impl<T: transport::AsyncDuplex, ApiRm, ApiSm, WireRm, WireSm>
     AsyncDuplex<T, ApiRm, ApiSm, WireRm, WireSm>
 {
     /// Create a new [`Self`] with the provided underlying transport
@@ -413,6 +439,14 @@ impl<T: transport::AsyncReceive + transport::AsyncTransmit, ApiRm, ApiSm, WireRm
             gate,
             ungated: self,
         }
+    }
+}
+
+impl<T: transport::AsyncDuplex, ApiRm, ApiSm, WireRm, WireSm> AsRef<T>
+    for AsyncDuplex<T, ApiRm, ApiSm, WireRm, WireSm>
+{
+    fn as_ref(&self) -> &T {
+        &self.transport
     }
 }
 
