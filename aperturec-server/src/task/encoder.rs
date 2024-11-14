@@ -334,6 +334,7 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
         };
         tokio::select! {
             _ = self.state.ct.cancelled() => {
+                debug!(encoder=self.id, "task cancelled");
                 abort_handle.abort();
                 Ok(stateful)
             },

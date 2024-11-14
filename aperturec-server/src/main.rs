@@ -6,7 +6,6 @@ use aperturec_utils::{args, paths};
 
 use anyhow::Result;
 use clap::Parser;
-use futures::future;
 use gethostname::gethostname;
 use std::path::PathBuf;
 use tracing::*;
@@ -184,68 +183,41 @@ async fn main() -> Result<()> {
     let handle = server.handle();
 
     let mut main_task = tokio::task::spawn(async {
-        let handle = server.handle();
-
         let backend_init = try_transition_async!(server, BackendInitialized::<backend::X>)
             .map_err(|recovered| recovered.error)?;
-        let listening =
-            try_transition!(backend_init, Listening::<_>).map_err(|recovered| recovered.error)?;
 
-        let mut session_terminated: Server<SessionTerminated<_>> =
-            transition!(listening, SessionTerminated::<_>);
+        let mut session_inactive = try_transition_async!(backend_init, SessionInactive::<_>)
+            .map_err(|recovered| recovered.error)?;
 
-        let res = loop {
-            let listening = match session_terminated.try_transition() {
-                Ok(listening) => listening,
-                Err(recovered) => {
-                    if !handle.is_stopped() {
-                        error!("Error preparing the server to listen: {}", recovered.error);
+        loop {
+            let session_active = match session_inactive.try_transition().await {
+                Ok(session_active) => session_active,
+                Err(Recovered {
+                    error,
+                    stateful: new_session_inactive,
+                }) => {
+                    if error.is::<ServerStopped>() {
+                        debug!("Server exiting");
+                        break Ok(());
                     }
-                    break Err::<(), _>(recovered.error);
+                    warn!(%error, "Failed activating new session");
+                    session_inactive = new_session_inactive;
+                    continue;
                 }
             };
-            info!("Listening for clients");
 
-            let accepted = try_transition_continue_async!(listening, session_terminated, |e| {
-                if !handle.is_stopped() {
-                    error!("Error accepting client: {}", e)
+            let session_terminated = transition_async!(session_active);
+
+            match session_terminated.try_transition() {
+                Ok(new_session_inactive) => session_inactive = new_session_inactive,
+                Err(Recovered { error, .. }) => {
+                    break if error.is::<ServerStopped>() {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
                 }
-                future::ready(())
-            });
-
-            let remote_addr = accepted.remote_addr()?;
-            info!(
-                "Client connected from {}:{}",
-                remote_addr.ip(),
-                remote_addr.port()
-            );
-
-            let authenticated =
-                try_transition_continue_async!(accepted, session_terminated, |e| future::ready(
-                    error!("Error authenticating client: {}", e)
-                ));
-            info!("Client authenticated");
-
-            let running = try_transition_continue_async!(authenticated, session_terminated, |e| {
-                future::ready(error!("Error starting session: {}", e))
-            });
-
-            session_terminated = transition_async!(running);
-            info!(
-                "Client disconnected from {}:{}",
-                remote_addr.ip(),
-                remote_addr.port()
-            );
-        };
-
-        if let Err(e) = res {
-            if handle.is_stopped() {
-                Ok(())
-            } else {
-                Err(e)
             }
-        } else {
-            Ok(())
         }
     });
 

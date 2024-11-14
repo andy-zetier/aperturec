@@ -1,11 +1,15 @@
-use anyhow::{anyhow, bail, Result};
+use crate::server;
+
 use aperturec_channel::*;
 use aperturec_protocol::control::client_to_server as cm_c2s;
 use aperturec_protocol::control::server_to_client as cm_s2c;
 use aperturec_state_machine::*;
+
+use anyhow::{anyhow, bail, Result};
 use futures::{future, prelude::*};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
+use tokio::time;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
 
@@ -68,6 +72,14 @@ impl Transitionable<Running> for Task<Created> {
                         cc_tx.send(msg).await?;
                     }
                     _ = tx_ct.cancelled() => {
+                        time::timeout(
+                            server::CHANNEL_FLUSH_TIMEOUT,
+                            async {
+                                cc_tx.flush().await.unwrap_or_else(|error| {
+                                    warn!(%error, "flush control channel");
+                                })
+                            }
+                        ).await.unwrap_or_else(|_| warn!("Timeout flushing control channel"));
                         cc_tx.flush().await?;
                         break Ok(());
                     }

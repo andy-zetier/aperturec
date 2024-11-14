@@ -1,4 +1,5 @@
 use crate::backend::Event;
+use crate::server;
 
 use anyhow::{anyhow, bail, Result};
 use aperturec_channel::{self as channel, AsyncFlushable, AsyncReceiver, AsyncSender};
@@ -7,7 +8,9 @@ use aperturec_state_machine::*;
 use futures::{future, prelude::*};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
+use tokio::time;
 use tokio_util::sync::CancellationToken;
+use tracing::*;
 
 #[derive(Stateful, SelfTransitionable, Debug)]
 #[state(S)]
@@ -84,7 +87,14 @@ impl Transitionable<Running> for Task<Created> {
                         ec_tx.send(msg).await?;
                     }
                     _ = tx_ct.cancelled() => {
-                        ec_tx.flush().await?;
+                        time::timeout(
+                            server::CHANNEL_FLUSH_TIMEOUT,
+                            async {
+                                ec_tx.flush().await.unwrap_or_else(|error| {
+                                    warn!(%error, "flush event channel");
+                                })
+                            }
+                        ).await.unwrap_or_else(|_| warn!("Timeout flushing event channel"));
                         break Ok(());
                     }
                     else => bail!("EC Tx messages exhausted"),

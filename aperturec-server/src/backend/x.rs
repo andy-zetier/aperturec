@@ -57,6 +57,7 @@ async fn do_exec_command(display_name: &str, command: &mut Command) -> Result<Ch
     command.env("XDG_SESSION_TYPE", "x11");
     command.stdout(process_utils::StdoutTracer::new(Level::TRACE));
     command.stderr(process_utils::StderrTracer::new(Level::TRACE));
+    command.process_group(0);
     debug!("Starting command `{:?}`", command);
     let process = command.spawn()?;
     debug!("Launched {:?}", process);
@@ -289,6 +290,7 @@ impl Backend for X {
             .arg("1") // stdout
             .stdout(Stdio::piped())
             .stderr(process_utils::StderrTracer::new(Level::DEBUG))
+            .process_group(0)
             .kill_on_drop(true);
         debug!("Starting Xvfb with command `{:?}`", xvfb_cmd);
         let mut xvfb_proc = xvfb_cmd.spawn()?;
