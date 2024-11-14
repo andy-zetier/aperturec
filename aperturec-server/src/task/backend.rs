@@ -123,9 +123,9 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             //
                             // Partition the new resolution across all available encoders
                             //
-                            let size = Size::new(size.width as usize, size.height as usize);
-                            let (resolution, partitions) = partition(
-                                &size,
+                            let requested_resolution = Size::new(size.width as usize, size.height as usize);
+                            let (new_resolution, partitions) = partition(
+                                &requested_resolution,
                                 self.state.encoder_command_txs.len(),
                             );
 
@@ -142,11 +142,11 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             // Ensure requested resolution does not match current resolution
                             //
                             match self.state.backend.resolution().await {
-                                Ok(res) if res == resolution => {
-                                    debug!("Requested resolution matches current resolution {:?}", resolution);
+                                Ok(res) if res == new_resolution => {
+                                    debug!(?new_resolution, "New resolution matches current resolution");
                                     let msg = em_s2c::Message::DisplayConfiguration(DisplayConfiguration {
                                         id: display_config_id,
-                                        display_size: Some(Dimension::new(resolution.width as u64, resolution.height as u64)),
+                                        display_size: Some(Dimension::new(new_resolution.width as u64, new_resolution.height as u64)),
                                         areas,
                                     });
 
@@ -157,7 +157,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                                 },
                                 Ok(_) => (),
                                 Err(e) => {
-                                    warn!("Failed to get resolution: {:?}", e);
+                                    warn!(error = ?e, "Failed to get resolution");
                                     continue;
                                 },
                             };
@@ -165,8 +165,8 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             //
                             // Try to set the backend resolution
                             //
-                            if let Err(e) = self.state.backend.set_resolution(&resolution).await {
-                                warn!("Failed to set resolution {:?}: {:?}", resolution, e);
+                            if let Err(e) = self.state.backend.set_resolution(&new_resolution).await {
+                                warn!(error = ?e, ?new_resolution, "Failed to set resolution");
                                 continue;
                             }
 
@@ -184,7 +184,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             //
                             let (notify_complete_tx, notify_complete_rx) = oneshot::channel();
                             if let Err(e) = self.state.resolution_tx.send(NewResolution {
-                                resolution,
+                                resolution: new_resolution,
                                 notify_complete_tx,
                             }).await {
                                 break Err(e.into());
@@ -194,13 +194,15 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                                 break Err(e.into());
                             }
 
+                            debug!(?requested_resolution, ?new_resolution);
+
                             //
                             // Notify Client of successful resolution change
                             //
                             display_config_id += 1;
                             let msg = em_s2c::Message::DisplayConfiguration(DisplayConfiguration {
                                 id: display_config_id,
-                                display_size: Some(Dimension::new(resolution.width as u64, resolution.height as u64)),
+                                display_size: Some(Dimension::new(new_resolution.width as u64, new_resolution.height as u64)),
                                 areas,
                             });
 
@@ -214,7 +216,10 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                     Some(area) = damage_stream.next() => {
                         let pixels = match self.state.backend.capture_area(area).await {
                             Ok(pixels) => pixels,
-                            Err(e) => break Err(e),
+                            Err(e) => {
+                                warn!(error = ?e, ?area, "Failed to capture area");
+                                continue;
+                            }
                         };
                         let area = area.to_box2d();
                         let fb_data = SubframeBuffer { area, pixels };
@@ -227,9 +232,9 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             Some(id) => (*id, em_s2c::Message::CursorChange(em::CursorChange { id: *id })),
                             None => 'msg: {
                                 match self.state.backend.capture_cursor().await {
-                                    Err(err) => {
-                                        error!("Failed to capture cursor: {}", err);
-                                        break 'select Err(err);
+                                    Err(e) => {
+                                        error!(error = ?e, "Failed to capture cursor");
+                                        break 'select Err(e);
                                     },
                                     Ok(cursor_image) => {
 
@@ -323,13 +328,13 @@ impl<B: Backend> AsyncTryTransitionable<Terminated<B>, TerminatedWithError<B>>
                         backend: Some(backend),
                     },
                 },
-                error: anyhow!("backend task exited with error: {}", error),
+                error: anyhow!("backend task exited with error: {:?}", error),
             }),
             Err(error) => Err(Recovered {
                 stateful: Task {
                     state: TerminatedWithError { backend: None },
                 },
-                error: anyhow!("backend task panicked: {}", error),
+                error: anyhow!("backend task panicked: {:?}", error),
             }),
         }
     }

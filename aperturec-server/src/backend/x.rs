@@ -253,17 +253,15 @@ impl Backend for X {
     async fn cursor_stream(
         &self,
     ) -> Result<impl Stream<Item = CursorChange> + Send + Unpin + 'static> {
-        let cursor_change = CursorChange { serial: 0 };
-        Ok(
-            stream::iter([cursor_change]).chain(self.connection.event_stream().filter_map(
-                |event| match &event.0 {
-                    xcb::Event::XFixes(xfixes::Event::CursorNotify(cursor_notify_event)) => {
-                        future::ready(Some(cursor_notify_event.into()))
-                    }
-                    _ => future::ready(None),
-                },
-            )),
-        )
+        Ok(self
+            .connection
+            .event_stream()
+            .filter_map(|event| match &event.0 {
+                xcb::Event::XFixes(xfixes::Event::CursorNotify(cursor_notify_event)) => {
+                    future::ready(Some(cursor_notify_event.into()))
+                }
+                _ => future::ready(None),
+            }))
     }
 
     async fn initialize<N>(
