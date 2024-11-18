@@ -14,7 +14,6 @@ aperturec-metrics = { path = "../aperturec-metrics" }
 aperturec-utils = { path = "../aperturec-utils" }
 
 anyhow = "1.0"
-build_id = "0.2.1"
 clap = { version = "4.3.22", features = ["derive"] }
 ctrlc = "3.4.1"
 crossbeam = "0.8"

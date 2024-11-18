@@ -488,7 +488,7 @@ impl Client {
                     .parse::<u64>()
                     .expect("Failed to parse version patch!"),
             ))
-            .build_id(build_id::get().to_hyphenated().to_string())
+            .build_id(aperturec_utils::build_id())
             .os(match consts::OS {
                 "linux" => Os::Linux,
                 "windows" => Os::Windows,
