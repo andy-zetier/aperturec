@@ -290,7 +290,6 @@ impl Backend for X {
             .arg("1") // stdout
             .stdout(Stdio::piped())
             .stderr(process_utils::StderrTracer::new(Level::DEBUG))
-            .process_group(0)
             .kill_on_drop(true);
         debug!("Starting Xvfb with command `{:?}`", xvfb_cmd);
         let mut xvfb_proc = xvfb_cmd.spawn()?;
