@@ -185,8 +185,6 @@ mod backend_trait {
         async fn capture_cursor(&self) -> Result<CursorImage>;
         async fn exec_command(&mut self, command: &mut Command) -> Result<Child>;
         async fn wait_root_process(&mut self) -> Result<ExitStatus>;
-        fn start_kill_root_process(&mut self) -> Result<()>;
-        fn root_process_exited(&self) -> bool;
     }
 }
 pub use backend_trait::Backend;

@@ -117,6 +117,21 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                 tokio::select! {
                     biased;
                     _ = ct.cancelled() => break Ok(()),
+                    exit_status_res = self.state.backend.wait_root_process() => {
+                        match exit_status_res {
+                            Ok(exit_status) => {
+                                if exit_status.success() {
+                                    info!("root process exited successfully");
+                                    break Ok(());
+                                } else {
+                                    break Err(anyhow!("root process exited with exit status: {}", exit_status));
+                                }
+                            }
+                            Err(error) => {
+                                break Err(anyhow!("root process IO error: {}", error));
+                            }
+                        }
+                    }
                     Some(event) = self.state.event_rx.recv() => {
                         if let Event::Display { ref size } = event {
 

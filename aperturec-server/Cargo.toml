@@ -29,6 +29,7 @@ pbkdf2 = { version = "0.12", features = ["simple"] }
 petname = "2.0"
 prometheus = "0.13.3"
 ndarray = "0.16"
+nix = "0.29"
 os_pipe = "1.2"
 rand = { version = "0.8", features = ["std", "std_rng"] }
 rpassword = "7.3"

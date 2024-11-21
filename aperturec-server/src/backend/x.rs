@@ -1,19 +1,20 @@
 use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState};
 use crate::metrics::{BackendEvent, DisplayHeight, DisplayWidth};
-use crate::process_utils;
+use crate::process_utils::{self, DisplayableExitStatus};
 
 use aperturec_graphics::prelude::*;
 use aperturec_protocol::event as em;
 
 use anyhow::{anyhow, bail, Result};
-use futures::{future, stream, Stream, StreamExt, TryFutureExt};
+use futures::{future, stream, Future, Stream, StreamExt, TryFutureExt};
 use ndarray::{prelude::*, AssignElem};
 use rand::distributions::{Alphanumeric, DistString};
 use std::fmt::{self, Debug, Formatter};
 use std::iter::Iterator;
 use std::ops::{Deref, DerefMut};
+use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -48,8 +49,7 @@ pub struct X {
     last_created_mode: Option<randr::Mode>,
     root_drawable: Drawable,
     root_process: Option<Child>,
-    root_process_exited: bool,
-    _xvfb_proc: Child,
+    xvfb_process: Child,
 }
 
 async fn do_exec_command(display_name: &str, command: &mut Command) -> Result<Child> {
@@ -57,7 +57,6 @@ async fn do_exec_command(display_name: &str, command: &mut Command) -> Result<Ch
     command.env("XDG_SESSION_TYPE", "x11");
     command.stdout(process_utils::StdoutTracer::new(Level::TRACE));
     command.stderr(process_utils::StderrTracer::new(Level::TRACE));
-    command.process_group(0);
     debug!("Starting command `{:?}`", command);
     let process = command.spawn()?;
     debug!("Launched {:?}", process);
@@ -176,27 +175,27 @@ impl PixelMap for XPixelMap {
 impl Backend for X {
     type PixelMap = XPixelMap;
 
-    fn root_process_exited(&self) -> bool {
-        self.root_process_exited
-    }
-
     async fn wait_root_process(&mut self) -> Result<ExitStatus> {
-        match self.root_process {
-            None => future::pending().await,
-            Some(ref mut rp) => {
-                let es = rp.wait().await?;
-                self.root_process_exited = true;
-                debug!("Root program exited with result {}", es);
-                Ok(es)
-            }
-        }
-    }
+        static WARN_ONCE: OnceLock<()> = OnceLock::new();
+        let root_proc_fut: Pin<Box<dyn Future<Output = _> + Send + Sync>> =
+            if let Some(child) = self.root_process.as_mut() {
+                Box::pin(child.wait())
+            } else {
+                Box::pin(future::pending())
+            };
 
-    fn start_kill_root_process(&mut self) -> Result<()> {
-        if let Some(root_process) = self.root_process.as_mut() {
-            Ok(root_process.start_kill()?)
-        } else {
-            anyhow::bail!("No root process to kill");
+        tokio::select! {
+            biased;
+            xvfb_es_res = self.xvfb_process.wait() => {
+                let xvfb_es = xvfb_es_res?;
+                WARN_ONCE.get_or_init(|| warn!(exit_status=%xvfb_es.display(), "Xvfb exiting"));
+                Ok(xvfb_es)
+            },
+            root_es_res = root_proc_fut => {
+                let root_es = root_es_res?;
+                WARN_ONCE.get_or_init(|| warn!(exit_status=%root_es.display(), "Root process exiting"));
+                Ok(root_es)
+            }
         }
     }
 
@@ -292,13 +291,17 @@ impl Backend for X {
             .stderr(process_utils::StderrTracer::new(Level::DEBUG))
             .kill_on_drop(true);
         debug!("Starting Xvfb with command `{:?}`", xvfb_cmd);
-        let mut xvfb_proc = xvfb_cmd.spawn()?;
+        let mut xvfb_process = xvfb_cmd.spawn()?;
         time::sleep(CHILD_STARTUP_WAIT_TIME_MS).await;
-        if let Ok(Some(status)) = xvfb_proc.try_wait() {
-            bail!("Xvfb exited with status {}", status);
+        if let Ok(Some(status)) = xvfb_process.try_wait() {
+            bail!("Xvfb exited with status {}", status.display());
         }
-        let mut xvfb_stdout =
-            BufReader::new(xvfb_proc.stdout.as_mut().ok_or(anyhow!("No Xvfb stdout"))?);
+        let mut xvfb_stdout = BufReader::new(
+            xvfb_process
+                .stdout
+                .as_mut()
+                .ok_or(anyhow!("No Xvfb stdout"))?,
+        );
         let mut display_name = String::new();
         xvfb_stdout.read_line(&mut display_name).await?;
         display_name = format!(":{}", display_name.trim().trim_end());
@@ -334,8 +337,7 @@ impl Backend for X {
             last_created_mode: None,
             root_drawable,
             root_process,
-            root_process_exited: false,
-            _xvfb_proc: xvfb_proc,
+            xvfb_process,
         })
     }
 

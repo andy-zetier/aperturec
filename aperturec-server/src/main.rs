@@ -194,15 +194,23 @@ async fn main() -> Result<()> {
                 Ok(session_active) => session_active,
                 Err(Recovered {
                     error,
-                    stateful: new_session_inactive,
+                    stateful: session_terminated,
                 }) => {
-                    if error.is::<ServerStopped>() {
-                        debug!("Server exiting");
-                        break Ok(());
-                    }
                     warn!(%error, "Failed activating new session");
-                    session_inactive = new_session_inactive;
-                    continue;
+                    match session_terminated.try_transition() {
+                        Ok(new_session_inactive) => {
+                            session_inactive = new_session_inactive;
+                            continue;
+                        }
+                        Err(Recovered { error, .. }) => {
+                            if error.is::<ServerStopped>() {
+                                debug!("Server exiting");
+                                break Ok(());
+                            } else {
+                                break Err(error);
+                            }
+                        }
+                    }
                 }
             };
 

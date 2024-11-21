@@ -110,14 +110,14 @@ macro_rules! try_recover_async {
 /// ```
 #[macro_export]
 macro_rules! return_recover {
-    ($recoverable:expr, $fmt:literal $(, $args:tt )*) => {{
+    ($recoverable:expr, $fmt:literal $(, $args:expr )*) => {{
         return_recover!($recoverable, _, $fmt $(, $args )*)
     }};
-    ($recoverable:expr, $target:ty, $fmt:literal $(, $args:tt )*) => {{
+    ($recoverable:expr, $target:ty, $fmt:literal $(, $args:expr )*) => {{
         return Err(
             Recovered::new(
                 <_ as Transitionable<$target>>::transition($recoverable),
-                anyhow::anyhow!($fmt, $( $args ),*)
+                anyhow::anyhow!($fmt $(, $args )*)
             )
         );
     }};
@@ -127,14 +127,14 @@ macro_rules! return_recover {
 /// `async` block.
 #[macro_export]
 macro_rules! return_recover_async {
-    ($recoverable:expr, $fmt:literal $(, $args:tt )*) => {{
+    ($recoverable:expr, $fmt:literal $(, $args:expr )*) => {{
         return_recover_async!($recoverable, _, $fmt $(, $args )*)
     }};
-    ($recoverable:expr, $target:ty, $fmt:literal $(, $args:tt )*) => {{
+    ($recoverable:expr, $target:ty, $fmt:literal $(, $args:expr )*) => {{
         return Err(
             Recovered::new(
                 <_ as Transitionable<$target>>::transition($recoverable).await,
-                anyhow::anyhow!($fmt, $(, $args )*)
+                anyhow::anyhow!($fmt $(, $args )*)
             )
         );
     }};

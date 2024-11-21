@@ -1,5 +1,6 @@
 use crate::backend::{Backend, LockState, SwapableBackend};
 use crate::metrics::EncoderCount;
+use crate::process_utils::DisplayableExitStatus;
 use crate::session;
 use crate::task::{
     backend, control_channel_handler as cc_handler, encoder, event_channel_handler as ec_handler,
@@ -27,7 +28,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::pin::Pin;
+use std::pin::{pin, Pin};
 use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::process::Command;
@@ -93,7 +94,6 @@ pub struct SessionInactive<B: Backend> {
     #[debug(skip)]
     session_stream: Peekable<session::AuthenticatedStream>,
 }
-impl<B: Backend> SelfTransitionable for Server<SessionInactive<B>> {}
 
 #[derive(State, Debug)]
 pub struct SessionActive<B: Backend> {
@@ -419,11 +419,11 @@ pub(crate) async fn send_flush_goodbye(
     });
 }
 
-impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionInactive<B>>
+impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
     for Server<SessionInactive<B>>
 {
     type SuccessStateful = Server<SessionActive<B>>;
-    type FailureStateful = Server<SessionInactive<B>>;
+    type FailureStateful = Server<SessionTerminated<B>>;
     type Error = anyhow::Error;
 
     async fn try_transition(
@@ -443,6 +443,7 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionInactive<B>>
             }};
         }
 
+        let mut backend = pin!(&mut self.state.backend);
         let mut session = tokio::select! {
             session_res = &mut self.state.session_stream.try_next() => {
                 match session_res {
@@ -451,9 +452,12 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionInactive<B>>
                     Err(e) => return_recover!(self, "Failed accepting new sessions: {}", e),
                 }
             }
+            root_process_es_res = backend.wait_root_process() => {
+                return_recover!(self, "Root process exited with status: {}", root_process_es_res.display());
+            }
             _ = self.cancellation_token.cancelled() => {
                 return Err(Recovered {
-                    stateful: self,
+                    stateful: transition!(self, SessionTerminated::<_>),
                     error: ServerStopped.into(),
                 });
             }
@@ -614,7 +618,10 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionInactive<B>>
             debug!("server stopped before session started, sending ServerGoodbye");
             send_flush_goodbye(&mut session.cc, cm::ServerGoodbyeReason::ShuttingDown).await;
             Err(Recovered {
-                stateful: recover_self_with_backend!(backend.into_root()),
+                stateful: transition!(
+                    recover_self_with_backend!(backend.into_root()),
+                    SessionTerminated<_>
+                ),
                 error: ServerStopped.into(),
             })
         } else {
@@ -837,9 +844,13 @@ where
                 }
                 Some(res) = backend_stream.next(), if backend.is_none() && task_error.is_none() => {
                     match res {
-                        Ok(be) => backend = Some(be),
-                        Err((be_opt, error)) => {
-                            backend = be_opt;
+                        Ok(mut be) => {
+                            if gb_reason.is_none() && be.wait_root_process().now_or_never().is_some() {
+                                gb_reason = Some(cm::ServerGoodbyeReason::ProcessExited);
+                            }
+                            backend = Some(be);
+                        },
+                        Err((None, error)) => {
                             if task_error.is_none() && !cleanup_started {
                                 task_error = Some(anyhow!("backend task error: {}", error));
                                 if gb_reason.is_none() {
@@ -847,6 +858,18 @@ where
                                 }
                             }
                         }
+                        Err((Some(mut be), error)) => {
+                            if gb_reason.is_none() && be.wait_root_process().now_or_never().is_some() {
+                                gb_reason = Some(cm::ServerGoodbyeReason::ProcessExited);
+                            }
+                            backend = Some(be);
+                            if task_error.is_none() && !cleanup_started {
+                                task_error = Some(anyhow!("backend task error: {}", error));
+                                if gb_reason.is_none() {
+                                    gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
+                                }
+                            }
+                        },
                     }
                     ct.cancel();
                 }
@@ -877,31 +900,67 @@ impl<B: Backend> TryTransitionable<SessionInactive<B>, SessionUnresumable>
     fn try_transition(
         self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        match (self.state.backend, self.cancellation_token.is_cancelled()) {
-            (Some(backend), false) => Ok(Server {
-                config: self.config,
-                next_client_id: self.next_client_id,
-                state: SessionInactive {
-                    backend: backend.into_root(),
-                    session_stream: self.state.session_stream,
-                },
-                cancellation_token: self.cancellation_token,
-            }),
-            (.., is_cancelled) => {
-                let stateful = Server {
+        macro_rules! session_unresumable {
+            () => {
+                Server {
                     config: self.config,
                     next_client_id: self.next_client_id,
                     state: SessionUnresumable,
                     cancellation_token: self.cancellation_token,
-                };
+                }
+            };
+        }
+
+        match (self.state.backend, self.cancellation_token.is_cancelled()) {
+            (Some(mut backend), false) => {
+                if let Some(exit_status) = backend.wait_root_process().now_or_never() {
+                    Err(Recovered {
+                        stateful: session_unresumable!(),
+                        error: anyhow!(
+                            "Root process exited with status: {}",
+                            exit_status.display()
+                        ),
+                    })
+                } else {
+                    Ok(Server {
+                        config: self.config,
+                        next_client_id: self.next_client_id,
+                        state: SessionInactive {
+                            backend: backend.into_root(),
+                            session_stream: self.state.session_stream,
+                        },
+                        cancellation_token: self.cancellation_token,
+                    })
+                }
+            }
+            (.., is_cancelled) => {
                 let error = if is_cancelled {
                     ServerStopped.into()
                 } else {
                     anyhow!("backend unrecoverable")
                 };
 
-                Err(Recovered { stateful, error })
+                Err(Recovered {
+                    stateful: session_unresumable!(),
+                    error,
+                })
             }
+        }
+    }
+}
+
+impl<B: Backend> Transitionable<SessionTerminated<B>> for Server<SessionInactive<B>> {
+    type NextStateful = Server<SessionTerminated<B>>;
+
+    fn transition(self) -> Self::NextStateful {
+        Server {
+            config: self.config,
+            next_client_id: self.next_client_id,
+            state: SessionTerminated {
+                backend: Some(self.state.backend.into()),
+                session_stream: self.state.session_stream,
+            },
+            cancellation_token: self.cancellation_token,
         }
     }
 }

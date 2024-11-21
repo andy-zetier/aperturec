@@ -1,6 +1,7 @@
 use os_pipe::PipeWriter;
-use std::process::Stdio;
-use std::str;
+use std::os::unix::process::ExitStatusExt;
+use std::process::{ExitStatus, Stdio};
+use std::{fmt, str};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::unix::pipe;
 use tracing::*;
@@ -106,3 +107,38 @@ macro_rules! delegate_into_stdio {
 delegate_into_stdio!(StdoutTracer, inner);
 delegate_into_stdio!(StderrTracer, inner);
 delegate_into_stdio!(Tracer, pipe_writer);
+
+pub trait DisplayableExitStatus {
+    fn display(&self) -> String {
+        todo!()
+    }
+}
+
+impl DisplayableExitStatus for ExitStatus {
+    fn display(&self) -> String {
+        match self.code() {
+            Some(0) => "Success".into(),
+            Some(code) => format!("Non-zero exit: {}", code),
+            None => {
+                if let Some(sig) = self.signal() {
+                    if let Ok(sig) = nix::sys::signal::Signal::try_from(sig) {
+                        format!("Terminated by signal {}", sig)
+                    } else {
+                        format!("Terminated by unknown signal")
+                    }
+                } else {
+                    "Terminated by neither signal nor exit".into()
+                }
+            }
+        }
+    }
+}
+
+impl<E: fmt::Display> DisplayableExitStatus for Result<ExitStatus, E> {
+    fn display(&self) -> String {
+        match self {
+            Ok(es) => es.display(),
+            Err(error) => format!("Failed retrieving status: {}", error),
+        }
+    }
+}
