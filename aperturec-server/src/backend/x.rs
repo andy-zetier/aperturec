@@ -313,6 +313,8 @@ impl Backend for X {
         X::query_damage_version(&connection).await?;
         trace!("Querying for xfixes extension version");
         X::query_xfixes_version(&connection).await?;
+        trace!("Querying for randr extension version");
+        X::query_randr_version(&connection).await?;
         trace!("Creating root objects");
         let (root_damage, root_window) = X::create_root_objects(&connection);
         let root_drawable = Drawable::Window(root_window);
@@ -735,6 +737,30 @@ impl X {
                 reply.minor_version(),
                 xfixes::MAJOR_VERSION,
                 xfixes::MINOR_VERSION,
+            );
+        }
+
+        Ok(())
+    }
+
+    async fn query_randr_version(connection: &XConnection) -> Result<()> {
+        trace!("querying randr version");
+        let reply = connection
+            .checked_request_with_reply(randr::QueryVersion {
+                major_version: randr::MAJOR_VERSION,
+                minor_version: randr::MINOR_VERSION,
+            })
+            .await?;
+
+        if reply.major_version() != randr::MAJOR_VERSION
+            || reply.minor_version() != randr::MINOR_VERSION
+        {
+            bail!(
+                "X Server RandR {}.{} != X Client RandR {}.{}",
+                reply.major_version(),
+                reply.minor_version(),
+                randr::MAJOR_VERSION,
+                randr::MINOR_VERSION,
             );
         }
 
