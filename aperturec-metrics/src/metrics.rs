@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{mpsc, Mutex, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use sysinfo::{RefreshKind, System, SystemExt};
+use sysinfo::{RefreshKind, System};
 use tracing::*;
 
 static WARN_ONCE: Once = Once::new();
@@ -148,7 +148,7 @@ impl MetricsInitializer {
     fn min_rate() -> Duration {
         static MIN_REFRESH_RATE: OnceLock<Duration> = OnceLock::new();
         *MIN_REFRESH_RATE.get_or_init(|| {
-            std::cmp::max(Duration::from_secs(3), System::MINIMUM_CPU_UPDATE_INTERVAL)
+            std::cmp::max(Duration::from_secs(3), sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
         })
     }
 

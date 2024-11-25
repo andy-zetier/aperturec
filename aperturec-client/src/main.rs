@@ -10,7 +10,7 @@ use std::env;
 use std::fs;
 use std::iter;
 use std::path::PathBuf;
-use sysinfo::{CpuRefreshKind, RefreshKind, SystemExt};
+use sysinfo::{CpuRefreshKind, RefreshKind};
 use tracing::*;
 use tracing_subscriber::prelude::*;
 use url::Url;

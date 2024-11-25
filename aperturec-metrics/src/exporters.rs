@@ -19,7 +19,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
-use sysinfo::{ProcessExt, System, SystemExt, UserExt};
+use sysinfo::{System, Users};
 use tiny_http::{Response, Server, StatusCode};
 use tracing::*;
 
@@ -323,10 +323,11 @@ impl PushgatewayExporter {
         groupings.insert("instance".to_owned(), "".to_string());
         groupings.insert("user".to_owned(), "".to_string());
 
+        let users = Users::new();
         let s = System::new_all();
         if let Some(process) = s.process(sysinfo::get_current_pid().unwrap()) {
             if let Some(uid) = process.user_id() {
-                if let Some(user) = s.get_user_by_id(uid) {
+                if let Some(user) = users.get_user_by_id(uid) {
                     groupings.insert("user".to_owned(), user.name().to_owned());
                 }
             }
@@ -336,7 +337,7 @@ impl PushgatewayExporter {
             groupings.insert("instance".to_owned(), epoch.as_secs().to_string());
         }
 
-        if let Some(host_name) = s.host_name() {
+        if let Some(host_name) = System::host_name() {
             groupings.insert("id".to_owned(), format!("{}:{}", host_name, id));
         }
 

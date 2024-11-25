@@ -13,7 +13,7 @@ use crate::MetricUpdate;
 use crate::SysinfoMetric;
 
 use std::time::Instant;
-use sysinfo::{CpuRefreshKind, Pid, ProcessExt, RefreshKind, System, SystemExt};
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Pid, RefreshKind, System};
 
 ///
 /// All available built-in metrics
@@ -395,7 +395,7 @@ impl SysinfoMetric for MemoryUsage {
     }
 
     fn add_refresh_kind(&self, kind: &mut RefreshKind) {
-        let _ = kind.with_memory();
+        let _ = kind.with_memory(MemoryRefreshKind::everything());
     }
 }
 
@@ -505,12 +505,12 @@ mod test {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].value.unwrap(), 0.0);
 
-        std::thread::sleep(System::MINIMUM_CPU_UPDATE_INTERVAL);
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         sys.refresh_all();
         let v = cu.poll_with_sys(&sys);
         let cpu0 = v[0].value.unwrap();
 
-        std::thread::sleep(System::MINIMUM_CPU_UPDATE_INTERVAL);
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         find_primes(sys.cpus().len(), 123456);
         sys.refresh_all();
         let v = cu.poll_with_sys(&sys);

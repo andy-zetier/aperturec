@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{assert, thread};
-use sysinfo::{CpuExt, CpuRefreshKind, RefreshKind, SystemExt};
+use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tracing::*;
 
 const VERSION_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
@@ -474,7 +474,7 @@ impl Client {
         let sys = sysinfo::System::new_with_specifics(
             RefreshKind::new()
                 .with_cpu(CpuRefreshKind::everything())
-                .with_memory(),
+                .with_memory(MemoryRefreshKind::everything()),
         );
         ClientInfoBuilder::default()
             .version(SemVer::new(
@@ -495,7 +495,7 @@ impl Client {
                 "macos" => Os::Mac,
                 _ => panic!("Unsupported OS"),
             })
-            .os_version(sys.os_version().unwrap())
+            .os_version(System::os_version().unwrap())
             .ssl_library("UNHANDLED".to_string())
             .ssl_version("UNHANDLED".to_string())
             .bitness(if cfg!(target_pointer_width = "64") {
