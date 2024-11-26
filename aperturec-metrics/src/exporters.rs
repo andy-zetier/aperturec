@@ -323,7 +323,7 @@ impl PushgatewayExporter {
         groupings.insert("instance".to_owned(), "".to_string());
         groupings.insert("user".to_owned(), "".to_string());
 
-        let users = Users::new();
+        let users = Users::new_with_refreshed_list();
         let s = System::new_all();
         if let Some(process) = s.process(sysinfo::get_current_pid().unwrap()) {
             if let Some(uid) = process.user_id() {
