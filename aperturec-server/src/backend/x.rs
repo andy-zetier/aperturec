@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Result};
 use futures::{future, stream, Future, Stream, StreamExt, TryFutureExt};
 use ndarray::{prelude::*, AssignElem};
 use rand::distributions::{Alphanumeric, DistString};
+use std::env;
 use std::fmt::{self, Debug, Formatter};
 use std::iter::Iterator;
 use std::ops::{Deref, DerefMut};
@@ -280,7 +281,7 @@ impl Backend for X {
             max_width, max_height
         );
 
-        let mut xvfb_cmd = Command::new("Xvfb");
+        let mut xvfb_cmd = Command::new(env::var("XVFB").unwrap_or("Xvfb".to_string()));
         xvfb_cmd
             .arg("-screen")
             .arg("0")
