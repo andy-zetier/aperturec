@@ -246,7 +246,7 @@ impl MetricsInitializer {
                 .collect();
 
             // Build a sysinfo::RefreshKind from the Kinds published by all SysinfoMetrics
-            let mut refresh_kind = RefreshKind::new();
+            let mut refresh_kind = RefreshKind::everything();
             let mut sys = System::new_with_specifics(refresh_kind);
             sys.refresh_all();
 

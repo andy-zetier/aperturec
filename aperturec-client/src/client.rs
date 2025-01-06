@@ -472,7 +472,7 @@ impl Client {
 
     fn generate_client_info(&self) -> ClientInfo {
         let sys = sysinfo::System::new_with_specifics(
-            RefreshKind::new()
+            RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
         );

@@ -168,7 +168,7 @@ fn main() -> Result<()> {
         args.decoder_max
     } else {
         let sys = sysinfo::System::new_with_specifics(
-            RefreshKind::new().with_cpu(CpuRefreshKind::everything()),
+            RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
         );
         sys.cpus().len().try_into().unwrap()
     };

@@ -289,7 +289,7 @@ impl SysinfoMetric for CpuUsage {
     }
 
     fn add_refresh_kind(&self, kind: &mut RefreshKind) {
-        let _ = kind.with_cpu(CpuRefreshKind::new().with_cpu_usage());
+        let _ = kind.with_cpu(CpuRefreshKind::nothing().with_cpu_usage());
     }
 }
 
@@ -494,7 +494,7 @@ mod test {
     fn cpu_usage() {
         let cu = CpuUsage::default();
 
-        let mut refresh_kind = RefreshKind::new();
+        let mut refresh_kind = RefreshKind::nothing().with_cpu(CpuRefreshKind::everything());
         cu.add_refresh_kind(&mut refresh_kind);
         let mut sys = System::new_with_specifics(refresh_kind);
         sys.refresh_all();
@@ -524,7 +524,7 @@ mod test {
     fn memory_usage() {
         let mu = MemoryUsage::default();
 
-        let mut refresh_kind = RefreshKind::new();
+        let mut refresh_kind = RefreshKind::nothing().with_memory(MemoryRefreshKind::everything());
         mu.add_refresh_kind(&mut refresh_kind);
         let mut sys = System::new_with_specifics(refresh_kind);
         sys.refresh_all();
