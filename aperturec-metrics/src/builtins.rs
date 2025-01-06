@@ -13,7 +13,7 @@ use crate::MetricUpdate;
 use crate::SysinfoMetric;
 
 use std::time::Instant;
-use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Pid, RefreshKind, System};
+use sysinfo::{Pid, ProcessRefreshKind, System};
 
 ///
 /// All available built-in metrics
@@ -42,15 +42,16 @@ pub(crate) fn register_builtin_metric(metric: &BuiltinMetric) {
 
 pub(crate) fn init_builtin_sysinfo_metric(
     si_metric: &BuiltinMetric,
+    pid: Pid,
+    sys: &mut System,
 ) -> Option<Box<dyn SysinfoMetric>> {
     match si_metric {
         BuiltinMetric::CpuUsage => {
-            Some(Box::new(CpuUsage::default().with_irix_mode(false)) as Box<dyn SysinfoMetric>)
+            Some(Box::new(CpuUsage::new(pid).with_irix_mode(false)) as Box<dyn SysinfoMetric>)
         }
-        BuiltinMetric::MemoryUsage => {
-            Some(Box::new(MemoryUsage::default().with_scale(MemoryScale::Gb))
-                as Box<dyn SysinfoMetric>)
-        }
+        BuiltinMetric::MemoryUsage => Some(Box::new(
+            MemoryUsage::new(pid, sys).with_scale(MemoryScale::Gb),
+        ) as Box<dyn SysinfoMetric>),
         _ => None, // Ignore Metrics
     }
 }
@@ -246,11 +247,7 @@ struct CpuUsage {
 }
 
 impl CpuUsage {
-    fn new() -> Self {
-        let pid = match sysinfo::get_current_pid() {
-            Ok(pid) => pid,
-            Err(_) => panic!("Unsupported platform"),
-        };
+    fn new(pid: Pid) -> Self {
         Self {
             pid,
             irix_mode: false,
@@ -260,12 +257,6 @@ impl CpuUsage {
     pub fn with_irix_mode(mut self, is_on: bool) -> Self {
         self.irix_mode = is_on;
         self
-    }
-}
-
-impl Default for CpuUsage {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -288,8 +279,8 @@ impl SysinfoMetric for CpuUsage {
         )]
     }
 
-    fn add_refresh_kind(&self, kind: &mut RefreshKind) {
-        let _ = kind.with_cpu(CpuRefreshKind::nothing().with_cpu_usage());
+    fn with_refresh_kind(&self, kind: ProcessRefreshKind) -> ProcessRefreshKind {
+        kind.with_cpu()
     }
 }
 
@@ -338,13 +329,8 @@ impl MemoryScale {
 }
 
 impl MemoryUsage {
-    fn new() -> Self {
-        let pid = match sysinfo::get_current_pid() {
-            Ok(pid) => pid,
-            Err(_) => panic!("Unsupported platform"),
-        };
-        let sys = System::new_all();
-
+    fn new(pid: Pid, sys: &mut System) -> Self {
+        sys.refresh_memory();
         Self {
             pid,
             installed_memory: sys.total_memory(),
@@ -355,12 +341,6 @@ impl MemoryUsage {
     pub fn with_scale(mut self, scale: MemoryScale) -> Self {
         self.scale = scale;
         self
-    }
-}
-
-impl Default for MemoryUsage {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -394,8 +374,8 @@ impl SysinfoMetric for MemoryUsage {
         ]
     }
 
-    fn add_refresh_kind(&self, kind: &mut RefreshKind) {
-        let _ = kind.with_memory(MemoryRefreshKind::everything());
+    fn with_refresh_kind(&self, kind: ProcessRefreshKind) -> ProcessRefreshKind {
+        kind.with_memory()
     }
 }
 
@@ -403,6 +383,7 @@ impl SysinfoMetric for MemoryUsage {
 mod test {
     use super::*;
     use std::time::Duration;
+    use sysinfo::ProcessesToUpdate;
     use test_log::test;
 
     #[test]
@@ -492,12 +473,12 @@ mod test {
 
     #[test]
     fn cpu_usage() {
-        let cu = CpuUsage::default();
+        let pid = sysinfo::get_current_pid().expect("current pid");
+        let refresh_kind = ProcessRefreshKind::nothing().with_cpu();
+        let mut sys = System::new();
 
-        let mut refresh_kind = RefreshKind::nothing().with_cpu(CpuRefreshKind::everything());
-        cu.add_refresh_kind(&mut refresh_kind);
-        let mut sys = System::new_with_specifics(refresh_kind);
-        sys.refresh_all();
+        let cu = CpuUsage::new(pid);
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, refresh_kind);
 
         let v = cu.poll_with_sys(&sys);
 
@@ -522,12 +503,12 @@ mod test {
 
     #[test]
     fn memory_usage() {
-        let mu = MemoryUsage::default();
+        let pid = sysinfo::get_current_pid().expect("current pid");
+        let refresh_kind = ProcessRefreshKind::nothing().with_memory();
+        let mut sys = System::new();
 
-        let mut refresh_kind = RefreshKind::nothing().with_memory(MemoryRefreshKind::everything());
-        mu.add_refresh_kind(&mut refresh_kind);
-        let mut sys = System::new_with_specifics(refresh_kind);
-        sys.refresh_all();
+        let mu = MemoryUsage::new(pid, &mut sys);
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, refresh_kind);
 
         let v0 = mu.poll_with_sys(&sys);
 

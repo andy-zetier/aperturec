@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{mpsc, Mutex, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use sysinfo::{RefreshKind, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tracing::*;
 
 static WARN_ONCE: Once = Once::new();
@@ -237,21 +237,28 @@ impl MetricsInitializer {
         // handle.
         //
 
+        let mut sys = System::new();
+        let pid = sysinfo::get_current_pid().expect("current pid");
         let inner_jh = thread::spawn(move || {
             let mut metrics: BTreeMap<any::TypeId, Box<dyn Metric>> = BTreeMap::new();
 
             let sysinfo_metrics: Vec<Box<dyn SysinfoMetric>> = thread_builtins
                 .iter()
-                .filter_map(builtins::init_builtin_sysinfo_metric)
+                .filter_map(|sm| builtins::init_builtin_sysinfo_metric(sm, pid, &mut sys))
                 .collect();
 
             // Build a sysinfo::RefreshKind from the Kinds published by all SysinfoMetrics
-            let mut refresh_kind = RefreshKind::everything();
-            let mut sys = System::new_with_specifics(refresh_kind);
-            sys.refresh_all();
+            let refresh_kind = sysinfo_metrics
+                .iter()
+                .fold(ProcessRefreshKind::nothing(), |acc, sm| {
+                    sm.with_refresh_kind(acc)
+                });
+            let pids = [pid];
+            let procs_to_update = ProcessesToUpdate::Some(&pids);
+
+            sys.refresh_processes_specifics(procs_to_update, true, refresh_kind);
 
             sysinfo_metrics.iter().for_each(|sm| {
-                sm.add_refresh_kind(&mut refresh_kind);
                 let measurements = sm.poll_with_sys(&sys);
                 let m_titles = measurements
                     .iter()
@@ -335,7 +342,7 @@ impl MetricsInitializer {
                             .flatten()
                             .collect::<Vec<_>>();
 
-                        sys.refresh_all();
+                        sys.refresh_processes_specifics(procs_to_update, true, refresh_kind);
 
                         measurements.extend(
                             sysinfo_metrics

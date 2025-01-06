@@ -39,5 +39,5 @@ pub trait MetricUpdate: std::any::Any {
 
 trait SysinfoMetric {
     fn poll_with_sys(&self, sys: &sysinfo::System) -> Vec<Measurement>;
-    fn add_refresh_kind(&self, kind: &mut sysinfo::RefreshKind);
+    fn with_refresh_kind(&self, kind: sysinfo::ProcessRefreshKind) -> sysinfo::ProcessRefreshKind;
 }
