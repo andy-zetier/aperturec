@@ -272,7 +272,6 @@ dependencies = [
  "secrecy",
  "serial_test",
  "shlex",
- "simple-pool",
  "tempdir",
  "test-log",
  "tokio",
@@ -3068,12 +3067,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "object-id"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c587bd1cd63959a8520442afc0f92a875d83deea175c7b48dd9f104a2c5070a9"
-
-[[package]]
 name = "once_cell"
 version = "1.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4509,16 +4502,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95890f873bec569a0362c235787f3aca6e1e887302ba4840839bcc6459c42da6"
 dependencies = [
  "quote",
-]
-
-[[package]]
-name = "simple-pool"
-version = "0.0.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "073382259dbeb56c3eaab04a1d330459f6490d1e518b2a8ee441c8bd00dbc092"
-dependencies = [
- "object-id",
- "parking_lot",
 ]
 
 [[package]]

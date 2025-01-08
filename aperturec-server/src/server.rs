@@ -688,7 +688,7 @@ where
         let (mc_handler_task, mc_handler_channels) =
             mc_handler::Task::new(self.state.session.mc, rl_handle);
 
-        let (encoder_tasks, encoder_command_txs): (Vec<_>, Vec<_>) = self
+        let encoder_task_res = self
             .state
             .encoder_areas
             .iter()
@@ -703,7 +703,24 @@ where
                     mc_handler_channels.mm_tx.clone(),
                 )
             })
-            .unzip();
+            .collect::<Result<Vec<_>, _>>()
+            .map(Vec::into_iter)
+            .map(Iterator::unzip);
+        let (encoder_tasks, encoder_command_txs): (Vec<_>, Vec<_>) = match encoder_task_res {
+            Ok((tasks, txs)) => (tasks, txs),
+            Err(error) => {
+                error!(%error, "failed starting encoder tasks");
+                return Server {
+                    state: SessionTerminated {
+                        backend: Some(self.state.backend),
+                        session_stream: self.state.session_stream,
+                    },
+                    config: self.config,
+                    next_client_id: self.next_client_id,
+                    cancellation_token: self.cancellation_token,
+                };
+            }
+        };
 
         let tc_handler_task = tc_handler::Task::new(self.state.session.tc, self.state.tunnels);
 
