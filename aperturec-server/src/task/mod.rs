@@ -3,6 +3,7 @@ pub mod control_channel_handler;
 pub mod encoder;
 pub mod event_channel_handler;
 pub mod frame_sync;
+pub mod malloc_trim;
 pub mod media_channel_handler;
 pub mod rate_limit;
 pub mod tunnel_channel_handler;

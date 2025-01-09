@@ -4,7 +4,7 @@ use crate::process_utils::DisplayableExitStatus;
 use crate::session;
 use crate::task::{
     backend, control_channel_handler as cc_handler, encoder, event_channel_handler as ec_handler,
-    frame_sync, media_channel_handler as mc_handler, rate_limit,
+    frame_sync, malloc_trim, media_channel_handler as mc_handler, rate_limit,
     tunnel_channel_handler as tc_handler,
 };
 
@@ -749,12 +749,15 @@ where
             }
         };
 
+        let malloc_trim_task = malloc_trim::Task::new();
+
         let cc_handler_task = transition!(cc_handler_task, cc_handler::Running);
         let ec_handler_task = transition!(ec_handler_task, ec_handler::Running);
         let mc_handler_task = transition!(mc_handler_task, mc_handler::Running);
         let tc_handler_task = transition!(tc_handler_task, tc_handler::Running);
         let rate_limit_task = transition!(rate_limit_task, rate_limit::Running);
         let frame_sync_task = transition!(frame_sync_task, frame_sync::Running);
+        let malloc_trim_task = transition!(malloc_trim_task, malloc_trim::Running);
         let encoder_tasks = encoder_tasks
             .into_iter()
             .map(|task| transition!(task, encoder::Running))
@@ -768,6 +771,7 @@ where
             tc_handler_task.cancellation_token().clone(),
             rate_limit_task.cancellation_token().clone(),
             frame_sync_task.cancellation_token().clone(),
+            malloc_trim_task.cancellation_token().clone(),
         ];
         cts.extend(
             encoder_tasks
@@ -805,6 +809,7 @@ where
         task_results.push(result_task!(tc_handler_task.try_transition()));
         task_results.push(result_task!(rate_limit_task.try_transition()));
         task_results.push(result_task!(frame_sync_task.try_transition()));
+        task_results.push(result_task!(malloc_trim_task.try_transition()));
         task_results.extend(
             encoder_tasks
                 .into_iter()
