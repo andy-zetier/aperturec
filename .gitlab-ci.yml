@@ -17,13 +17,11 @@ stages:
 .crates:client-dependencies: "aperturec-client"
 
 .images:debian:
-  - ubuntu:20.04
   - ubuntu:22.04
   - ubuntu:24.04
 .images:fedora:
   - fedora:40
 .images:all:
-  - ubuntu:20.04
   - ubuntu:22.04
   - ubuntu:24.04
   - fedora:40
@@ -141,7 +139,7 @@ create-images:deploy-manifest:
   interruptible: true
   variables:
     OS_VARIANT: debian
-    IMAGE_BASE: ubuntu:20.04
+    IMAGE_BASE: ubuntu:22.04
     IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
     IMAGE: "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_BASE"
   image: $IMAGE
