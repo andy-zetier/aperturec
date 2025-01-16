@@ -146,9 +146,9 @@ impl event::Subscriber for MetricsSubscriber {
         _meta: &event::ConnectionMeta,
         _event: &events::ConnectionClosed,
     ) {
-        Mtu::update(f64::NAN);
-        RttAverage::update(f64::NAN);
-        RttVariance::update(f64::NAN);
-        RttMax::update(f64::NAN);
+        Mtu::clear();
+        RttAverage::clear();
+        RttVariance::clear();
+        RttMax::clear();
     }
 }

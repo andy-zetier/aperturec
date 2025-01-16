@@ -71,13 +71,14 @@ macro_rules! create_metric {
         paste::paste! {
             #[derive(Debug, Default, PartialEq)]
             pub struct [<$name:camel>] {
-                data: f64,
+                data: Option<f64>,
             }
 
             enum [<$name:camel "Update">] {
                 Update(f64),
                 Increment(f64),
                 Decrement(f64),
+                Clear,
             }
 
             #[allow(dead_code)]
@@ -102,6 +103,10 @@ macro_rules! create_metric {
                     $crate::update([<$name:camel "Update">]::Decrement(data.into()));
                 }
 
+                pub fn clear() {
+                    $crate::update([<$name:camel "Update">]::Clear);
+                }
+
                 pub fn register() {
                     $crate::register_default_metric!(Self);
                 }
@@ -113,7 +118,7 @@ macro_rules! create_metric {
                 fn poll(&self) -> Vec<$crate::Measurement> {
                     vec![$crate::Measurement::new(
                         stringify!($name),
-                        Some(self.data),
+                        self.data,
                         $label,
                         "",
                     )]
@@ -122,9 +127,10 @@ macro_rules! create_metric {
                 fn update(&mut self, update: Box<dyn std::any::Any>) {
                     if let Ok(mmu) = update.downcast::<[<$name:camel "Update">]>() {
                         match *mmu {
-                            [<$name:camel "Update">]::Update(d) => self.data = d,
-                            [<$name:camel "Update">]::Increment(d) => self.data += d,
-                            [<$name:camel "Update">]::Decrement(d) => self.data -= d,
+                            [<$name:camel "Update">]::Update(d) => self.data = Some(d),
+                            [<$name:camel "Update">]::Increment(d) => *self.data.get_or_insert(0.0) += d,
+                            [<$name:camel "Update">]::Decrement(d) => *self.data.get_or_insert(0.0) -= d,
+                            [<$name:camel "Update">]::Clear => self.data = None,
                         }
                     }
                 }
