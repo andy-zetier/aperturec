@@ -94,15 +94,15 @@ impl LogExporter {
 ///
 /// Writes metric data to a CSV file
 ///
-/// If the file specified by `path` exists, metric data will be appended to it. If `path` does not
-/// exist, a header line will be written before appending metric data. Calls to
-/// [`new()`](CsvExporter::new) may fail if `path` cannot be opened.
+/// If `path` does not exist, a header line will be written before appending metric data. If `path`
+/// exists, a new file will be created with a .N extension where N is the first available integer.
+/// Calls to [`new()`](CsvExporter::new) may fail if `path` cannot be opened.
 ///
 #[derive(Debug)]
 pub struct CsvExporter {
     file: Option<std::fs::File>,
     path: String,
-    header_items: Vec<String>,
+    header: String,
 }
 
 impl CsvExporter {
@@ -110,26 +110,46 @@ impl CsvExporter {
         Ok(Self {
             file: None,
             path,
-            header_items: vec!["timestamp_rfc3339".to_string()],
+            header: "".to_string(),
         })
     }
 
-    fn register_measurements(&mut self, m: &[Measurement]) -> Result<()> {
-        self.header_items.append(
-            &mut m
-                .iter()
-                .map(|m| format!("{}_{}", m.title_as_lower(), m.units_as_lower()))
-                .collect::<Vec<_>>(),
-        );
-        self.file.take();
+    fn register_measurements(&mut self, measurements: &[Measurement]) -> Result<()> {
+        let is_header_missing = measurements
+            .iter()
+            .any(|m| !self.header.contains(&Self::generate_title(m)));
+
+        if is_header_missing {
+            self.file.take();
+        }
         Ok(())
+    }
+
+    fn generate_title(m: &Measurement) -> String {
+        if m.units.is_empty() {
+            m.title_as_lower()
+        } else {
+            format!("{}_{}", m.title_as_lower(), m.units_as_lower())
+        }
+    }
+
+    fn generate_header(results: &[Measurement]) -> String {
+        let mut header = Vec::with_capacity(1 + results.len());
+        header.push("timestamp_rfc3339".to_string());
+        header.extend(results.iter().map(Self::generate_title));
+        header.join(",")
+    }
+
+    fn update_header(&mut self, results: &[Measurement]) {
+        self.header = Self::generate_header(results);
     }
 
     fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
         if self.file.is_none() {
+            self.update_header(results);
             self.reopen_file()?;
-            let header = self.header_items.join(",");
-            writeln!(self.file.as_ref().unwrap(), "{}", header).or_else(|_| self.reopen_file())?;
+            writeln!(self.file.as_ref().unwrap(), "{}", self.header)
+                .or_else(|_| self.reopen_file())?;
         }
 
         let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
@@ -139,7 +159,7 @@ impl CsvExporter {
                 if r.value.is_some() {
                     format!("{:.6?}", r.value.unwrap())
                 } else {
-                    "--------".to_string()
+                    "".to_string()
                 }
             })
             .collect::<Vec<_>>()
@@ -582,17 +602,17 @@ mod test {
         // Append an additional value line
         ce.do_export(&measurements).expect("export");
         file.read_to_string(&mut contents).expect("read");
-        assert_eq!(contents.lines().collect::<Vec<_>>().len(), 3);
+        let lines: Vec<&str> = contents.lines().collect();
 
-        // Expect 9 commas: 3 in header line, 3 in each value line
-        assert_eq!(
-            measurements.len() * 3,
-            contents
-                .chars()
-                .filter(|c| *c == ',')
-                .collect::<Vec<_>>()
-                .len()
-        );
+        // Expect 3 lines in CSV file: 1 header line, 2 value lines
+        assert_eq!(lines.len(), 3);
+
+        // Expect one comma for each field
+        assert_eq!(measurements.len(), lines[0].matches(',').count());
+
+        // Expect the same number of fields in the header line as in the data lines
+        assert_eq!(lines[0].matches(',').count(), lines[1].matches(',').count());
+        assert_eq!(lines[0].matches(',').count(), lines[2].matches(',').count());
 
         //
         // Test registering a new metric after the first do_export()
@@ -618,22 +638,19 @@ mod test {
                 .to_string_lossy()
         ));
 
-        let mut file = File::open(expected_path.clone()).expect("open next file");
+        let mut csv_file = File::open(expected_path.clone()).expect("open next file");
         contents.clear();
-        file.read_to_string(&mut contents).expect("read");
+        csv_file.read_to_string(&mut contents).expect("read");
+        let lines: Vec<&str> = contents.lines().collect();
 
         // Expect 2 lines in CSV file: 1 header line, 1 value line
-        assert_eq!(contents.lines().collect::<Vec<_>>().len(), 2);
+        assert_eq!(lines.len(), 2);
 
-        // Expect 8 commas: 4 in header line, 4 in each value line
-        assert_eq!(
-            measurements.len() * 2,
-            contents
-                .chars()
-                .filter(|c| *c == ',')
-                .collect::<Vec<_>>()
-                .len()
-        );
+        // Expect one comma for each field
+        assert_eq!(measurements.len(), lines[0].matches(',').count());
+
+        // Expect the same number of fields in the header line as in the data line
+        assert_eq!(lines[0].matches(',').count(), lines[1].matches(',').count());
 
         drop(file);
         fs::remove_file(expected_path).expect("remove temp file");

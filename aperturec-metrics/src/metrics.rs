@@ -354,6 +354,9 @@ impl MetricsInitializer {
                                 .collect::<Vec<_>>(),
                         );
 
+                        // Enforce consistent ordering across runs
+                        measurements.sort_by_key(|r| r.title.clone());
+
                         self.exporters.iter_mut().for_each(|e| {
                             let _ = e.export(&measurements);
                         });
