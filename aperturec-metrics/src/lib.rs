@@ -41,3 +41,8 @@ trait SysinfoMetric {
     fn poll_with_sys(&self, sys: &sysinfo::System) -> Vec<Measurement>;
     fn with_refresh_kind(&self, kind: sysinfo::ProcessRefreshKind) -> sysinfo::ProcessRefreshKind;
 }
+
+#[allow(unused)]
+trait IntrinsicMetric {
+    fn poll(&self) -> Vec<Measurement>;
+}

@@ -7,6 +7,7 @@
 //!
 
 use crate::metrics::{register, update};
+use crate::IntrinsicMetric;
 use crate::Measurement;
 use crate::Metric;
 use crate::MetricUpdate;
@@ -30,6 +31,9 @@ pub enum BuiltinMetric {
     CpuUsage,
     /// Measures absolute `VIRT` and `RES` along with total % used
     MemoryUsage,
+    #[cfg(feature = "heap")]
+    /// Measures various parts of heap usage
+    Heap,
 }
 
 pub(crate) fn register_builtin_metric(metric: &BuiltinMetric) {
@@ -37,6 +41,14 @@ pub(crate) fn register_builtin_metric(metric: &BuiltinMetric) {
         BuiltinMetric::PacketLoss => register(|| Box::<PacketLoss>::default()),
         BuiltinMetric::TxRxRate => register(|| Box::<TxRxRate>::default()),
         _ => (), // Ignore SysinfoMetrics
+    }
+}
+
+pub(crate) fn init_intrinsic_metric(metric: &BuiltinMetric) -> Option<Box<dyn IntrinsicMetric>> {
+    match metric {
+        #[cfg(feature = "heap")]
+        BuiltinMetric::Heap => Some(Box::new(Heap) as Box<dyn IntrinsicMetric>),
+        _ => None,
     }
 }
 
@@ -53,6 +65,90 @@ pub(crate) fn init_builtin_sysinfo_metric(
             MemoryUsage::new(pid, sys).with_scale(MemoryScale::Gb),
         ) as Box<dyn SysinfoMetric>),
         _ => None, // Ignore Metrics
+    }
+}
+#[cfg(feature = "heap")]
+struct Heap;
+
+#[cfg(feature = "heap")]
+impl IntrinsicMetric for Heap {
+    fn poll(&self) -> Vec<Measurement> {
+        let info = malloc_info::malloc_info().expect("malloc_info");
+        let mut system_max = 0;
+        let mut system_curr = 0;
+        for sys in info.system {
+            match sys.r#type {
+                malloc_info::info::SystemType::Current => system_curr += sys.size,
+                malloc_info::info::SystemType::Max => system_max += sys.size,
+                _ => (),
+            }
+        }
+        let mut total_mmaps = 0;
+        let mut total_mmap_size = 0;
+        let mut total_fast_size = 0;
+        let mut total_rest_size = 0;
+        for total in info.total {
+            match total.r#type {
+                malloc_info::info::TotalType::Mmap => {
+                    total_mmaps += total.count;
+                    total_mmap_size += total.size;
+                }
+                malloc_info::info::TotalType::Fast => total_fast_size += total.size,
+                malloc_info::info::TotalType::Rest => total_rest_size += total.size,
+                _ => (),
+            }
+        }
+        let total_free_size = total_fast_size + total_rest_size;
+        vec![
+            Measurement::new(
+                "Heap System Max",
+                Some(system_max as f64),
+                "bytes",
+                "Maximum amount of system memory ever used by the heap",
+            ),
+            Measurement::new(
+                "Heap System Current",
+                Some(system_curr as f64),
+                "bytes",
+                "Current amount of system memory in use by the heap",
+            ),
+            Measurement::new(
+                "Heap Arena Count",
+                Some(info.heaps.len() as f64),
+                "",
+                "Current number of arenas",
+            ),
+            Measurement::new(
+                "Heap mmap Region Count",
+                Some(total_mmaps as f64),
+                "",
+                "Total number of mmaped regions",
+            ),
+            Measurement::new(
+                "Heap Total mmap Size",
+                Some(total_mmap_size as f64),
+                "bytes",
+                "Total size of mmaped regions",
+            ),
+            Measurement::new(
+                "Heap Total Free Size",
+                Some(total_free_size as f64),
+                "bytes",
+                "Total size of free space in the heap",
+            ),
+            Measurement::new(
+                "Heap Total fastbin Size",
+                Some(total_fast_size as f64),
+                "bytes",
+                "Total size of free space in fastbins",
+            ),
+            Measurement::new(
+                "Heap Total non fastbin Size",
+                Some(total_rest_size as f64),
+                "bytes",
+                "Total size of free space in non-fastbins",
+            ),
+        ]
     }
 }
 
@@ -529,5 +625,24 @@ mod test {
                 m1.value.unwrap()
             )
         });
+    }
+
+    #[cfg(feature = "heap")]
+    #[test]
+    fn heap() {
+        let measurements1 = Heap.poll();
+        for i in 0..1024 {
+            let mut v = vec![0_u8; i * 1024];
+            v.iter_mut()
+                .enumerate()
+                .for_each(|(j, elem)| *elem = (j % u8::MAX as usize) as u8);
+            if i % 2 == 0 {
+                std::mem::forget(v);
+            }
+        }
+        let measurements2 = Heap.poll();
+        assert_eq!(measurements1.len(), measurements2.len());
+        assert!(measurements1[0].value < measurements2[0].value);
+        assert!(measurements1[1].value < measurements2[1].value);
     }
 }

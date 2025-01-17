@@ -40,6 +40,9 @@ test-log = { version = "0.2", default-features = false, features = ["trace", "co
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features=["Win32_UI_Input_KeyboardAndMouse"]}
 
+[target.'cfg(target_os = "linux")'.dependencies]
+aperturec-metrics = { path = "../aperturec-metrics", features = ["heap"] }
+
 [features]
 draw-debug = []
 

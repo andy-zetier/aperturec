@@ -1,6 +1,6 @@
 use crate::builtins;
 use crate::exporters::Exporter;
-use crate::{Metric, MetricUpdate, SysinfoMetric};
+use crate::{IntrinsicMetric, Metric, MetricUpdate, SysinfoMetric};
 
 use anyhow::Result;
 use std::any;
@@ -223,6 +223,8 @@ impl MetricsInitializer {
                 builtins::BuiltinMetric::TxRxRate,
                 builtins::BuiltinMetric::CpuUsage,
                 builtins::BuiltinMetric::MemoryUsage,
+                #[cfg(feature = "heap")]
+                builtins::BuiltinMetric::Heap,
             ],
         };
 
@@ -242,6 +244,11 @@ impl MetricsInitializer {
         let inner_jh = thread::spawn(move || {
             let mut metrics: BTreeMap<any::TypeId, Box<dyn Metric>> = BTreeMap::new();
 
+            let intrinsic_metrics: Vec<Box<dyn IntrinsicMetric>> = thread_builtins
+                .iter()
+                .filter_map(|im| builtins::init_intrinsic_metric(im))
+                .collect();
+
             let sysinfo_metrics: Vec<Box<dyn SysinfoMetric>> = thread_builtins
                 .iter()
                 .filter_map(|sm| builtins::init_builtin_sysinfo_metric(sm, pid, &mut sys))
@@ -258,22 +265,15 @@ impl MetricsInitializer {
 
             sys.refresh_processes_specifics(procs_to_update, true, refresh_kind);
 
-            sysinfo_metrics.iter().for_each(|sm| {
-                let measurements = sm.poll_with_sys(&sys);
-                let m_titles = measurements
-                    .iter()
-                    .map(|m| m.title.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                debug!("Registering builtin Metric measurements: {}", m_titles);
-                self.exporters.iter_mut().for_each(|ex| {
-                    if let Err(e) = ex.register_measurements(&measurements) {
-                        error!(
-                            "Failed to register measurements {:?} with exporter {:?}: {:?}",
-                            m_titles, ex, e
-                        );
-                    }
-                });
+            let measurements = intrinsic_metrics
+                .iter()
+                .flat_map(|im| im.poll())
+                .chain(sysinfo_metrics.iter().flat_map(|sm| sm.poll_with_sys(&sys)))
+                .collect::<Vec<_>>();
+            self.exporters.iter_mut().for_each(|exporter| {
+                if let Err(error) = exporter.register_measurements(&measurements) {
+                    error!(%error, ?exporter, ?measurements, "failed to register measurements");
+                }
             });
 
             let mut timeout = rate;
@@ -353,6 +353,8 @@ impl MetricsInitializer {
                                 .flatten()
                                 .collect::<Vec<_>>(),
                         );
+
+                        measurements.extend(intrinsic_metrics.iter().flat_map(|im| im.poll()));
 
                         // Enforce consistent ordering across runs
                         measurements.sort_by_key(|r| r.title.clone());

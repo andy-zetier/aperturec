@@ -211,6 +211,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "malloc-info",
  "paste",
  "prometheus",
  "reqwest",
@@ -2746,6 +2747,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "malloc-info"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85a081b862d21766ea0b7859ba4d683abf17f867858d22e7f13b884395bd3c32"
+dependencies = [
+ "errno",
+ "libc",
+ "quick-xml 0.37.2",
+ "serde",
+ "thiserror 2.0.9",
+]
+
+[[package]]
 name = "matchers"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3582,6 +3596,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eff6510e86862b57b210fd8cbe8ed3f0d7d600b9c2863cd4549a2e033c66e956"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.37.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "165859e9e55f79d67b96c5d96f4e88b6f2695a1972849c15a6a3f5c59fc2c003"
+dependencies = [
+ "memchr",
+ "serde",
 ]
 
 [[package]]
@@ -5726,7 +5750,7 @@ checksum = "f1e2f212bb1a92cd8caac8051b829a6582ede155ccb60b5d5908b81b100952be"
 dependencies = [
  "bitflags 1.3.2",
  "libc",
- "quick-xml",
+ "quick-xml 0.30.0",
 ]
 
 [[package]]

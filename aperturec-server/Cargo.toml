@@ -10,7 +10,7 @@ aperturec-channel = { path = "../aperturec-channel" }
 aperturec-graphics = { path = "../aperturec-graphics" }
 aperturec-protocol = { path = "../aperturec-protocol" }
 aperturec-state-machine = { path = "../aperturec-state-machine" }
-aperturec-metrics = { path = "../aperturec-metrics" }
+aperturec-metrics = { path = "../aperturec-metrics", features = ["heap"] }
 aperturec-utils = { path = "../aperturec-utils" }
 
 anyhow = "1.0"
