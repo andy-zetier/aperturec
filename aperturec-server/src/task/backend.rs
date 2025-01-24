@@ -47,14 +47,13 @@ impl<B: Backend> Task<Running<B>> {
 }
 
 #[derive(State, Debug)]
-pub struct Terminated<B: Backend> {
+pub struct TerminatedWithBackend<B: Backend> {
     backend: SwapableBackend<B>,
+    error: Option<anyhow::Error>,
 }
 
 #[derive(State, Debug)]
-pub struct TerminatedWithError<B: Backend> {
-    backend: Option<SwapableBackend<B>>,
-}
+pub struct TerminatedWithoutBackend;
 
 impl<B: Backend> Task<Created<B>> {
     pub fn new(
@@ -85,15 +84,9 @@ impl<B: Backend> Task<Created<B>> {
     }
 }
 
-impl<B: Backend> Task<Terminated<B>> {
-    pub fn into_backend(self) -> SwapableBackend<B> {
-        self.state.backend
-    }
-}
-
-impl<B: Backend> Task<TerminatedWithError<B>> {
-    pub fn into_backend(self) -> Option<SwapableBackend<B>> {
-        self.state.backend
+impl<B: Backend> Task<TerminatedWithBackend<B>> {
+    pub fn components(self) -> (SwapableBackend<B>, Option<anyhow::Error>) {
+        (self.state.backend, self.state.error)
     }
 }
 
@@ -323,11 +316,11 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
     }
 }
 
-impl<B: Backend> AsyncTryTransitionable<Terminated<B>, TerminatedWithError<B>>
+impl<B: Backend> AsyncTryTransitionable<TerminatedWithBackend<B>, TerminatedWithoutBackend>
     for Task<Running<B>>
 {
-    type SuccessStateful = Task<Terminated<B>>;
-    type FailureStateful = Task<TerminatedWithError<B>>;
+    type SuccessStateful = Task<TerminatedWithBackend<B>>;
+    type FailureStateful = Task<TerminatedWithoutBackend>;
     type Error = anyhow::Error;
 
     async fn try_transition(
@@ -335,19 +328,20 @@ impl<B: Backend> AsyncTryTransitionable<Terminated<B>, TerminatedWithError<B>>
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
         match self.state.task.await {
             Ok((backend, Ok(()))) => Ok(Task {
-                state: Terminated { backend },
-            }),
-            Ok((backend, Err(error))) => Err(Recovered {
-                stateful: Task {
-                    state: TerminatedWithError {
-                        backend: Some(backend),
-                    },
+                state: TerminatedWithBackend {
+                    backend,
+                    error: None,
                 },
-                error: anyhow!("backend task exited with error: {:?}", error),
+            }),
+            Ok((backend, Err(error))) => Ok(Task {
+                state: TerminatedWithBackend {
+                    backend,
+                    error: Some(error),
+                },
             }),
             Err(error) => Err(Recovered {
                 stateful: Task {
-                    state: TerminatedWithError { backend: None },
+                    state: TerminatedWithoutBackend,
                 },
                 error: anyhow!("backend task panicked: {:?}", error),
             }),
@@ -355,12 +349,12 @@ impl<B: Backend> AsyncTryTransitionable<Terminated<B>, TerminatedWithError<B>>
     }
 }
 
-impl<B: Backend> Transitionable<TerminatedWithError<B>> for Task<Running<B>> {
-    type NextStateful = Task<TerminatedWithError<B>>;
+impl<B: Backend> Transitionable<TerminatedWithoutBackend> for Task<Running<B>> {
+    type NextStateful = Task<TerminatedWithoutBackend>;
 
     fn transition(self) -> Self::NextStateful {
         Task {
-            state: TerminatedWithError { backend: None },
+            state: TerminatedWithoutBackend,
         }
     }
 }

@@ -784,23 +784,16 @@ where
                 $task.map_err($failure_map).map_ok($success_map).boxed()
             };
             ($task:expr, $success_map:expr) => {
-                $task
-                    .map_err(|recovered| recovered.error)
-                    .map_ok($success_map)
-                    .boxed()
+                result_task!($task, $success_map, |recovered| recovered.error)
             };
             ($task:expr) => {
                 result_task!($task, |_| ())
             };
         }
 
-        let mut backend_stream = result_task!(
-            backend_task.try_transition(),
-            |terminated| terminated.into_backend(),
-            |recovered| (recovered.stateful.into_backend(), recovered.error)
-        )
-        .into_stream();
-        let mut backend = None;
+        let mut backend_stream =
+            result_task!(backend_task.try_transition(), backend::Task::components).into_stream();
+        let mut backend_result: Option<Result<SwapableBackend<B>>> = None;
 
         let mut task_results = FuturesUnordered::new();
         task_results.push(result_task!(cc_handler_task.try_transition()));
@@ -864,34 +857,23 @@ where
                     }
                     ct.cancel();
                 }
-                Some(res) = backend_stream.next(), if backend.is_none() && task_error.is_none() => {
+                Some(res) = backend_stream.next(), if backend_result.is_none() => {
                     match res {
-                        Ok(mut be) => {
-                            if gb_reason.is_none() && be.wait_root_process().now_or_never().is_some() {
-                                gb_reason = Some(cm::ServerGoodbyeReason::ProcessExited);
-                            }
-                            backend = Some(be);
-                        },
-                        Err((None, error)) => {
-                            if task_error.is_none() && !cleanup_started {
-                                task_error = Some(anyhow!("backend task error: {}", error));
+                        Ok((mut backend, error_opt)) => {
+                            if let Some(error) = error_opt {
+                                warn!(%error, "error in backend task");
                                 if gb_reason.is_none() {
-                                    gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
+                                    if backend.wait_root_process().now_or_never().is_some() {
+                                        gb_reason = Some(cm::ServerGoodbyeReason::ProcessExited);
+                                    } else {
+                                        gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
+                                    }
                                 }
                             }
-                        }
-                        Err((Some(mut be), error)) => {
-                            if gb_reason.is_none() && be.wait_root_process().now_or_never().is_some() {
-                                gb_reason = Some(cm::ServerGoodbyeReason::ProcessExited);
-                            }
-                            backend = Some(be);
-                            if task_error.is_none() && !cleanup_started {
-                                task_error = Some(anyhow!("backend task error: {}", error));
-                                if gb_reason.is_none() {
-                                    gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
-                                }
-                            }
+                            backend_result = Some(Ok(backend));
+                            ct.cancel();
                         },
+                        Err(error) => backend_result = Some(Err(error)),
                     }
                     ct.cancel();
                 }
@@ -902,7 +884,13 @@ where
         debug!("Terminating");
         Server {
             state: SessionTerminated {
-                backend,
+                backend: match backend_result.expect("backend result still none") {
+                    Ok(be) => Some(be),
+                    Err(error) => {
+                        error!(%error, "Backend unrecoverable");
+                        None
+                    }
+                },
                 session_stream: self.state.session_stream,
             },
             config: self.config,
