@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::Parser;
 use gethostname::gethostname;
 use std::path::PathBuf;
+use tokio::signal::unix::*;
 use tracing::*;
 use tracing_subscriber::prelude::*;
 
@@ -229,13 +230,28 @@ async fn main() -> Result<()> {
         }
     });
 
+    let stop_main_task = || {
+        handle.stop();
+        aperturec_metrics::stop();
+    };
+
+    let mut sighup = signal(SignalKind::hangup())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
     let res = loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c(), if !handle.is_stopped() => {
-                info!("Received Ctrl-C, exiting");
-                handle.stop();
-                aperturec_metrics::stop();
-            }
+            Some(()) = sighup.recv(), if !handle.is_stopped() => {
+                info!("Received SIGHUP, exiting");
+                stop_main_task();
+            },
+            Some(()) = sigterm.recv(), if !handle.is_stopped() => {
+                info!("Received SIGTERM, exiting");
+                stop_main_task();
+            },
+            Some(()) = sigint.recv(), if !handle.is_stopped() => {
+                info!("Received SIGINT, exiting");
+                stop_main_task();
+            },
             main_task_res = &mut main_task => {
                 match main_task_res {
                     Ok(Ok(())) => break Ok(()),
