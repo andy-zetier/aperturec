@@ -19,7 +19,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
-use sysinfo::{System, Users};
 use tiny_http::{Response, Server, StatusCode};
 use tracing::*;
 
@@ -51,7 +50,10 @@ impl Exporter {
         }
     }
 
-    pub fn register_measurements(&mut self, measurements: &[Measurement]) -> Result<()> {
+    pub fn register_measurements<'m>(
+        &mut self,
+        measurements: impl IntoIterator<Item = &'m Measurement>,
+    ) -> Result<()> {
         match self {
             Exporter::Csv(e) => e.register_measurements(measurements),
             Exporter::Pushgateway(e) => e.register_measurements(measurements),
@@ -114,9 +116,12 @@ impl CsvExporter {
         })
     }
 
-    fn register_measurements(&mut self, measurements: &[Measurement]) -> Result<()> {
+    fn register_measurements<'m>(
+        &mut self,
+        measurements: impl IntoIterator<Item = &'m Measurement>,
+    ) -> Result<()> {
         let is_header_missing = measurements
-            .iter()
+            .into_iter()
             .any(|m| !self.header.contains(&Self::generate_title(m)));
 
         if is_header_missing {
@@ -278,8 +283,11 @@ impl PrometheusProxy {
         updated_registrations
     }
 
-    fn register_measurements(&mut self, measurements: &[Measurement]) -> Result<()> {
-        measurements.iter().for_each(|m| {
+    fn register_measurements<'m>(
+        &mut self,
+        measurements: impl IntoIterator<Item = &'m Measurement>,
+    ) -> Result<()> {
+        measurements.into_iter().for_each(|m| {
             let gauge_opts = Opts::new(m.title_as_namespaced(), m.help.to_string());
             let gauge = Gauge::with_opts(gauge_opts).expect("Gauge Create");
 
@@ -341,23 +349,13 @@ impl PushgatewayExporter {
         let mut groupings = HashMap::new();
         groupings.insert("id".to_owned(), id.to_string());
         groupings.insert("instance".to_owned(), "".to_string());
-        groupings.insert("user".to_owned(), "".to_string());
-
-        let users = Users::new_with_refreshed_list();
-        let s = System::new_all();
-        if let Some(process) = s.process(sysinfo::get_current_pid().unwrap()) {
-            if let Some(uid) = process.user_id() {
-                if let Some(user) = users.get_user_by_id(uid) {
-                    groupings.insert("user".to_owned(), user.name().to_owned());
-                }
-            }
-        }
+        groupings.insert("user".to_owned(), whoami::username());
 
         if let Ok(epoch) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
             groupings.insert("instance".to_owned(), epoch.as_secs().to_string());
         }
 
-        if let Some(host_name) = System::host_name() {
+        if let Ok(host_name) = whoami::fallible::hostname() {
             groupings.insert("id".to_owned(), format!("{}:{}", host_name, id));
         }
 
@@ -370,7 +368,10 @@ impl PushgatewayExporter {
         })
     }
 
-    fn register_measurements(&mut self, results: &[Measurement]) -> Result<()> {
+    fn register_measurements<'m>(
+        &mut self,
+        results: impl IntoIterator<Item = &'m Measurement>,
+    ) -> Result<()> {
         self.prom_proxy.register_measurements(results)
     }
 
@@ -505,7 +506,10 @@ impl PrometheusExporter {
         })
     }
 
-    fn register_measurements(&mut self, results: &[Measurement]) -> Result<()> {
+    fn register_measurements<'m>(
+        &mut self,
+        results: impl IntoIterator<Item = &'m Measurement>,
+    ) -> Result<()> {
         self.prom_proxy.register_measurements(results)
     }
 

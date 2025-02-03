@@ -10,9 +10,18 @@ chrono = "0.4.31"
 malloc-info = { version = "0.1.2", optional = true }
 prometheus = { version = "0.13.3", features = ["push"] }
 reqwest = "0.12.4"
-sysinfo = "0.33"
 tiny_http = "0.12.0"
 tracing = "0.1"
+whoami = "1.5"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = "0.17"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+sysinfo = "0.33"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+sysinfo = "0.33"
 
 [dev-dependencies]
 paste = "1.0"

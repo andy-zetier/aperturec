@@ -1,6 +1,6 @@
 use crate::builtins;
 use crate::exporters::Exporter;
-use crate::{IntrinsicMetric, Metric, MetricUpdate, SysinfoMetric};
+use crate::{Metric, MetricUpdate};
 
 use anyhow::Result;
 use std::any;
@@ -8,8 +8,10 @@ use std::collections::BTreeMap;
 use std::sync::{mpsc, Mutex, Once, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use tracing::*;
+
+#[cfg(not(target_os = "linux"))]
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
 
 static WARN_ONCE: Once = Once::new();
 
@@ -145,11 +147,8 @@ impl Default for MetricsInitializer {
 }
 
 impl MetricsInitializer {
-    fn min_rate() -> Duration {
-        static MIN_REFRESH_RATE: OnceLock<Duration> = OnceLock::new();
-        *MIN_REFRESH_RATE.get_or_init(|| {
-            std::cmp::max(Duration::from_secs(3), sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)
-        })
+    pub(crate) const fn min_rate() -> Duration {
+        Duration::from_secs(3)
     }
 
     pub fn with_builtin(mut self, builtin: builtins::BuiltinMetric) -> Self {
@@ -239,40 +238,52 @@ impl MetricsInitializer {
         // handle.
         //
 
-        let mut sys = System::new();
-        let pid = sysinfo::get_current_pid().expect("current pid");
         let inner_jh = thread::spawn(move || {
             let mut metrics: BTreeMap<any::TypeId, Box<dyn Metric>> = BTreeMap::new();
 
-            let intrinsic_metrics: Vec<Box<dyn IntrinsicMetric>> = thread_builtins
+            let intrinsic_metrics = thread_builtins
                 .iter()
                 .filter_map(|im| builtins::init_intrinsic_metric(im))
-                .collect();
+                .collect::<Vec<_>>();
 
-            let sysinfo_metrics: Vec<Box<dyn SysinfoMetric>> = thread_builtins
-                .iter()
-                .filter_map(|sm| builtins::init_builtin_sysinfo_metric(sm, pid, &mut sys))
-                .collect();
-
-            // Build a sysinfo::RefreshKind from the Kinds published by all SysinfoMetrics
-            let refresh_kind = sysinfo_metrics
-                .iter()
-                .fold(ProcessRefreshKind::nothing(), |acc, sm| {
-                    sm.with_refresh_kind(acc)
-                });
-            let pids = [pid];
-            let procs_to_update = ProcessesToUpdate::Some(&pids);
-
-            sys.refresh_processes_specifics(procs_to_update, true, refresh_kind);
-
-            let measurements = intrinsic_metrics
+            #[allow(unused_mut)]
+            let mut measurements = intrinsic_metrics
                 .iter()
                 .flat_map(|im| im.poll())
-                .chain(sysinfo_metrics.iter().flat_map(|sm| sm.poll_with_sys(&sys)))
                 .collect::<Vec<_>>();
-            self.exporters.iter_mut().for_each(|exporter| {
-                if let Err(error) = exporter.register_measurements(&measurements) {
-                    error!(%error, ?exporter, ?measurements, "failed to register measurements");
+
+            #[cfg(not(target_os = "linux"))]
+            let (mut sys, sysinfo_metrics, pids, refresh_kind) = {
+                use sysinfo::System;
+                let mut sys = System::new();
+
+                let pid = sysinfo::get_current_pid().expect("current pid");
+                let pids = [pid];
+                let procs_to_update = ProcessesToUpdate::Some(&pids);
+
+                let sysinfo_metrics = thread_builtins
+                    .iter()
+                    .filter_map(|si| builtins::init_sysinfo_metric(si, pid, &mut sys))
+                    .collect::<Vec<_>>();
+
+                let refresh_kind = sysinfo_metrics
+                    .iter()
+                    .fold(ProcessRefreshKind::nothing(), |acc, sm| {
+                        sm.with_refresh_kind(acc)
+                    });
+
+                sys.refresh_processes_specifics(procs_to_update, true, refresh_kind);
+
+                measurements.extend(sysinfo_metrics.iter().flat_map(|sm| sm.poll_with_sys(&sys)));
+                (sys, sysinfo_metrics, pids, refresh_kind)
+            };
+
+            self.exporters.iter_mut().for_each(|ex| {
+                if let Err(e) = ex.register_measurements(&measurements) {
+                    error!(
+                        "Failed to register intrinsic measurements with exporter: {:?}",
+                        e
+                    );
                 }
             });
 
@@ -332,29 +343,26 @@ impl MetricsInitializer {
 
                         let mut measurements = metrics
                             .values_mut()
-                            .map(|v| {
+                            .flat_map(|v| {
                                 let r = v.poll();
                                 v.reset();
                                 r
                             })
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .flatten()
                             .collect::<Vec<_>>();
 
-                        sys.refresh_processes_specifics(procs_to_update, true, refresh_kind);
-
-                        measurements.extend(
-                            sysinfo_metrics
-                                .iter()
-                                .map(|sm| sm.poll_with_sys(&sys))
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .flatten()
-                                .collect::<Vec<_>>(),
-                        );
-
                         measurements.extend(intrinsic_metrics.iter().flat_map(|im| im.poll()));
+
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            sys.refresh_processes_specifics(
+                                ProcessesToUpdate::Some(&pids),
+                                true,
+                                refresh_kind,
+                            );
+                            measurements.extend(
+                                sysinfo_metrics.iter().flat_map(|sm| sm.poll_with_sys(&sys)),
+                            );
+                        }
 
                         // Enforce consistent ordering across runs
                         measurements.sort_by_key(|r| r.title.clone());

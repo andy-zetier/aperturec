@@ -11,10 +11,10 @@ use crate::IntrinsicMetric;
 use crate::Measurement;
 use crate::Metric;
 use crate::MetricUpdate;
-use crate::SysinfoMetric;
 
+#[cfg(target_os = "linux")]
+use procfs::{Current, CurrentSI};
 use std::time::Instant;
-use sysinfo::{Pid, ProcessRefreshKind, System};
 
 ///
 /// All available built-in metrics
@@ -40,35 +40,37 @@ pub(crate) fn register_builtin_metric(metric: &BuiltinMetric) {
     match metric {
         BuiltinMetric::PacketLoss => register(|| Box::<PacketLoss>::default()),
         BuiltinMetric::TxRxRate => register(|| Box::<TxRxRate>::default()),
-        _ => (), // Ignore SysinfoMetrics
+        _ => (), // Ignore Intrinsic metrics
     }
 }
 
 pub(crate) fn init_intrinsic_metric(metric: &BuiltinMetric) -> Option<Box<dyn IntrinsicMetric>> {
     match metric {
+        #[cfg(target_os = "linux")]
+        BuiltinMetric::CpuUsage => Some(Box::new(CpuUsage::default()) as Box<dyn IntrinsicMetric>),
+        #[cfg(target_os = "linux")]
+        BuiltinMetric::MemoryUsage => {
+            Some(Box::new(MemoryUsage::default().with_scale(MemoryScale::Gb))
+                as Box<dyn IntrinsicMetric>)
+        }
         #[cfg(feature = "heap")]
         BuiltinMetric::Heap => Some(Box::new(Heap) as Box<dyn IntrinsicMetric>),
         _ => None,
     }
 }
 
-pub(crate) fn init_builtin_sysinfo_metric(
-    si_metric: &BuiltinMetric,
-    pid: Pid,
-    sys: &mut System,
-) -> Option<Box<dyn SysinfoMetric>> {
-    match si_metric {
-        BuiltinMetric::CpuUsage => {
-            Some(Box::new(CpuUsage::new(pid).with_irix_mode(false)) as Box<dyn SysinfoMetric>)
-        }
-        BuiltinMetric::MemoryUsage => Some(Box::new(
-            MemoryUsage::new(pid, sys).with_scale(MemoryScale::Gb),
-        ) as Box<dyn SysinfoMetric>),
-        _ => None, // Ignore Metrics
-    }
-}
 #[cfg(feature = "heap")]
 struct Heap;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::*;
+
+#[cfg(not(target_os = "linux"))]
+mod non_linux;
+#[cfg(not(target_os = "linux"))]
+pub(crate) use non_linux::*;
 
 #[cfg(feature = "heap")]
 impl IntrinsicMetric for Heap {
@@ -334,61 +336,6 @@ impl Metric for TxRxRate {
     }
 }
 
-//
-// CPU Usage
-//
-struct CpuUsage {
-    pid: Pid,
-    irix_mode: bool,
-}
-
-impl CpuUsage {
-    fn new(pid: Pid) -> Self {
-        Self {
-            pid,
-            irix_mode: false,
-        }
-    }
-
-    pub fn with_irix_mode(mut self, is_on: bool) -> Self {
-        self.irix_mode = is_on;
-        self
-    }
-}
-
-impl SysinfoMetric for CpuUsage {
-    fn poll_with_sys(&self, sys: &System) -> Vec<Measurement> {
-        let proc = sys
-            .process(self.pid)
-            .expect("Failed to get current process");
-        let mut cpu_usage = proc.cpu_usage();
-
-        if !self.irix_mode {
-            cpu_usage /= sys.cpus().len() as f32;
-        }
-
-        vec![Measurement::new(
-            "CPU Usage",
-            Some(cpu_usage.into()),
-            "%",
-            "CPU Usage",
-        )]
-    }
-
-    fn with_refresh_kind(&self, kind: ProcessRefreshKind) -> ProcessRefreshKind {
-        kind.with_cpu()
-    }
-}
-
-//
-// Memory Usage
-//
-struct MemoryUsage {
-    pid: Pid,
-    installed_memory: u64,
-    scale: MemoryScale,
-}
-
 #[allow(dead_code)]
 enum MemoryScale {
     Bytes,
@@ -424,62 +371,10 @@ impl MemoryScale {
     }
 }
 
-impl MemoryUsage {
-    fn new(pid: Pid, sys: &mut System) -> Self {
-        sys.refresh_memory();
-        Self {
-            pid,
-            installed_memory: sys.total_memory(),
-            scale: MemoryScale::Bytes,
-        }
-    }
-
-    pub fn with_scale(mut self, scale: MemoryScale) -> Self {
-        self.scale = scale;
-        self
-    }
-}
-
-impl SysinfoMetric for MemoryUsage {
-    fn poll_with_sys(&self, sys: &System) -> Vec<Measurement> {
-        let proc = sys
-            .process(self.pid)
-            .expect("Failed to get current process");
-        let mem = proc.memory();
-        let vmem = proc.virtual_memory();
-
-        vec![
-            Measurement::new(
-                "VMem Used",
-                Some(self.scale.bytes(vmem)),
-                self.scale.label(),
-                "Virtual Memory Usage",
-            ),
-            Measurement::new(
-                "Mem Used",
-                Some(self.scale.bytes(mem)),
-                self.scale.label(),
-                "Resident Memory Size (RES)",
-            ),
-            Measurement::new(
-                "Mem",
-                Some((mem as f64 / self.installed_memory as f64) * 100.0),
-                "%",
-                "Resident Memory Size (RES) over total installed memory",
-            ),
-        ]
-    }
-
-    fn with_refresh_kind(&self, kind: ProcessRefreshKind) -> ProcessRefreshKind {
-        kind.with_memory()
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use std::time::Duration;
-    use sysinfo::ProcessesToUpdate;
     use test_log::test;
 
     #[test]
@@ -544,7 +439,7 @@ mod test {
         assert_eq!(txrx, TxRxRate::default());
     }
 
-    fn find_primes(threads: usize, max: usize) {
+    pub(crate) fn find_primes(threads: usize, max: usize) {
         let mut jhs = Vec::new();
         for _ in 0..threads {
             let jh = std::thread::spawn(move || {
@@ -565,66 +460,6 @@ mod test {
         }
 
         jhs.into_iter().for_each(|jh| jh.join().expect("join"));
-    }
-
-    #[test]
-    fn cpu_usage() {
-        let pid = sysinfo::get_current_pid().expect("current pid");
-        let refresh_kind = ProcessRefreshKind::nothing().with_cpu();
-        let mut sys = System::new();
-
-        let cu = CpuUsage::new(pid);
-        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, refresh_kind);
-
-        let v = cu.poll_with_sys(&sys);
-
-        // CpuUsage yields 1 Measurement and initializes to 0
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].value.unwrap(), 0.0);
-
-        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-        sys.refresh_all();
-        let v = cu.poll_with_sys(&sys);
-        let cpu0 = v[0].value.unwrap();
-
-        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-        find_primes(sys.cpus().len(), 123456);
-        sys.refresh_all();
-        let v = cu.poll_with_sys(&sys);
-        let cpu1 = v[0].value.unwrap();
-
-        // CPU usage increases under heavy load
-        assert!(cpu0 < cpu1, "{} < {}", cpu0, cpu1);
-    }
-
-    #[test]
-    fn memory_usage() {
-        let pid = sysinfo::get_current_pid().expect("current pid");
-        let refresh_kind = ProcessRefreshKind::nothing().with_memory();
-        let mut sys = System::new();
-
-        let mu = MemoryUsage::new(pid, &mut sys);
-        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, refresh_kind);
-
-        let v0 = mu.poll_with_sys(&sys);
-
-        // MemoryUsage yields 3 Measurements
-        assert_eq!(v0.len(), 3);
-
-        let _lots_o_memory = vec![0; 1024 * 1024 * 500];
-
-        let v1 = mu.poll_with_sys(&sys);
-
-        // Memory usage increases with a large allocation
-        v0.iter().zip(v1).for_each(|(m0, m1)| {
-            assert!(
-                m0.value.unwrap() <= m1.value.unwrap(),
-                "{}: {} <= {}",
-                m0.title,
-                m0.value.unwrap(),
-                m1.value.unwrap()
-            )
-        });
     }
 
     #[cfg(feature = "heap")]
