@@ -1263,10 +1263,25 @@ impl Client {
         channel::ClientMedia,
         channel::ClientTunnel,
     )> {
-        let (server_addr, server_port) = match self.config.server_addr.rsplit_once(':') {
-            Some((addr, port)) => (addr, Some(port.parse()?)),
-            None => (&*self.config.server_addr, None),
-        };
+        let server_input = self.config.server_addr.as_str();
+        let (server_addr, server_port) =
+            if let Ok(socket_addr) = server_input.parse::<std::net::SocketAddr>() {
+                // Successfully parsed a SocketAddr (IPv4 or IPv6 with port)
+                (socket_addr.ip().to_string(), Some(socket_addr.port()))
+            } else if let Ok(ip) = server_input.parse::<std::net::IpAddr>() {
+                // Parsed an IP address (v4 or v6) without a port
+                (ip.to_string(), None)
+            } else if let Some((host_part, port_str)) = server_input.rsplit_once(':') {
+                // Assume DNS name with a port if the part after the colon is a valid u16
+                if let Ok(parsed_port) = port_str.parse::<u16>() {
+                    (host_part.to_string(), Some(parsed_port))
+                } else {
+                    (server_input.to_string(), None)
+                }
+            } else {
+                // Default to the entire input as host with no port specified
+                (server_input.to_string(), None)
+            };
 
         let mut channel_client_builder = channel::endpoint::ClientBuilder::default();
         for cert in &self.config.additional_tls_certificates {
@@ -1278,7 +1293,7 @@ impl Client {
             channel_client_builder = channel_client_builder.allow_insecure_connection();
         }
         let mut channel_client = channel_client_builder.build_sync()?;
-        let channel_session = channel_client.connect(server_addr, server_port)?;
+        let channel_session = channel_client.connect(&server_addr, server_port)?;
         self.local_addr = Some(channel_session.local_addr()?);
         Ok(channel_session.split())
     }
