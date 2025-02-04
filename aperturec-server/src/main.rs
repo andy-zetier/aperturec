@@ -88,7 +88,7 @@ struct Args {
     allow_client_exec: bool,
 
     /// External IP address for the server to listen on, optionally including a port
-    #[arg(short, long, default_value = "0.0.0.0")]
+    #[arg(short, long, default_value = "::")]
     bind_address: String,
 
     /// Display size specified as WIDTHxHEIGHT.
