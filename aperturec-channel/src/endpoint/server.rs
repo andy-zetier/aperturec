@@ -11,7 +11,7 @@ use crate::util::{new_async_rt, Syncify};
 use anyhow::{anyhow, Result};
 #[cfg(any(test, debug_assertions))]
 use std::env;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
 
@@ -98,9 +98,12 @@ impl Builder {
 
     fn build(self) -> Result<(s2n_quic::Server, Option<TokioRuntime>)> {
         let bind_addr = self.bind_addr.ok_or(anyhow!("no bind address provided"))?;
-        let (bind_addr, bind_port) = match bind_addr.rsplit_once(':') {
-            Some((addr, port)) => (addr, port.parse()?),
-            None => (&*bind_addr, DEFAULT_SERVER_BIND_PORT),
+        let bind_sa = {
+            if let Ok(sa) = bind_addr.parse::<SocketAddr>() {
+                sa
+            } else {
+                SocketAddr::from((bind_addr.parse::<IpAddr>()?, DEFAULT_SERVER_BIND_PORT))
+            }
         };
 
         let cert_der = rustls::pki_types::CertificateDer::from(
@@ -141,12 +144,7 @@ impl Builder {
             .with_gso_disabled()?
             .with_internal_recv_buffer_size(0)?
             .with_internal_send_buffer_size(0)?
-            .with_receive_address(
-                (bind_addr, bind_port)
-                    .to_socket_addrs()?
-                    .next()
-                    .ok_or(anyhow!("socket addr"))?,
-            )?
+            .with_receive_address(bind_sa)?
             .build()?;
         let quic_server_builder = s2n_quic::Server::builder()
             .with_congestion_controller(s2n_quic::provider::congestion_controller::Bbr::default())?
@@ -208,6 +206,13 @@ mod test {
             .tls_pem_private_key(&tls::test_material::PEM.pkey)
     }
 
+    fn builder_ipv6() -> Builder {
+        Builder::default()
+            .bind_addr("[::1]:0")
+            .tls_pem_certificate(&tls::test_material::PEM.certificate)
+            .tls_pem_private_key(&tls::test_material::PEM.pkey)
+    }
+
     #[test]
     fn sync_build() {
         builder().build_sync().expect("server build");
@@ -228,5 +233,27 @@ mod test {
     #[should_panic]
     async fn sync_build_from_async() {
         builder().build_sync().expect("server build");
+    }
+
+    #[test]
+    fn sync_build_ipv6() {
+        builder_ipv6().build_sync().expect("server build");
+    }
+
+    #[tokio::test]
+    async fn async_build_ipv6() {
+        builder_ipv6().build_async().expect("server build");
+    }
+
+    #[test]
+    #[should_panic]
+    fn async_build_from_sync_ipv6() {
+        builder_ipv6().build_async().expect("server build");
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn sync_build_from_async_ipv6() {
+        builder_ipv6().build_sync().expect("server build");
     }
 }
