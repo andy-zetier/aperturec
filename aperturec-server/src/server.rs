@@ -61,6 +61,8 @@ pub struct Configuration {
     root_process_cmdline: Option<String>,
     allow_client_exec: bool,
     mbps_max: Option<usize>,
+    #[builder(setter(strip_option), default)]
+    inactivity_timeout: Option<Duration>,
 }
 
 #[derive(Stateful, Debug)]
@@ -411,7 +413,7 @@ pub(crate) async fn send_flush_goodbye(
             .unwrap_or_else(|error| warn!(%error, "send ServerGoodbye"));
         cc.flush()
             .await
-            .unwrap_or_else(|error| warn!(%error, "flush control channel"));
+            .unwrap_or_else(|error| debug!(%error, "flush control channel"));
     })
     .await
     .unwrap_or_else(|_| {
@@ -678,7 +680,8 @@ where
 
     async fn transition(mut self) -> Self::NextStateful {
         let (cc_handler_task, cc_handler_channels) = cc_handler::Task::new(self.state.session.cc);
-        let (ec_handler_task, ec_handler_channels) = ec_handler::Task::new(self.state.session.ec);
+        let (ec_handler_task, mut ec_handler_channels) =
+            ec_handler::Task::new(self.state.session.ec, self.config.inactivity_timeout);
         let (rate_limit_task, rl_handle) = rate_limit::Task::new(self.state.rl_config);
         let (frame_sync_task, frame_sync_channels) =
             frame_sync::Task::<frame_sync::Created<B>>::new(
@@ -842,6 +845,12 @@ where
                     debug!("new session");
                     if gb_reason.is_none() {
                         gb_reason = Some(cm::ServerGoodbyeReason::OtherLogin);
+                    }
+                    ct.cancel();
+                }
+                _ = &mut ec_handler_channels.client_inactive_rx, if !cleanup_started => {
+                    if gb_reason.is_none() {
+                        gb_reason = Some(cm::ServerGoodbyeReason::InactiveTimeout);
                     }
                     ct.cancel();
                 }
@@ -1073,6 +1082,7 @@ mod test {
             .max_height(1080)
             .allow_client_exec(false)
             .mbps_max(500.into())
+            .inactivity_timeout(Duration::from_secs(5))
             .build()
             .expect("Configuration build");
         let server: Server<SessionInactive<X>> = Server::new(server_config.clone())

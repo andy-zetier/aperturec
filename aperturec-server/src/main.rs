@@ -7,6 +7,7 @@ use aperturec_utils::{args, paths};
 use anyhow::Result;
 use clap::Parser;
 use gethostname::gethostname;
+use humantime::Duration;
 use std::path::PathBuf;
 use tokio::signal::unix::*;
 use tracing::*;
@@ -115,6 +116,10 @@ struct Args {
 
     #[clap(flatten)]
     metrics: args::metrics::MetricsArgGroup,
+
+    /// Maximum time of inactivity before a client is disconnected
+    #[arg(long, default_value = None)]
+    inactivity_timeout: Option<Duration>,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -171,6 +176,10 @@ async fn main() -> Result<()> {
             .tls_configuration(args.tls.into())
             .allow_client_exec(args.allow_client_exec);
 
+        if let Some(inactivity_timeout) = args.inactivity_timeout {
+            config_builder.inactivity_timeout(*inactivity_timeout);
+        }
+
         if let Some(root_program_cmdline) = args.root_program_cmdline.into() {
             config_builder.root_process_cmdline(root_program_cmdline);
         }
@@ -196,23 +205,22 @@ async fn main() -> Result<()> {
                 Err(Recovered {
                     error,
                     stateful: session_terminated,
-                }) => {
-                    warn!(%error, "Failed activating new session");
-                    match session_terminated.try_transition() {
-                        Ok(new_session_inactive) => {
-                            session_inactive = new_session_inactive;
-                            continue;
-                        }
-                        Err(Recovered { error, .. }) => {
-                            if error.is::<ServerStopped>() {
-                                debug!("Server exiting");
-                                break Ok(());
-                            } else {
-                                break Err(error);
-                            }
+                }) => match session_terminated.try_transition() {
+                    Ok(new_session_inactive) => {
+                        warn!(%error, "Failed activating new session");
+                        session_inactive = new_session_inactive;
+                        continue;
+                    }
+                    Err(Recovered { error, .. }) => {
+                        if error.is::<ServerStopped>() {
+                            debug!("Server exiting");
+                            break Ok(());
+                        } else {
+                            warn!(%error, "Failed activating new session. Unrecoverable and terminating.");
+                            break Err(error);
                         }
                     }
-                }
+                },
             };
 
             let session_terminated = transition_async!(session_active);

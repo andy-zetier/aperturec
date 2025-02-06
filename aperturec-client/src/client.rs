@@ -1116,6 +1116,8 @@ impl Client {
                                 warn!("Server is shutting down");
                             } else if gb.reason() == cm::ServerGoodbyeReason::OtherLogin {
                                 info!("Server was logged into elsewhere. Exiting");
+                            } else if gb.reason() == cm::ServerGoodbyeReason::InactiveTimeout {
+                                info!("Client has been inactive for too long. Exiting");
                             } else {
                                 error!("Server sent goodbye with reason: {}", gb.reason().as_str_name());
                             }

@@ -3,10 +3,12 @@ use crate::server;
 
 use anyhow::{anyhow, bail, Result};
 use aperturec_channel::{self as channel, AsyncFlushable, AsyncReceiver, AsyncSender};
-use aperturec_protocol::event::server_to_client as em_s2c;
+use aperturec_protocol::event::{client_to_server as em_c2s, server_to_client as em_s2c};
 use aperturec_state_machine::*;
 use futures::{future, prelude::*};
-use tokio::sync::mpsc;
+use std::pin::pin;
+use std::time::Duration;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::{self, JoinHandle};
 use tokio::time;
 use tokio_util::sync::CancellationToken;
@@ -23,6 +25,8 @@ pub struct Created {
     ec: channel::AsyncServerEvent,
     event_tx: mpsc::Sender<Event>,
     to_send_rx: mpsc::Receiver<em_s2c::Message>,
+    client_inactive_tx: oneshot::Sender<()>,
+    activity_timeout: Option<Duration>,
 }
 
 #[derive(State)]
@@ -38,23 +42,31 @@ pub struct Terminated;
 pub struct Channels {
     pub event_rx: mpsc::Receiver<Event>,
     pub to_send_tx: mpsc::Sender<em_s2c::Message>,
+    pub client_inactive_rx: oneshot::Receiver<()>,
 }
 
 impl Task<Created> {
-    pub fn new(ec: channel::AsyncServerEvent) -> (Self, Channels) {
+    pub fn new(
+        ec: channel::AsyncServerEvent,
+        activity_timeout: Option<Duration>,
+    ) -> (Self, Channels) {
         let (to_send_tx, to_send_rx) = mpsc::channel(1);
         let (event_tx, event_rx) = mpsc::channel(1);
+        let (client_inactive_tx, client_inactive_rx) = oneshot::channel();
         (
             Task {
                 state: Created {
                     ec,
                     event_tx,
                     to_send_rx,
+                    client_inactive_tx,
+                    activity_timeout,
                 },
             },
             Channels {
                 event_rx,
                 to_send_tx,
+                client_inactive_rx,
             },
         )
     }
@@ -104,12 +116,24 @@ impl Transitionable<Running> for Task<Created> {
 
         let rx_ct = ct.clone();
         let rx_task = task::spawn(async move {
+            let timeout = self.state.activity_timeout.unwrap_or(Duration::MAX);
+            let mut sleep = pin!(time::sleep(timeout));
+            let mut client_inactive_tx = Some(self.state.client_inactive_tx);
             loop {
                 tokio::select! {
                     biased;
+                    _ = &mut sleep, if client_inactive_tx.is_some() => {
+                        info!("Client inactive for {}", humantime::Duration::from(timeout));
+                        client_inactive_tx.take().unwrap().send(()).map_err(|_| anyhow!("notify client inactive timeout"))?;
+                    }
                     ec_rx_res = ec_rx.receive() => {
                         match ec_rx_res {
-                            Ok(msg) => self.state.event_tx.send(msg.try_into()?).await?,
+                            Ok(msg) => {
+                                if matches!(msg, em_c2s::Message::KeyEvent(_) | em_c2s::Message::PointerEvent(_)) {
+                                    sleep.set(time::sleep(timeout));
+                                }
+                                self.state.event_tx.send(msg.try_into()?).await?
+                            },
                             Err(e) => bail!("EC Rx error: {}", e),
                         }
                     }

@@ -260,6 +260,7 @@ dependencies = [
  "flate2",
  "futures",
  "gethostname",
+ "humantime",
  "jpegxl-rs",
  "libc",
  "ndarray",

@@ -76,7 +76,7 @@ impl Transitionable<Running> for Task<Created> {
                             server::CHANNEL_FLUSH_TIMEOUT,
                             async {
                                 cc_tx.flush().await.unwrap_or_else(|error| {
-                                    warn!(%error, "flush control channel");
+                                    debug!(%error, "flush control channel");
                                 })
                             }
                         ).await.unwrap_or_else(|_| warn!("Timeout flushing control channel"));
