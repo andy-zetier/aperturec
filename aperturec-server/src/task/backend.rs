@@ -241,8 +241,8 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             None => 'msg: {
                                 match self.state.backend.capture_cursor().await {
                                     Err(e) => {
-                                        error!(error = ?e, "Failed to capture cursor");
-                                        break 'select Err(e);
+                                        warn!(error = ?e, "Failed to capture cursor");
+                                        continue 'select;
                                     },
                                     Ok(cursor_image) => {
 
