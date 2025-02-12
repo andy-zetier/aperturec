@@ -1,5 +1,9 @@
 //! QUIC client & server
 
+use anyhow::{bail, Result};
+#[cfg(target_os = "linux")]
+use aperturec_utils::versioning;
+
 mod client;
 mod server;
 
@@ -14,6 +18,28 @@ pub const DEFAULT_SERVER_BIND_PORT: u16 = 46452;
 pub const DEFAULT_CLIENT_BIND_PORT: u16 = 0;
 /// Variable for setting where the SSL key-logging file is saved to
 pub const SSLKEYLOGFILE_VAR: &str = "SSLKEYLOGFILE";
+
+#[cfg(target_os = "linux")]
+pub(crate) fn validate_current_kernel_version() -> Result<()> {
+    let kernel_version = versioning::running_kernel()?;
+    validate_kernel_version(&kernel_version)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_kernel_version(kv: &versioning::Kernel) -> Result<()> {
+    // Minimum Linux kernel version supported for GSO and GRO. Prior LTS versions of the kernel do
+    // not support these features, and silently fail when attempting to use them.
+    const MINIMUM_KERNEL_VERSION: &str = "4.18";
+    if !kv.meets_or_exceeds(MINIMUM_KERNEL_VERSION)? {
+        bail!(
+            "kernel version {} is below minimum supported version {}",
+            kv,
+            MINIMUM_KERNEL_VERSION
+        );
+    }
+
+    Ok(())
+}
 
 #[cfg(test)]
 pub mod test {
@@ -519,5 +545,20 @@ pub mod test {
         });
 
         let _s = s_thread.join().expect("server thread");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn valid_kernel_version() {
+        let kv = versioning::Kernel::try_from("4.18").expect("create kernel version");
+        super::validate_kernel_version(&kv).expect("validate kernel version");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[should_panic]
+    fn invalid_kernel_version() {
+        let kv = versioning::Kernel::try_from("4.17").expect("create kernel version");
+        super::validate_kernel_version(&kv).expect("validate kernel version");
     }
 }

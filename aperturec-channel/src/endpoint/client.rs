@@ -73,8 +73,6 @@ async fn do_connect<P: Into<Option<u16>>>(
         };
 
         let io = s2n_quic::provider::io::tokio::Provider::builder()
-            .with_gro_disabled()?
-            .with_gso_disabled()?
             .with_internal_recv_buffer_size(0)?
             .with_internal_send_buffer_size(0)?
             .with_receive_address((bind_addr, super::DEFAULT_CLIENT_BIND_PORT).into())?
@@ -129,6 +127,9 @@ impl Builder {
     }
 
     fn build(self) -> Result<(TlsProvider, Option<TokioRuntime>)> {
+        #[cfg(target_os = "linux")]
+        super::validate_current_kernel_version()?;
+
         let async_rt = if tokio::runtime::Handle::try_current().is_err() {
             Some(new_async_rt()?)
         } else {

@@ -97,6 +97,9 @@ impl Builder {
     }
 
     fn build(self) -> Result<(s2n_quic::Server, Option<TokioRuntime>)> {
+        #[cfg(target_os = "linux")]
+        super::validate_current_kernel_version()?;
+
         let bind_addr = self.bind_addr.ok_or(anyhow!("no bind address provided"))?;
         let bind_sa = {
             if let Ok(sa) = bind_addr.parse::<SocketAddr>() {
@@ -140,8 +143,6 @@ impl Builder {
         let tls_provider = TlsProvider::new(tls_config);
 
         let io = s2n_quic::provider::io::tokio::Provider::builder()
-            .with_gro_disabled()?
-            .with_gso_disabled()?
             .with_internal_recv_buffer_size(0)?
             .with_internal_send_buffer_size(0)?
             .with_receive_address(bind_sa)?

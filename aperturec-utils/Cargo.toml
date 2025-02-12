@@ -12,8 +12,14 @@ clap = { version = "4.3", features = ["derive", "env", "string"] }
 directories = "5.0"
 file-rotate = "0.7"
 git-version = "0.3"
+ouroboros = "0.18"
 secrecy = "0.10"
+thiserror = "2.0"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-journald = "0.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+version-compare = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+uname = "0.1"
