@@ -16,12 +16,11 @@ aperturec-utils = { path = "../aperturec-utils" }
 anyhow = "1.0"
 clap = { version = "4.3", features = ["derive", "env", "string"] }
 console-subscriber = "0.4"
-ctrlc = "3.4.1"
-derive_builder = "0.12"
-derive_more = { version = "1.0", features = ["debug"] }
+derive_builder = "0.20"
+derive_more = { version = "2.0", features = ["debug"] }
 flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
 futures = "0.3"
-gethostname = "0.4"
+gethostname = "1.0"
 humantime = "2.1"
 jpegxl-rs = { version = "0.11", features = ["vendored"] }
 libc = "0.2"
@@ -30,10 +29,9 @@ pbkdf2 = { version = "0.12", features = ["simple"] }
 petname = "2.0"
 prometheus = "0.13.3"
 ndarray = "0.16"
-nix = "0.29"
+nix = { version = "0.29", features = ["signal"] }
 os_pipe = "1.2"
 rand = { version = "0.8", features = ["std", "std_rng"] }
-rpassword = "7.3"
 secrecy = "0.10"
 shlex = "1.2"
 tokio = { version = "1.38", features = ["full", "rt", "signal", "tracing"] }
@@ -42,17 +40,14 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 trait-variant = "0.1"
-which = "6.0"
+which = "7.0"
 xcb = { version = "1.5.0", features = ["damage", "randr", "xtest", "xfixes" ] }
 
 [dev-dependencies]
 criterion = "0.5"
-serial_test = "2.0"
-tempdir = "0.3"
+serial_test = "3.2"
+tempfile = "3.16"
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
-
-[build-dependencies]
-rustc_version = "0.2"
 
 [features]
 tokio-console = []

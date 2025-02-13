@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 euclid = "0.22"
-image = "0.25"
-imageproc = "0.25"
+image = { version = "0.25", default-features = false, features = ["rayon"] }
+imageproc = { version = "0.25", default-features = false }
 ndarray = { version = "0.16", features = ["rayon"] }
 nshare = "0.10"
 rayon = "1.10"

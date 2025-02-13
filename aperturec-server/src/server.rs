@@ -1062,7 +1062,7 @@ mod test {
         channel::endpoint::AsyncClient,
         SecretString,
     ) {
-        let tlsdir = tempdir::TempDir::new("").expect("temp dir");
+        let tlsdir = tempfile::tempdir().expect("temp dir");
         let auth_token: SecretString = SecretString::from(
             rand::thread_rng()
                 .sample_iter(&Alphanumeric)

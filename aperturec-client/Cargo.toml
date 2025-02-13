@@ -9,7 +9,6 @@ license.workspace = true
 aperturec-channel = { path = "../aperturec-channel" }
 aperturec-graphics = { path = "../aperturec-graphics" }
 aperturec-protocol = { path = "../aperturec-protocol" }
-aperturec-state-machine = { path = "../aperturec-state-machine" }
 aperturec-metrics = { path = "../aperturec-metrics" }
 aperturec-utils = { path = "../aperturec-utils" }
 
@@ -17,15 +16,14 @@ anyhow = "1.0"
 clap = { version = "4.3.22", features = ["derive"] }
 ctrlc = { version = "3.4", features = ["termination"] }
 crossbeam = "0.8"
-derive_builder = "0.12.0"
+derive_builder = "0.20"
 flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
-gethostname = "0.4.3"
+gethostname = "1.0"
 gtk = "0.17.1"
 jpegxl-rs = { version = "0.11", features = ["vendored"] }
 keycode = "0.4.0"
 ndarray = "0.16"
 openssl = "0.10.64"
-paste = "1.0.14"
 range-set-blaze = "0.1"
 rpassword = "7.3"
 secrecy = "0.10"
@@ -38,7 +36,7 @@ url = "2.5"
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.54", features=["Win32_UI_Input_KeyboardAndMouse"]}
+windows = { version = "0.59", features=["Win32_UI_Input_KeyboardAndMouse"]}
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aperturec-metrics = { path = "../aperturec-metrics", features = ["heap"] }

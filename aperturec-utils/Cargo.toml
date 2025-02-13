@@ -9,7 +9,7 @@ aperturec-metrics = { path = "../aperturec-metrics" }
 
 anyhow = "1.0"
 clap = { version = "4.3", features = ["derive", "env", "string"] }
-directories = "5.0"
+directories = "6.0"
 file-rotate = "0.7"
 git-version = "0.3"
 ouroboros = "0.18"
