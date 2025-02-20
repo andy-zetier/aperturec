@@ -848,7 +848,7 @@ where
                     }
                     ct.cancel();
                 }
-                _ = &mut ec_handler_channels.client_inactive_rx, if !cleanup_started => {
+                Ok(())= &mut ec_handler_channels.client_inactive_rx, if !cleanup_started => {
                     if gb_reason.is_none() {
                         gb_reason = Some(cm::ServerGoodbyeReason::InactiveTimeout);
                     }
