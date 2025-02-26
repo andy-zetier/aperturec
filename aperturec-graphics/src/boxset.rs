@@ -29,9 +29,9 @@ impl Set {
     /// boxes contains only N boxes, and the step to add the Nth box does not add any
     /// overlapping boxes
     ///
-    /// Therefore, we must guarantee that the [`add`] function does not add any overlapping
-    /// functions. When adding a new box `new` to the set, we have three simple cases and one
-    /// complex case:
+    /// Therefore, we must guarantee that the [`add`](Self::add) function does not add any
+    /// overlapping functions. When adding a new box `new` to the set, we have three simple cases
+    /// and one complex case:
     ///
     /// - Simple case 1: `new` does not intersect any existing boxes -> add `new` to the set
     ///   without modification

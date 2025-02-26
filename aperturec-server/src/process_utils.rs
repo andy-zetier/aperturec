@@ -124,7 +124,7 @@ impl DisplayableExitStatus for ExitStatus {
                     if let Ok(sig) = nix::sys::signal::Signal::try_from(sig) {
                         format!("Terminated by signal {}", sig)
                     } else {
-                        format!("Terminated by unknown signal")
+                        "Terminated by unknown signal".into()
                     }
                 } else {
                     "Terminated by neither signal nor exit".into()

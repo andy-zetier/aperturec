@@ -24,8 +24,8 @@ pub struct Running {
 #[derive(State, Debug)]
 pub struct Terminated;
 
-impl Task<Created> {
-    pub fn new() -> Self {
+impl Default for Task<Created> {
+    fn default() -> Self {
         Task { state: Created }
     }
 }

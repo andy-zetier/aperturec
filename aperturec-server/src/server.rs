@@ -492,7 +492,7 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
             .client_init
             .client_info
             .as_ref()
-            .and_then(|ci| ci.display_size.clone())
+            .and_then(|ci| ci.display_size)
         {
             Some(display_size) => display_size,
             _ => {
@@ -752,7 +752,7 @@ where
             }
         };
 
-        let malloc_trim_task = malloc_trim::Task::new();
+        let malloc_trim_task = malloc_trim::Task::default();
 
         let cc_handler_task = transition!(cc_handler_task, cc_handler::Running);
         let ec_handler_task = transition!(ec_handler_task, ec_handler::Running);

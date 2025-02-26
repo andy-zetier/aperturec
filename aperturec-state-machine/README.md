@@ -20,17 +20,14 @@ from the Rust compiler that your state machine cannot end up in an invalid or
 unplanned-for state.
 
 Users of this library will be most interested in the following traits:
-- [`State`](crate::State): A state that your machine can exist in
-- [`Stateful`](crate::Stateful): A thing which has some state associated with
-    it. This is likely your state machine.
-- [`Transitionable`](crate::Transitionable) and
-    [`TryTransitionable`](crate::TryTransitionable): Two traits which must be
-    implemented to allow your [`Stateful`](crate::Stateful) to transition
-    between [`State`](crate::State)s.
-- [`AsyncTransitionable`](crate::AsyncTransitionable) and
-    [`AsyncTryTransitionable`](crate::AsyncTryTransitionable): Two `async`
-    variants of `Transitionable` and `TryTransitionable` which allow `async`
-    transitions between [`State`](crate::State)s.
+- [`State`]: A state that your machine can exist in
+- [`Stateful`]: A thing which has some state associated with it. This is likely
+  your state machine.
+- [`Transitionable`] and [`TryTransitionable`]: Two traits which must be
+  implemented to allow your [`Stateful`] to transition between [`State`]s.
+- [`AsyncTransitionable`] and [`AsyncTryTransitionable`]: Two `async` variants
+  of `Transitionable` and `TryTransitionable` which allow `async` transitions
+  between [`State`]s.
 
 
 ## Examples
@@ -84,12 +81,10 @@ impl Transitionable<Alpha> for Machine<Gamma> {
     }
 }
 
-fn main() {
-    let alpha = Machine { state: Alpha };
-    let beta: Machine<Beta> = alpha.transition();
-    let gamma: Machine<Gamma> = beta.transition();
-    let alpha_again: Machine<Alpha> = gamma.transition();
-}
+let alpha = Machine { state: Alpha };
+let beta: Machine<Beta> = alpha.transition();
+let gamma: Machine<Gamma> = beta.transition();
+let alpha_again: Machine<Alpha> = gamma.transition();
 ```
 
 
@@ -97,12 +92,12 @@ fn main() {
 
 What happens if you have a more complex state machine where the transition
 between two states may succeed or **may fail**. That's where the
-[`TryTransitionable`](crate::TryTransitionable) trait comes in. This trait
-ensures that if there is a transition from one state to another which can fail,
-the machine returns back to a valid state. Imagine our previous example, but the
-transition from `Beta->Gamma` can fail. In this case, we want the whole machine
-to return to the `Alpha` state  Imagine our previous example, but the transition
-from `Beta->Gamma` can fail. In this case, we want the machine to return to the
+[`TryTransitionable`] trait comes in. This trait ensures that if there is a
+transition from one state to another which can fail, the machine returns back to
+a valid state. Imagine our previous example, but the transition from
+`Beta->Gamma` can fail. In this case, we want the whole machine to return to the
+`Alpha` state  Imagine our previous example, but the transition from
+`Beta->Gamma` can fail. In this case, we want the machine to return to the
 `Alpha` state.
 
 ```rust
@@ -172,9 +167,8 @@ fn main() {
 
 Sometimes, the transition between two states may require `async` logic. This is
 quite common in state machines which may use `async` I/O. For these cases, we
-can use [`AsyncTransitionable`](crate::AsyncTransitionable) and
-[`AsyncTryTransitionable`](crate::AsyncTryTransitionable) respectively. Consider
-a slight modification to our original three-state machine.
+can use [`AsyncTransitionable`] and [`AsyncTryTransitionable`] respectively.
+Consider a slight modification to our original three-state machine.
 ```rust
 use aperturec_state_machine::*;
 

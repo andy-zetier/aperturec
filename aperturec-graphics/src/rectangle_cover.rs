@@ -86,7 +86,7 @@ fn region_bounds(labeled_regions: ArrayView2<u32>) -> BTreeMap<u32, Box2D> {
     assert_eq!(height_bounds.len(), width_bounds.len());
     height_bounds
         .into_iter()
-        .zip(width_bounds.into_iter())
+        .zip(width_bounds)
         .map(|((h_region, (top, bottom)), (w_region, (left, right)))| {
             assert_eq!(h_region, w_region);
             (
