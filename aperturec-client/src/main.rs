@@ -9,8 +9,9 @@ use secrecy::SecretString;
 use std::env;
 use std::fs;
 use std::iter;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use sysinfo::{CpuRefreshKind, RefreshKind};
+use std::thread;
 use tracing::*;
 use tracing_subscriber::prelude::*;
 use url::Url;
@@ -57,10 +58,9 @@ struct Args {
     #[clap(flatten)]
     resolution: ResolutionGroup,
 
-    /// Maximum number of decoders to use. Each decoder will consume one thread and one UDP port. A
-    /// value of 0 uses the number of CPU cores available.
-    #[arg(short, long, default_value_t = 0)]
-    decoder_max: u16,
+    /// Maximum number of decoders to use
+    #[arg(short, long, default_value_t = thread::available_parallelism().unwrap())]
+    decoder_max: NonZeroUsize,
 
     /// Program to launch and display on connection.
     ///
@@ -164,15 +164,6 @@ fn main() -> Result<()> {
 
     info!("ApertureC Client Startup");
 
-    let decoder_max = if args.decoder_max != 0 {
-        args.decoder_max
-    } else {
-        let sys = sysinfo::System::new_with_specifics(
-            RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
-        );
-        sys.cpus().len().try_into().unwrap()
-    };
-
     let (width, height) = args.resolution.into();
 
     let config = {
@@ -186,7 +177,7 @@ fn main() -> Result<()> {
             ))?),
         };
         config_builder
-            .decoder_max(decoder_max)
+            .decoder_max(args.decoder_max)
             .name(gethostname().into_string().unwrap())
             .server_addr(args.server_address)
             .win_height(height)

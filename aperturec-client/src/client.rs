@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env::consts;
 use std::io::{prelude::*, ErrorKind};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -377,7 +378,7 @@ impl FromStr for PortForwardArg {
 pub struct Configuration {
     pub name: String,
     pub auth_token: SecretString,
-    pub decoder_max: u16,
+    pub decoder_max: NonZeroUsize,
     pub server_addr: String,
     pub win_width: u64,
     pub win_height: u64,
@@ -531,7 +532,7 @@ impl Client {
             .auth_token(self.config.auth_token.expose_secret())
             .client_info(self.generate_client_info())
             .client_caps(self.generate_client_caps())
-            .max_decoder_count::<u32>(self.config.decoder_max.into())
+            .max_decoder_count(self.config.decoder_max.get() as u32)
             .client_specified_program_cmdline(
                 self.config
                     .program_cmdline
@@ -1352,7 +1353,7 @@ mod test {
 
     fn generate_configuration(
         auth_token: SecretString,
-        dec_max: u16,
+        dec_max: NonZeroUsize,
         width: u64,
         height: u64,
         server_port: u16,
@@ -1385,7 +1386,7 @@ mod test {
 
         let mut config = generate_configuration(
             SecretString::default(),
-            8,
+            8.try_into().unwrap(),
             width.try_into().unwrap(),
             height.try_into().unwrap(),
             qserver.local_addr().expect("local addr").port(),
