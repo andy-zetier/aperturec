@@ -281,7 +281,12 @@ impl Backend for X {
             max_width, max_height
         );
 
-        let mut xvfb_cmd = Command::new(env::var("XVFB").unwrap_or("Xvfb".to_string()));
+        let xvfb_path = env::var("XVFB").unwrap_or_else(|_| "Xvfb".to_string());
+        if let Err(error) = which::which(&xvfb_path) {
+            bail!("Xvfb executable not found: {}", error);
+        }
+
+        let mut xvfb_cmd = Command::new(xvfb_path);
         xvfb_cmd
             .arg("-screen")
             .arg("0")
