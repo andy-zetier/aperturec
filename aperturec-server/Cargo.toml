@@ -5,6 +5,8 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+build = "../common_build.rs"
+
 [dependencies]
 aperturec-channel = { path = "../aperturec-channel" }
 aperturec-graphics = { path = "../aperturec-graphics" }
@@ -72,3 +74,4 @@ section = "x11"
 assets = [
   { source = "target/release/aperturec-server", dest = "/usr/bin/aperturec-server", mode = "755" }
 ]
+ 

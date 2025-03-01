@@ -54,6 +54,7 @@ impl From<ResolutionGroup> for (u64, u64) {
 }
 
 #[derive(Parser, Debug)]
+#[command(author, version, about)]
 struct Args {
     #[clap(flatten)]
     resolution: ResolutionGroup,
