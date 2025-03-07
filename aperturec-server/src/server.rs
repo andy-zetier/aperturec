@@ -1016,12 +1016,9 @@ mod test {
             .auth_token(auth_token.expose_secret())
             .client_info(
                 ClientInfoBuilder::default()
-                    .version(SemVer::new(0, 1, 2))
-                    .build_id("asdf")
+                    .version(SemVer::try_from("0.1.2-alpha+asdf").unwrap())
                     .os(Os::Linux)
                     .os_version("Bionic Beaver")
-                    .ssl_library("OpenSSL")
-                    .ssl_version("1.2")
                     .bitness(Bitness::B64)
                     .endianness(Endianness::Big)
                     .architecture(Architecture::X86)

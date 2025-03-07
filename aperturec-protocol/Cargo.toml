@@ -8,6 +8,7 @@ derive_builder = "0.20"
 derive_more = { version = "2.0", features = ["from"] }
 derive-new = "0.7"
 prost = "0.13"
+semver = "1.0"
 
 [build-dependencies]
 anyhow = "1.0"

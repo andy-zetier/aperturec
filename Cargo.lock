@@ -242,6 +242,7 @@ dependencies = [
  "prettyplease",
  "prost",
  "prost-build",
+ "semver",
  "syn 2.0.98",
 ]
 

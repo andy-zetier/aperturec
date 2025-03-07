@@ -6,6 +6,8 @@ message SemVer {
   uint64 major = 1;
   uint64 minor = 2;
   uint64 patch = 3;
+  string pre_release = 4;
+  string build_metadata = 5;
 }
 
 message Dimension {

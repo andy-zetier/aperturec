@@ -35,10 +35,6 @@ use std::{assert, thread};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tracing::*;
 
-const VERSION_MAJOR: &str = env!("CARGO_PKG_VERSION_MAJOR");
-const VERSION_MINOR: &str = env!("CARGO_PKG_VERSION_MINOR");
-const VERSION_PATCH: &str = env!("CARGO_PKG_VERSION_PATCH");
-
 //
 // Internal ITC channel messaging
 //
@@ -478,18 +474,7 @@ impl Client {
                 .with_memory(MemoryRefreshKind::everything()),
         );
         ClientInfoBuilder::default()
-            .version(SemVer::new(
-                VERSION_MAJOR
-                    .parse::<u64>()
-                    .expect("Failed to parse version major!"),
-                VERSION_MINOR
-                    .parse::<u64>()
-                    .expect("Failed to parse version minor!"),
-                VERSION_PATCH
-                    .parse::<u64>()
-                    .expect("Failed to parse version patch!"),
-            ))
-            .build_id(aperturec_utils::build_id())
+            .version(SemVer::from_cargo().expect("extract version from cargo"))
             .os(match consts::OS {
                 "linux" => Os::Linux,
                 "windows" => Os::Windows,
@@ -497,8 +482,6 @@ impl Client {
                 _ => panic!("Unsupported OS"),
             })
             .os_version(System::os_version().unwrap())
-            .ssl_library("UNHANDLED".to_string())
-            .ssl_version("UNHANDLED".to_string())
             .bitness(if cfg!(target_pointer_width = "64") {
                 Bitness::B64
             } else {

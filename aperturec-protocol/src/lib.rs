@@ -1,5 +1,7 @@
 #![allow(clippy::too_many_arguments, clippy::large_enum_variant)]
 
+pub mod convenience;
+
 pub const MAGIC: &str = concat!(
     r"ApertureC-",
     env!("CARGO_PKG_VERSION_MAJOR"),

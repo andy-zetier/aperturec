@@ -31,18 +31,15 @@ enum Architecture {
 
 message ClientInfo {
   common.SemVer version = 1;
-  string build_id = 2;
-  Os os = 3;
-  string os_version = 4;
-  string ssl_library = 5;
-  string ssl_version = 6;
-  Bitness bitness = 7;
-  Endianness endianness = 8;
-  Architecture architecture = 9;
-  string cpu_id = 10;
-  uint64 number_of_cores = 11;
-  string amount_of_ram = 12;
-  common.Dimension display_size = 13;
+  Os os = 2;
+  string os_version = 3;
+  Bitness bitness = 4;
+  Endianness endianness = 5;
+  Architecture architecture = 6;
+  string cpu_id = 7;
+  uint64 number_of_cores = 8;
+  string amount_of_ram = 9;
+  common.Dimension display_size = 10;
 }
 
 message ClientInit {
