@@ -12,7 +12,7 @@ aperturec-channel = { path = "../aperturec-channel" }
 aperturec-graphics = { path = "../aperturec-graphics" }
 aperturec-protocol = { path = "../aperturec-protocol" }
 aperturec-state-machine = { path = "../aperturec-state-machine" }
-aperturec-metrics = { path = "../aperturec-metrics", features = ["heap"] }
+aperturec-metrics = { path = "../aperturec-metrics" }
 aperturec-utils = { path = "../aperturec-utils" }
 
 anyhow = "1.0"
@@ -44,6 +44,10 @@ tracing-subscriber = "0.3"
 trait-variant = "0.1"
 which = "7.0"
 xcb = { version = "1.5.0", features = ["damage", "randr", "xtest", "xfixes" ] }
+
+[target.'cfg(target_os = "linux")'.dependencies.aperturec-metrics]
+path = "../aperturec-metrics/"
+features = ["heap"]
 
 [dev-dependencies]
 criterion = "0.5"

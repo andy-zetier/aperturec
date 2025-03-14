@@ -1,5 +1,6 @@
 //! QUIC client & server
 
+#[cfg(target_os = "linux")]
 use anyhow::{bail, Result};
 #[cfg(target_os = "linux")]
 use aperturec_utils::versioning;
