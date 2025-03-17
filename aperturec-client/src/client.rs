@@ -5,9 +5,9 @@ use aperturec_channel::{self as channel, Receiver as _, Sender as _, Unified};
 use aperturec_graphics::prelude::*;
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
-    self as cm, server_to_client as cm_s2c, Architecture, Bitness, ClientGoodbye,
-    ClientGoodbyeBuilder, ClientGoodbyeReason, ClientInfo, ClientInfoBuilder, ClientInit,
-    ClientInitBuilder, Endianness, Os,
+    self as cm, client_to_server as cm_c2s, server_to_client as cm_s2c, Architecture, Bitness,
+    ClientGoodbye, ClientGoodbyeBuilder, ClientGoodbyeReason, ClientInfo, ClientInfoBuilder,
+    ClientInit, ClientInitBuilder, Endianness, Os,
 };
 use aperturec_protocol::event::{
     button, client_to_server as em_c2s, server_to_client as em_s2c, Button, ButtonStateBuilder,
@@ -1049,8 +1049,13 @@ impl Client {
                         }
                     }
                     Err(err) => {
-                        error!("Failed to receive: {}", err);
-                        control_rx_tx.send(Err(err)).unwrap();
+                        error!(
+                            "Failed to receive with error: {}. Server may already be gone",
+                            err
+                        );
+                        control_rx_tx
+                            .send(Err(err))
+                            .unwrap_or_else(|e| warn!("failed to forward error to Tx half: {}", e));
                         break;
                     }
                 }
@@ -1060,8 +1065,13 @@ impl Client {
 
         thread::spawn(move || {
             while let Ok(cm_c2s) = control_tx_rx.recv() {
+                let should_exit = matches!(cm_c2s, cm_c2s::Message::ClientGoodbye(_));
                 if let Err(err) = client_cc_write.send(cm_c2s) {
                     error!("Failed to send: {}", err);
+                    break;
+                }
+
+                if should_exit {
                     break;
                 }
             }
