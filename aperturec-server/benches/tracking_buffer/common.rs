@@ -1,9 +1,16 @@
-use aperturec_graphics::prelude::*;
+use aperturec_graphics::{display::*, prelude::*};
 use aperturec_server::task::frame_sync::*;
 
 use ndarray::{prelude::*, Zip};
 use rand::{distributions::*, prelude::*};
 use std::ops::RangeInclusive;
+
+pub fn to_display(dim: Size) -> Display {
+    Display {
+        area: Rect::from_size(dim),
+        is_enabled: true,
+    }
+}
 
 pub const DIMENSIONS: [Size; 4] = [
     Size::new(800, 600),

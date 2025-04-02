@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::*;
 
 pub enum Command {
-    UpdateArea(Box2D),
+    Reconfigure((usize, Box2D)),
 }
 
 mod compression {
@@ -250,14 +250,14 @@ impl Transitionable<Running> for Task<Created> {
     type NextStateful = Task<Running>;
 
     fn transition(mut self) -> Self::NextStateful {
-        let encoder_id = self.id;
         let task: JoinHandle<Result<()>> = task::spawn(async move {
             loop {
                 tokio::select! {
                     biased;
                     Some(command) = self.state.command_rx.recv() => {
-                        let Command::UpdateArea(area) = command;
-                        debug!(encoder=%encoder_id, old_area=?self.state.area, new_area=?area, "Update area");
+                        let Command::Reconfigure((new_id, area)) = command;
+                        debug!(old_encoder=%self.id, new_encoder=%new_id, old_area=?self.state.area, new_area=?area, "Reconfigure");
+                        self.id = new_id;
                         self.state.area = area;
                     },
                     Some(frame) = self.state.frame_rx.recv() => {
@@ -277,10 +277,18 @@ impl Transitionable<Running> for Task<Created> {
                                 .mm_tx
                                 .send(mm_s2c::Message::Terminal(mm::EmptyFrameTerminal {
                                     frame: frame.id as u64,
-                                    encoder: encoder_id as u32,
+                                    encoder: self.id as u32,
+                                    display_config: frame.display_config as u32,
+                                    display: frame.display as u32,
                                 }))
                             .await?;
-                            trace!(frame=%frame.id, encoder=%encoder_id, "Dispatched empty frame");
+                            trace!(
+                                display=%frame.display,
+                                dc=%frame.display_config,
+                                frame=%frame.id,
+                                encoder=%self.id,
+                                "Dispatched empty frame"
+                            );
                         } else {
                             let mut encodings = FuturesUnordered::new();
                             for (buffer, intersection) in &relevant {
@@ -318,7 +326,9 @@ impl Transitionable<Running> for Task<Created> {
                             while let Some(Ok((data, enc_relative_area))) = encodings.next().await {
                                 let frag = mm::FrameFragment {
                                     frame: frame.id as u64,
-                                    encoder: encoder_id as u32,
+                                    encoder: self.id as u32,
+                                    display_config: frame.display_config as u32,
+                                    display: frame.display as u32,
                                     sequence: sequence as u32,
                                     terminal: sequence == relevant.len() - 1,
                                     codec: self.state.compression_scheme.as_codec().into(),
@@ -338,7 +348,14 @@ impl Transitionable<Running> for Task<Created> {
                                     .send(mm_s2c::Message::Fragment(frag))
                                     .await?;
 
-                                trace!(frame=%frame.id, encoder=%encoder_id, sequence, "Dispatched frame fragment");
+                                trace!(
+                                    display=%frame.display,
+                                    dc=%frame.display_config,
+                                    frame=%frame.id,
+                                    encoder=%self.id,
+                                    sequence,
+                                    "Dispatched frame fragment"
+                            );
 
                                 sequence += 1;
                             }
@@ -350,7 +367,7 @@ impl Transitionable<Running> for Task<Created> {
         });
 
         Task {
-            id: encoder_id,
+            id: self.id,
             state: Running {
                 task,
                 ct: CancellationToken::new(),

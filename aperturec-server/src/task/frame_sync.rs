@@ -3,10 +3,10 @@ use crate::metrics::{
     FramesCut, TrackingBufferDamageRatio, TrackingBufferDisjointAreas, TrackingBufferUpdates,
 };
 
-use aperturec_graphics::{prelude::*, rectangle_cover::diff_rectangle_cover};
+use aperturec_graphics::{display::*, prelude::*, rectangle_cover::diff_rectangle_cover};
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use futures::{self, future, TryFutureExt};
 use ndarray::{prelude::*, AssignElem};
 use std::marker::PhantomData;
@@ -15,7 +15,6 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::*;
 
 #[derive(Debug)]
 pub struct SubframeBuffer<M: PixelMap> {
@@ -26,12 +25,15 @@ pub struct SubframeBuffer<M: PixelMap> {
 #[derive(Debug)]
 pub struct Frame {
     pub id: usize,
+    pub display_config: usize,
+    pub display: usize,
     pub buffers: Vec<SubframeBuffer<Pixel24Map>>,
 }
 
 #[derive(Debug)]
-pub struct NewResolution {
-    pub resolution: Size,
+pub struct NewDisplayConfig {
+    pub config_id: usize,
+    pub display_encoder_counts: Vec<(Display, usize)>,
     pub notify_complete_tx: oneshot::Sender<()>,
 }
 
@@ -43,10 +45,11 @@ pub struct Task<S: State> {
 
 #[derive(State)]
 pub struct Created<B: Backend> {
-    initial_resolution: Size,
+    max_encoder_count: usize,
+    display_encoder_counts: Vec<(Display, usize)>,
     frame_txs: Vec<mpsc::Sender<Arc<Frame>>>,
     damage_rx: mpsc::UnboundedReceiver<SubframeBuffer<B::PixelMap>>,
-    resolution_rx: mpsc::Receiver<NewResolution>,
+    display_config_rx: mpsc::Receiver<NewDisplayConfig>,
 }
 
 #[derive(State, Debug)]
@@ -62,33 +65,32 @@ pub struct Terminated;
 pub struct Channels<B: Backend> {
     pub frame_rxs: Vec<mpsc::Receiver<Arc<Frame>>>,
     pub damage_tx: mpsc::UnboundedSender<SubframeBuffer<B::PixelMap>>,
-    pub resolution_tx: mpsc::Sender<NewResolution>,
+    pub display_config_tx: mpsc::Sender<NewDisplayConfig>,
 }
 
 impl<B: Backend> Task<Created<B>> {
-    pub fn new(initial_resolution: Size, num_encoders: usize) -> (Self, Channels<B>) {
-        let (frame_txs, frame_rxs) = (0..num_encoders)
-            .map(|_| {
-                let (tx, rx) = mpsc::channel(1);
-                (tx, rx)
-            })
-            .collect();
+    pub fn new(
+        max_encoder_count: usize,
+        display_encoder_counts: Vec<(Display, usize)>,
+    ) -> (Self, Channels<B>) {
+        let (frame_txs, frame_rxs) = (0..max_encoder_count).map(|_| mpsc::channel(1)).collect();
         let (damage_tx, damage_rx) = mpsc::unbounded_channel();
-        let (resolution_tx, resolution_rx) = mpsc::channel(1);
+        let (display_config_tx, display_config_rx) = mpsc::channel(1);
 
         (
             Task {
                 state: Created {
-                    initial_resolution,
+                    max_encoder_count,
+                    display_encoder_counts,
                     frame_txs,
                     damage_rx,
-                    resolution_rx,
+                    display_config_rx,
                 },
             },
             Channels {
                 frame_rxs,
                 damage_tx,
-                resolution_tx,
+                display_config_tx,
             },
         )
     }
@@ -110,16 +112,86 @@ where
         let mut js = JoinSet::new();
         let curr_rt = Handle::current();
 
-        let tb_size = self.state.initial_resolution;
-        let tracking_buffer = Arc::new(Mutex::new(TrackingBuffer::new(tb_size)));
+        let mut i = 0;
+        let tb_txs: Vec<_> = self
+            .state
+            .display_encoder_counts
+            .into_iter()
+            .enumerate()
+            .map(|(id, (display, count))| {
+                let end = i + count;
+                let subset: Vec<_> = self.state.frame_txs[i..end].to_vec();
+                i = end;
+                (
+                    Arc::new(Mutex::new(TrackingBuffer::new(id, display, 0))),
+                    Arc::new(Mutex::new(subset)),
+                )
+            })
+            .collect();
+
+        let (revoke_permits_watch_tx, _) = watch::channel(());
 
         {
-            let tracking_buffer = tracking_buffer.clone();
+            let mut tb_txs = tb_txs.clone();
+            let revoke_permits_watch_tx = revoke_permits_watch_tx.clone();
+            let max_display_count = tb_txs.len();
+
             js.spawn_on(
                 async move {
-                    while let Some(nr) = self.state.resolution_rx.recv().await {
-                        tracking_buffer.lock().unwrap().resize(nr.resolution);
-                        nr.notify_complete_tx.send(()).expect("Failed send");
+                    while let Some(ndc) = self.state.display_config_rx.recv().await {
+                        ensure!(
+                            ndc.display_encoder_counts.len() == max_display_count,
+                            "Display count does not equal max number of displays: {} != {}",
+                            ndc.display_encoder_counts.len(),
+                            max_display_count,
+                        );
+
+                        let (encoder_count, disabled_display_count) =
+                            ndc.display_encoder_counts.iter().fold(
+                                (0, 0),
+                                |(total_encoders, total_disabled), (display, count)| {
+                                    (
+                                        total_encoders + count,
+                                        total_disabled
+                                            + if !display.is_enabled { count } else { &0 },
+                                    )
+                                },
+                            );
+
+                        ensure!(
+                            encoder_count <= self.state.max_encoder_count,
+                            "Encoder count greater than max number of encoders: {} > {}",
+                            encoder_count,
+                            self.state.max_encoder_count,
+                        );
+
+                        ensure!(
+                            disabled_display_count == 0,
+                            "Disabled Displays have {} encoders assigned, expected 0",
+                            disabled_display_count,
+                        );
+
+                        //
+                        // Redistribute the frame_txs according to how many encoders have been
+                        // assigned to the given tracking buffer / Display
+                        //
+                        let mut i = 0;
+                        tb_txs.iter_mut().zip(ndc.display_encoder_counts).for_each(
+                            |((tb, tx_subset), (display, count))| {
+                                tb.lock()
+                                    .expect("tracking buffer poisoned")
+                                    .resize(display, ndc.config_id);
+
+                                let end = i + count;
+                                let mut subset = tx_subset.lock().expect("tx subset poisoned");
+                                *subset = self.state.frame_txs[i..end].to_vec();
+                                i = end;
+                            },
+                        );
+                        revoke_permits_watch_tx
+                            .send(())
+                            .expect("Failed to send revoke permits");
+                        let _ = ndc.notify_complete_tx.send(());
                     }
                     bail!("failed resolution recv")
                 },
@@ -128,14 +200,17 @@ where
         }
 
         {
-            let tracking_buffer = tracking_buffer.clone();
+            let mut tracking_buffers: Vec<Arc<_>> =
+                tb_txs.iter().map(|(arc, _)| Arc::clone(arc)).collect();
             js.spawn_on(
                 async move {
                     while let Some(framebuffer_data) = self.state.damage_rx.recv().await {
-                        tracking_buffer
-                            .lock()
-                            .expect("tracking_buffer poisoned")
-                            .update(framebuffer_data);
+                        let fd = Arc::new(framebuffer_data);
+                        tracking_buffers.iter_mut().for_each(|tb| {
+                            tb.lock()
+                                .expect("tracking_buffer poisoned")
+                                .update(fd.as_ref())
+                        });
                     }
                     bail!("damage stream exhausted")
                 },
@@ -144,44 +219,80 @@ where
         }
 
         {
-            let tracking_buffer = tracking_buffer.clone();
-            let mut damage_handle = tracking_buffer
-                .lock()
-                .expect("tracking_buffer poisoned")
-                .damage_handle();
+            let tb_txs_dh: Vec<_> = tb_txs
+                .into_iter()
+                .map(|(tb, txs)| {
+                    let dh = tb.lock().expect("tracking buffer poisoned").damage_handle();
+                    (tb, txs, dh)
+                })
+                .collect();
 
-            js.spawn_on(
-                async move {
-                    loop {
-                        trace!(
-                            "Waiting for {} permits and damage",
-                            self.state.frame_txs.len()
-                        );
-                        let (permits, _) = future::try_join(
-                            future::try_join_all(
-                                self.state.frame_txs.iter().map(|tx| tx.reserve()),
+            //
+            // For each tracking buffer, await damage and reserve channel space to send the new
+            // frame to the encoders. Channels may have been re-assigned to other tracking buffers
+            // while awaiting damage, if so, we need to reserve space on the new channels without
+            // waiting for damage.
+            //
+            for (tb, mut txs, mut dh) in tb_txs_dh.into_iter() {
+                txs = txs.clone();
+                let mut revoke_watch = revoke_permits_watch_tx.subscribe();
+                js.spawn_on(
+                    async move {
+                        let mut permits_revoked = false;
+                        loop {
+                            let txs_to_reserve = {
+                                let clones = txs
+                                    .lock()
+                                    .expect("tx vector poisoned")
+                                    .iter()
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                clones
+                            };
+
+                            let dh_fut = async {
+                                if !permits_revoked {
+                                    dh.wait_for_damage().await
+                                } else {
+                                    Ok(())
+                                }
+                            };
+
+                            let (permits, _) = future::try_join(
+                                future::try_join_all(
+                                    txs_to_reserve.iter().cloned().map(|tx| tx.reserve_owned()),
+                                )
+                                .map_err(anyhow::Error::new),
+                                dh_fut,
                             )
-                            .map_err(anyhow::Error::new),
-                            damage_handle.wait_for_damage(),
-                        )
-                        .await?;
-                        trace!("Received permits and damage!");
+                            .await?;
 
-                        let frame = tracking_buffer
-                            .lock()
-                            .expect("tracking_buffer poisoned")
-                            .cut_frame();
+                            if revoke_watch.has_changed().unwrap_or(false) {
+                                let _ = revoke_watch.borrow_and_update();
+                                drop(permits);
+                                permits_revoked = true;
+                                continue;
+                            } else {
+                                permits_revoked = false;
+                            }
 
-                        if let Some(frame) = frame {
-                            let frame = Arc::new(frame);
-                            for permit in permits {
-                                permit.send(frame.clone());
+                            let frame = {
+                                let frame =
+                                    tb.lock().expect("tracking buffer poisoned").cut_frame();
+                                frame
+                            };
+
+                            if let Some(frame) = frame {
+                                let frame = Arc::new(frame);
+                                for permit in permits.into_iter() {
+                                    permit.send(frame.clone());
+                                }
                             }
                         }
-                    }
-                },
-                &curr_rt,
-            );
+                    },
+                    &curr_rt,
+                );
+            }
         }
 
         Task {
@@ -265,11 +376,13 @@ enum Damage {
 ///
 /// This structure is particularly useful in graphical applications where partial updates to the pixel data are common.
 pub struct TrackingBuffer<BackendPixelMap: PixelMap> {
-    size: Size,
+    display: Display,
+    display_id: usize,
+    display_config: usize,
     data: Array2<Pixel24>,
     damage: Damage,
     curr_frame_id: usize,
-    damage_tx: watch::Sender<()>,
+    damage_watch_tx: watch::Sender<()>,
     _pixel_map: PhantomData<BackendPixelMap>,
 }
 
@@ -278,36 +391,59 @@ where
     BackendPixelMap: PixelMap,
     for<'p> &'p mut Pixel24: AssignElem<BackendPixelMap::Pixel>,
 {
-    pub fn new(resolution: Size) -> Self {
-        let (damage_tx, _) = watch::channel(());
-        let shape = (resolution.height, resolution.width);
+    pub fn new(display_id: usize, display: Display, display_config: usize) -> Self {
+        let (damage_watch_tx, _) = watch::channel(());
+        let shape = (display.area.height(), display.area.width());
         TrackingBuffer {
-            size: resolution,
+            display,
+            display_id,
+            display_config,
             data: Array2::from_elem(shape, Pixel24::default()),
             damage: Damage::Full,
             curr_frame_id: 0,
-            damage_tx,
+            damage_watch_tx,
             _pixel_map: PhantomData,
         }
     }
 
-    fn resize(&mut self, resolution: Size) {
-        let shape = (resolution.height, resolution.width);
-        self.data = Array2::from_elem(shape, Pixel24::default());
-        self.size = resolution;
-        self.clear();
+    fn display_area(&self) -> Box2D {
+        self.display.area.to_box2d()
     }
 
-    pub fn update(&mut self, framebuffer_data: SubframeBuffer<BackendPixelMap>) {
-        TrackingBufferUpdates::inc();
-        // Early exit if the origin point is outside the bounds of the current data array.
-        let intersection = match Box2D::from_size(self.size).intersection(&framebuffer_data.area) {
+    fn resize(&mut self, display: Display, display_config: usize) {
+        self.curr_frame_id = 0;
+        self.display_config = display_config;
+        self.display = display;
+        self.data = Array2::from_elem(self.display_area().as_shape(), Pixel24::default());
+        self.clear();
+
+        // Notify damage listeners that the Display has been changed
+        self.damage_watch_tx
+            .send(())
+            .expect("Failed to send damage watch");
+    }
+
+    pub fn update(&mut self, framebuffer_data: &SubframeBuffer<BackendPixelMap>) {
+        if !self.display.is_enabled {
+            return;
+        }
+
+        let intersection = match self.display_area().intersection(&framebuffer_data.area) {
             Some(intersection) => intersection,
             None => return,
         };
+
+        TrackingBufferUpdates::inc();
+
         let fb_relative_area = intersection
             .to_i64()
             .translate(-framebuffer_data.area.min.to_vector().to_i64())
+            .to_usize();
+
+        // Shift intersection to be relative to this tracking buffer
+        let intersection = intersection
+            .to_i64()
+            .translate(-self.display.area.min().to_vector().to_i64())
             .to_usize();
 
         let pixmap = framebuffer_data.pixels.as_ndarray();
@@ -325,10 +461,7 @@ where
                 for b in &cover_areas {
                     let tb_relative_rect = b.translate(intersection.min.to_vector());
 
-                    framebuffer_data
-                        .pixels
-                        .as_ndarray()
-                        .slice(b.as_slice())
+                    new.slice(b.as_slice())
                         .assign_to(self.data.slice_mut(tb_relative_rect.as_slice()));
 
                     total_area += b.area();
@@ -342,12 +475,7 @@ where
     }
 
     fn mark_stale(&mut self, stale: Box2D) {
-        let intersection = match Box2D::from_size(self.size).intersection(&stale) {
-            Some(intersection) => intersection,
-            None => return,
-        };
-
-        if intersection.area() == self.size.area() {
+        if stale.area() == self.display_area().area() {
             self.damage = Damage::Full;
         } else {
             match self.damage {
@@ -357,7 +485,7 @@ where
             }
         }
 
-        let _ = self.damage_tx.send(());
+        let _ = self.damage_watch_tx.send(());
     }
 
     fn clear(&mut self) {
@@ -378,18 +506,20 @@ where
                         })
                         .assume_init()
                     };
+
                     SubframeBuffer { area: *b, pixels }
                 })
                 .collect(),
             Damage::Full => {
                 // SAFETY: We initialize the Array2 in the call to `build_init`, so
                 // `assume_init` is safe to call
+                let size = self.display_area().size();
                 let pixels = unsafe {
-                    Array2::build_uninit(self.size.as_shape(), |dst| self.data.assign_to(dst))
+                    Array2::build_uninit(size.as_shape(), |dst| self.data.assign_to(dst))
                         .assume_init()
                 };
                 vec![SubframeBuffer {
-                    area: Box2D::from_size(self.size),
+                    area: size.into(),
                     pixels,
                 }]
             }
@@ -399,13 +529,21 @@ where
         let id = self.curr_frame_id;
         self.curr_frame_id += 1;
 
+        let display = self.display_id;
+
         FramesCut::inc();
         TrackingBufferDisjointAreas::inc_by(buffers.len() as f64);
-        Some(Frame { id, buffers })
+
+        Some(Frame {
+            id,
+            buffers,
+            display,
+            display_config: self.display_config,
+        })
     }
 
     fn damage_handle(&self) -> DamageHandle {
-        let mut watch = self.damage_tx.subscribe();
+        let mut watch = self.damage_watch_tx.subscribe();
 
         // A new damage handle always reports there is immediate damage
         watch.mark_changed();
@@ -419,6 +557,7 @@ struct DamageHandle {
 
 impl DamageHandle {
     async fn wait_for_damage(&mut self) -> Result<()> {
-        Ok(self.watch.changed().await?)
+        self.watch.changed().await?;
+        Ok(())
     }
 }

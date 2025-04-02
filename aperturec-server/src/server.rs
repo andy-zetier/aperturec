@@ -9,7 +9,7 @@ use crate::task::{
 };
 
 use aperturec_channel::{self as channel, AsyncFlushable, AsyncSender};
-use aperturec_graphics::{partition::partition, prelude::*};
+use aperturec_graphics::{display::*, partition::partition_displays, prelude::*};
 use aperturec_protocol::common::*;
 use aperturec_protocol::control as cm;
 use aperturec_state_machine::*;
@@ -57,6 +57,7 @@ pub struct Configuration {
     auth_token: Option<SecretString>,
     max_width: usize,
     max_height: usize,
+    max_display_count: usize,
     #[builder(setter(strip_option), default)]
     root_process_cmdline: Option<String>,
     allow_client_exec: bool,
@@ -104,8 +105,10 @@ pub struct SessionActive<B: Backend> {
     session: session::AuthenticatedSession,
     #[debug(skip)]
     session_stream: Peekable<session::AuthenticatedStream>,
-    encoder_areas: Vec<(Box2D, Codec)>,
-    resolution: Size,
+    displays: Vec<Display>,
+    max_encoder_count: usize,
+    encoder_areas: Vec<Vec<Box2D>>,
+    codec: Codec,
     rl_config: rate_limit::Configuration,
     tunnels: BTreeMap<u64, tc_handler::Tunnel>,
 }
@@ -328,6 +331,7 @@ impl<B: Backend> AsyncTryTransitionable<BackendInitialized<B>, Created> for Serv
         let backend_fut = B::initialize(
             self.config.max_width,
             self.config.max_height,
+            self.config.max_display_count,
             self.state.root_process_cmd.as_mut(),
         );
         tokio::select! {
@@ -488,21 +492,28 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
                 return_recover!(self, "Client provided invalid mbps max");
             }
         };
-        let client_resolution = match session
-            .client_init
-            .client_info
+
+        let Some(client_info) = session.client_init.client_info.as_ref() else {
+            send_flush_goodbye(
+                &mut session.cc,
+                cm::ServerGoodbyeReason::InvalidConfiguration,
+            )
+            .await;
+            return_recover!(self, "Client did not provide client info");
+        };
+
+        let Ok(client_displays) = client_info
             .as_ref()
-            .and_then(|ci| ci.display_size)
-        {
-            Some(display_size) => display_size,
-            _ => {
-                send_flush_goodbye(
-                    &mut session.cc,
-                    cm::ServerGoodbyeReason::InvalidConfiguration,
-                )
-                .await;
-                return_recover!(self, "Client did not provide display size");
-            }
+            .iter()
+            .map(|di| Display::try_from(*di))
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            send_flush_goodbye(
+                &mut session.cc,
+                cm::ServerGoodbyeReason::InvalidConfiguration,
+            )
+            .await;
+            return_recover!(self, "Client provided invalid displays");
         };
 
         let (tunnel_responses, tunnels) =
@@ -535,6 +546,7 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
                         B::initialize(
                             self.config.max_width,
                             self.config.max_height,
+                            self.config.max_display_count,
                             Some(&mut cmd),
                         )
                         .await
@@ -554,16 +566,7 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
             backend.set_client_specified(client_backend);
         }
 
-        let client_resolution = Size::new(
-            client_resolution.width as usize,
-            client_resolution.height as usize,
-        );
-        let (resolution, partitions) = partition(
-            &client_resolution,
-            session.client_init.max_decoder_count.try_into().unwrap(),
-        );
-
-        let preferred_codec = match session.client_init.client_caps {
+        let codec = match session.client_init.client_caps {
             Some(ref caps) => {
                 if caps.supported_codecs.contains(&Codec::Jpegxl.into()) {
                     Codec::Jpegxl
@@ -576,34 +579,44 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
             None => Codec::Raw,
         };
 
-        let encoder_areas = partitions
-            .into_iter()
-            .map(|rect| (rect, preferred_codec))
-            .collect::<Vec<_>>();
-        if let Err(error) = backend.set_resolution(&resolution).await {
+        let max_encoder_count = session.client_init.max_decoder_count.try_into().unwrap();
+        debug!(?client_displays);
+
+        let (displays, encoder_areas) = match backend.set_displays(client_displays).await {
+            Ok(success) => match partition_displays(
+                &success.displays,
+                session.client_init.max_decoder_count.try_into().unwrap(),
+            ) {
+                Ok(areas) => (success.displays, areas),
+                Err(_) => {
+                    send_flush_goodbye(&mut session.cc, cm::ServerGoodbyeReason::InternalError)
+                        .await;
+                    return_recover!(
+                        recover_self_with_backend!(backend.into_root()),
+                        "Failed to re-partition"
+                    );
+                }
+            },
+            Err(_) => {
+                send_flush_goodbye(&mut session.cc, cm::ServerGoodbyeReason::InternalError).await;
+                return_recover!(
+                    recover_self_with_backend!(backend.into_root()),
+                    "Failed to set_displays"
+                );
+            }
+        };
+
+        let Ok(display_configuration) =
+            backend::display_config_from_parts(0, &displays, &encoder_areas)
+        else {
             send_flush_goodbye(&mut session.cc, cm::ServerGoodbyeReason::InternalError).await;
             return_recover!(
                 recover_self_with_backend!(backend.into_root()),
-                "set backend resolution: {}",
-                error
+                "Failed to build display configuration"
             );
-        }
-        trace!("Resolution set to {:?}", resolution);
-        EncoderCount::update(encoder_areas.len() as f64);
+        };
 
-        let decoder_areas: BTreeMap<u32, _> = encoder_areas
-            .iter()
-            .enumerate()
-            .map(|(id, (b, ..))| {
-                (
-                    id as u32,
-                    DecoderArea {
-                        location: Some(Location::new(b.min.x as u64, b.min.y as u64)),
-                        dimension: Some(Dimension::new(b.width() as u64, b.height() as u64)),
-                    },
-                )
-            })
-            .collect();
+        debug!(?display_configuration);
 
         let rl_config = rate_limit::Configuration::new(self.config.mbps_max, client_mbps_max);
 
@@ -631,18 +644,12 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
                 cm::ServerInitBuilder::default()
                     .client_id(self.next_client_id)
                     .server_name(self.config.name.clone())
-                    .display_configuration(DisplayConfiguration::new(
-                        0,
-                        Some(Dimension::new(
-                            resolution.width as u64,
-                            resolution.height as u64
-                        )),
-                        decoder_areas
-                    ))
+                    .display_configuration(display_configuration)
                     .tunnel_responses(tunnel_responses)
                     .build(),
                 recover_self_with_backend!(backend.into_root())
             );
+
             trace!("Server init: {:#?}", server_init);
 
             try_recover_async!(
@@ -659,8 +666,10 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
                     backend,
                     session,
                     session_stream: self.state.session_stream,
+                    displays,
+                    max_encoder_count,
                     encoder_areas,
-                    resolution,
+                    codec,
                     rl_config,
                     tunnels,
                 },
@@ -679,14 +688,26 @@ where
     type NextStateful = Server<SessionTerminated<B>>;
 
     async fn transition(mut self) -> Self::NextStateful {
+        let display_extent = self
+            .state
+            .displays
+            .derive_extent()
+            .expect("Invalid displays");
+        let encoder_counts: Vec<_> = self.state.encoder_areas.iter().map(|a| a.len()).collect();
+        EncoderCount::update(encoder_counts.iter().sum::<usize>() as f64);
+
         let (cc_handler_task, cc_handler_channels) = cc_handler::Task::new(self.state.session.cc);
         let (ec_handler_task, mut ec_handler_channels) =
             ec_handler::Task::new(self.state.session.ec, self.config.inactivity_timeout);
         let (rate_limit_task, rl_handle) = rate_limit::Task::new(self.state.rl_config);
         let (frame_sync_task, frame_sync_channels) =
             frame_sync::Task::<frame_sync::Created<B>>::new(
-                self.state.resolution,
-                self.state.encoder_areas.len(),
+                self.state.max_encoder_count,
+                self.state
+                    .displays
+                    .into_iter()
+                    .zip(encoder_counts)
+                    .collect(),
             );
         let (mc_handler_task, mc_handler_channels) =
             mc_handler::Task::new(self.state.session.mc, rl_handle);
@@ -695,13 +716,13 @@ where
             .state
             .encoder_areas
             .iter()
+            .flat_map(|areas| areas.iter().enumerate())
             .zip(frame_sync_channels.frame_rxs.into_iter())
-            .enumerate()
-            .map(|(enc_id, ((area, codec), frame_sync_rx))| {
+            .map(|((enc_id, area), frame_sync_rx)| {
                 encoder::Task::new(
                     enc_id,
                     *area,
-                    *codec,
+                    self.state.codec,
                     frame_sync_rx,
                     mc_handler_channels.mm_tx.clone(),
                 )
@@ -729,10 +750,11 @@ where
 
         let backend_task = backend::Task::<backend::Created<B>>::new(
             self.state.backend,
+            display_extent,
             ec_handler_channels.event_rx,
             ec_handler_channels.to_send_tx.clone(),
             frame_sync_channels.damage_tx,
-            frame_sync_channels.resolution_tx,
+            frame_sync_channels.display_config_tx,
             encoder_command_txs,
         );
 
@@ -1025,13 +1047,17 @@ mod test {
                     .cpu_id("Haswell")
                     .number_of_cores(4_u32)
                     .amount_of_ram("2.4Gb")
-                    .display_size(
-                        DimensionBuilder::default()
-                            .width(1024_u64)
-                            .height(768_u64)
-                            .build()
-                            .expect("Dimension build"),
-                    )
+                    .displays([DisplayInfoBuilder::default()
+                        .area(
+                            RectangleBuilder::default()
+                                .dimension(Dimension::new(1024_u64, 768_u64))
+                                .location(Location::new(0, 0))
+                                .build()
+                                .expect("Rectangle build"),
+                        )
+                        .is_enabled(true)
+                        .build()
+                        .expect("DisplayInfo build")])
                     .build()
                     .expect("ClientInfo build"),
             )
@@ -1077,6 +1103,7 @@ mod test {
             .auth_token(auth_token.clone())
             .max_width(1920)
             .max_height(1080)
+            .max_display_count(4)
             .allow_client_exec(false)
             .mbps_max(500.into())
             .inactivity_timeout(Duration::from_secs(5))
@@ -1163,30 +1190,47 @@ mod test {
             .display_configuration
             .expect("display_configuration");
 
-        assert_eq!(dc.areas.keys().len(), 2);
+        let dc = dc
+            .display_decoder_infos
+            .get(0)
+            .expect("missing DisplayDecoderInfo 0");
+
+        info!(?dc.decoder_areas);
+
+        assert_eq!(dc.decoder_areas.len(), 3);
         assert_eq!(
-            dc.areas
-                .get(&0)
+            dc.decoder_areas
+                .get(0)
                 .expect("area 0")
                 .dimension
                 .as_ref()
                 .expect("dimension")
                 .width,
-            512
+            341
         );
         assert_eq!(
-            dc.areas
-                .get(&1)
+            dc.decoder_areas
+                .get(1)
                 .expect("area 1")
                 .dimension
                 .as_ref()
                 .expect("dimension")
                 .width,
-            512
+            341
         );
         assert_eq!(
-            dc.areas
-                .get(&0)
+            dc.decoder_areas
+                .get(2)
+                .expect("area 2")
+                .dimension
+                .as_ref()
+                .expect("dimension")
+                .width,
+            342
+        );
+        assert_eq!(
+            dc.decoder_areas
+                .get(0)
                 .expect("area 0")
                 .dimension
                 .as_ref()
@@ -1195,8 +1239,8 @@ mod test {
             768
         );
         assert_eq!(
-            dc.areas
-                .get(&1)
+            dc.decoder_areas
+                .get(1)
                 .expect("area 1")
                 .dimension
                 .as_ref()
@@ -1205,8 +1249,18 @@ mod test {
             768
         );
         assert_eq!(
-            dc.areas
-                .get(&0)
+            dc.decoder_areas
+                .get(2)
+                .expect("area 2")
+                .dimension
+                .as_ref()
+                .expect("dimension")
+                .height,
+            768
+        );
+        assert_eq!(
+            dc.decoder_areas
+                .get(0)
                 .expect("area 0")
                 .location
                 .as_ref()
@@ -1215,18 +1269,28 @@ mod test {
             0
         );
         assert_eq!(
-            dc.areas
-                .get(&1)
+            dc.decoder_areas
+                .get(1)
                 .expect("area 1")
                 .location
                 .as_ref()
                 .expect("location")
                 .x_position,
-            512
+            341
         );
         assert_eq!(
-            dc.areas
-                .get(&0)
+            dc.decoder_areas
+                .get(2)
+                .expect("area 2")
+                .location
+                .as_ref()
+                .expect("location")
+                .x_position,
+            682
+        );
+        assert_eq!(
+            dc.decoder_areas
+                .get(0)
                 .expect("area 0")
                 .location
                 .as_ref()
@@ -1235,8 +1299,8 @@ mod test {
             0
         );
         assert_eq!(
-            dc.areas
-                .get(&1)
+            dc.decoder_areas
+                .get(1)
                 .expect("area 1")
                 .location
                 .as_ref()
@@ -1244,7 +1308,41 @@ mod test {
                 .y_position,
             0
         );
-        assert_eq!(dc.display_size.as_ref().expect("display_size").width, 1024);
-        assert_eq!(dc.display_size.as_ref().expect("display_size").height, 768);
+        assert_eq!(
+            dc.decoder_areas
+                .get(2)
+                .expect("area 2")
+                .location
+                .as_ref()
+                .expect("location")
+                .y_position,
+            0
+        );
+        assert_eq!(
+            dc.display
+                .as_ref()
+                .unwrap()
+                .area
+                .as_ref()
+                .unwrap()
+                .dimension
+                .as_ref()
+                .expect("display_size")
+                .width,
+            1024
+        );
+        assert_eq!(
+            dc.display
+                .as_ref()
+                .unwrap()
+                .area
+                .as_ref()
+                .unwrap()
+                .dimension
+                .as_ref()
+                .expect("display_size")
+                .height,
+            768
+        );
     }
 }

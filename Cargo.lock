@@ -187,6 +187,7 @@ dependencies = [
  "ndarray",
  "openssl",
  "range-set-blaze",
+ "regex",
  "rpassword",
  "secrecy",
  "sysinfo",
@@ -208,6 +209,7 @@ dependencies = [
  "nshare",
  "rayon",
  "test-log",
+ "thiserror 2.0.11",
 ]
 
 [[package]]
@@ -235,6 +237,7 @@ name = "aperturec-protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aperturec-graphics",
  "derive-new",
  "derive_builder",
  "derive_more",
@@ -244,6 +247,7 @@ dependencies = [
  "prost-build",
  "semver",
  "syn 2.0.98",
+ "thiserror 2.0.11",
 ]
 
 [[package]]
@@ -276,6 +280,7 @@ dependencies = [
  "petname",
  "prometheus",
  "rand 0.8.5",
+ "regex",
  "secrecy",
  "serial_test",
  "shlex",
@@ -321,6 +326,7 @@ dependencies = [
  "directories",
  "file-rotate",
  "git-version",
+ "num",
  "ouroboros",
  "secrecy",
  "thiserror 2.0.11",

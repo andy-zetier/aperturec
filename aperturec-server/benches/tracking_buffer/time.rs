@@ -27,10 +27,10 @@ fn tracking_buffer_time(c: &mut Criterion) {
                             let mut duration = Duration::from_secs(0);
                             for _ in 0..niters {
                                 let updates = generate_updates(&curr, num_areas);
-                                let mut tb = TrackingBuffer::new(dim);
+                                let mut tb = TrackingBuffer::new(0, to_display(dim), 0);
                                 let start = Instant::now();
                                 for update in updates {
-                                    tb.update(update);
+                                    tb.update(&update);
                                 }
                                 duration += start.elapsed();
                             }

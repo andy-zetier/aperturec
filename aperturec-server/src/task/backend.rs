@@ -1,14 +1,16 @@
 use crate::backend::{Backend, Event, SwapableBackend};
 use crate::task::encoder;
-use crate::task::frame_sync::{NewResolution, SubframeBuffer};
+use crate::task::frame_sync::{NewDisplayConfig, SubframeBuffer};
 
-use aperturec_graphics::{partition::partition, prelude::*};
+use aperturec_graphics::{
+    display::Display, display::DisplayExtent, partition::partition_displays, prelude::*,
+};
 use aperturec_protocol::common::*;
 use aperturec_protocol::event::{self as em, server_to_client as em_s2c};
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, Result};
-use futures::StreamExt;
+use anyhow::{anyhow, ensure, Result};
+use futures::{stream, StreamExt};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -27,10 +29,11 @@ pub struct Task<S: State> {
 pub struct Created<B: Backend> {
     ct: CancellationToken,
     backend: SwapableBackend<B>,
+    initial_display_extent: Size,
     event_rx: mpsc::Receiver<Event>,
     event_tx: mpsc::Sender<em_s2c::Message>,
     damage_tx: mpsc::UnboundedSender<SubframeBuffer<B::PixelMap>>,
-    resolution_tx: mpsc::Sender<NewResolution>,
+    display_config_tx: mpsc::Sender<NewDisplayConfig>,
     encoder_command_txs: Vec<mpsc::Sender<encoder::Command>>,
 }
 
@@ -55,23 +58,60 @@ pub struct TerminatedWithBackend<B: Backend> {
 #[derive(State, Debug)]
 pub struct TerminatedWithoutBackend;
 
+pub fn display_config_from_parts(
+    id: u64,
+    displays: &[Display],
+    areas: &[Vec<Box2D>],
+) -> Result<DisplayConfiguration> {
+    ensure!(
+        displays.len() == areas.len(),
+        "Display and area count do not match: {} != {}",
+        displays.len(),
+        areas.len()
+    );
+
+    let display_decoder_infos = displays
+        .iter()
+        .zip(areas)
+        .map(|(display, areas)| {
+            let display_info: DisplayInfo = display.clone().try_into()?;
+            Ok(DisplayDecoderInfoBuilder::default()
+                .display(display_info)
+                .decoder_areas(
+                    areas
+                        .iter()
+                        .map(|b2d| (*b2d).try_into())
+                        .collect::<Result<Vec<Rectangle>, _>>()?,
+                )
+                .build()?)
+        })
+        .collect::<Result<Vec<DisplayDecoderInfo>>>()?;
+
+    Ok(DisplayConfigurationBuilder::default()
+        .id(id)
+        .display_decoder_infos(display_decoder_infos)
+        .build()?)
+}
+
 impl<B: Backend> Task<Created<B>> {
     pub fn new(
         backend: SwapableBackend<B>,
+        initial_display_extent: Size,
         event_rx: mpsc::Receiver<Event>,
         event_tx: mpsc::Sender<em_s2c::Message>,
         damage_tx: mpsc::UnboundedSender<SubframeBuffer<B::PixelMap>>,
-        resolution_tx: mpsc::Sender<NewResolution>,
+        display_config_tx: mpsc::Sender<NewDisplayConfig>,
         encoder_command_txs: Vec<mpsc::Sender<encoder::Command>>,
     ) -> Task<Created<B>> {
         Task {
             state: Created {
                 ct: CancellationToken::new(),
                 backend,
+                initial_display_extent,
                 event_rx,
                 event_tx,
                 damage_tx,
-                resolution_tx,
+                display_config_tx,
                 encoder_command_txs,
             },
         }
@@ -98,7 +138,8 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
     async fn try_transition(
         mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let mut damage_stream = try_recover_async!(self.state.backend.damage_stream(), self);
+        let mut damage_stream =
+            try_recover_async!(self.state.backend.damage_stream(), self).boxed();
         let mut cursor_stream = try_recover_async!(self.state.backend.cursor_stream(), self);
 
         let ct = self.state.ct.clone();
@@ -106,6 +147,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
             let mut cursor_cache = HashMap::new();
             let mut last_cursor_id = 0;
             let mut display_config_id = 0;
+            let mut display_extent = Rect::from_size(self.state.initial_display_extent);
             let res = 'select: loop {
                 tokio::select! {
                     biased;
@@ -126,113 +168,121 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                         }
                     }
                     Some(event) = self.state.event_rx.recv() => {
-                        if let Event::Display { ref size } = event {
+                        if let Event::Display { ref displays } = event {
 
-                            //
-                            // Partition the new resolution across all available encoders
-                            //
-                            let requested_resolution = Size::new(size.width as usize, size.height as usize);
-                            let (new_resolution, partitions) = partition(
-                                &requested_resolution,
-                                self.state.encoder_command_txs.len(),
-                            );
-
-                            let areas = partitions
-                                .iter()
-                                .enumerate()
-                                .map(|(id, b)| (id as u32, DecoderArea {
-                                    location: Some(Location::new(b.min.x as u64, b.min.y as u64)),
-                                    dimension: Some(Dimension::new(b.width() as u64, b.height() as u64)),
-                                }))
-                            .collect();
-
-                            //
-                            // Ensure requested resolution does not match current resolution
-                            //
-                            match self.state.backend.resolution().await {
-                                Ok(res) if res == new_resolution => {
-                                    debug!(?new_resolution, "New resolution matches current resolution");
-                                    let msg = em_s2c::Message::DisplayConfiguration(DisplayConfiguration {
-                                        id: display_config_id,
-                                        display_size: Some(Dimension::new(new_resolution.width as u64, new_resolution.height as u64)),
-                                        areas,
-                                    });
-
-                                    if let Err(err) = self.state.event_tx.send(msg).await {
-                                        break Err(err.into())
-                                    }
-                                    continue;
-                                },
-                                Ok(_) => (),
-                                Err(e) => {
-                                    warn!(error = ?e, "Failed to get resolution");
-                                    continue;
-                                },
-                            };
+                            let client_displays = displays;
+                            debug!(?client_displays);
 
                             //
                             // Try to set the backend resolution
                             //
-                            if let Err(e) = self.state.backend.set_resolution(&new_resolution).await {
-                                warn!(error = ?e, ?new_resolution, "Failed to set resolution");
-                                continue;
-                            }
+                            let displays = match self.state.backend.set_displays(client_displays.to_vec()).await {
+                                Ok(success) if !success.changed => {
+                                    debug!(?client_displays, "Requested display configuration matches current, ignoring");
+                                    continue;
+                                }
+                                Ok(success) => success.displays,
+                                Err(displays) => {
+                                    warn!("Failed to set displays, repartitioning");
+                                    displays
+                                }
+                            };
 
                             //
-                            // Notify Encoders of new partition layout
+                            // Partiton the final Displays across all encoders
                             //
-                            for (tx, part) in self.state.encoder_command_txs.iter().zip(&partitions) {
-                                if let Err(e) = tx.send(encoder::Command::UpdateArea(*part)).await {
-                                    break 'select Err(e.into());
+                            let encoder_areas = partition_displays(
+                                &displays,
+                                self.state.encoder_command_txs.len(),
+                            ).expect("Failed to re-partition displays");
+
+                            //
+                            // Generate New Display Configuration
+                            //
+                            display_config_id += 1;
+                            let display_configuration = match display_config_from_parts(
+                                display_config_id as u64,
+                                &displays,
+                                &encoder_areas)
+                            {
+                                Ok(dc) => dc,
+                                Err(err) => {
+                                    warn!("Failed to build display configuration: {}", err);
+                                    continue;
                                 }
-                            }
+                            };
 
                             //
                             // Notify tracking buffer of resolution change and await confirmation
                             //
                             let (notify_complete_tx, notify_complete_rx) = oneshot::channel();
-                            if let Err(e) = self.state.resolution_tx.send(NewResolution {
-                                resolution: new_resolution,
+                            if let Err(e) = self.state.display_config_tx.send(NewDisplayConfig {
+                                display_encoder_counts: displays
+                                    .clone()
+                                    .into_iter()
+                                    .zip(encoder_areas.iter().map(|a| a.len()))
+                                    .collect(),
+                                config_id: display_config_id,
                                 notify_complete_tx,
                             }).await {
                                 break Err(e.into());
                             }
 
+                            //
+                            // Reconfigure Encoders
+                            //
+                            for ((enc_id, area), tx) in encoder_areas
+                                .iter()
+                                .flat_map(|areas| areas.iter().enumerate())
+                                .zip(self.state.encoder_command_txs.iter())
+                            {
+                                if let Err(e) = tx.send(encoder::Command::Reconfigure((enc_id, *area))).await {
+                                    break 'select Err(e.into());
+                                }
+                            }
+
+                            // Release tracking buffer
                             if let Err(e) = notify_complete_rx.await {
                                 break Err(e.into());
                             }
 
-                            debug!(?requested_resolution, ?new_resolution);
+                            debug!(?display_configuration);
 
                             //
                             // Notify Client of successful resolution change
                             //
-                            display_config_id += 1;
-                            let msg = em_s2c::Message::DisplayConfiguration(DisplayConfiguration {
-                                id: display_config_id,
-                                display_size: Some(Dimension::new(new_resolution.width as u64, new_resolution.height as u64)),
-                                areas,
-                            });
-
-                            if let Err(err) = self.state.event_tx.send(msg).await {
-                                break Err(err.into())
+                            let msg = em_s2c::Message::DisplayConfiguration(display_configuration);
+                            if let Err(e) = self.state.event_tx.send(msg).await {
+                                break Err(e.into())
                             }
+
+                            display_extent = match displays.derive_extent() {
+                                Ok(extent) => Rect::from_size(extent),
+                                Err(e) => break Err(e.into()),
+                            };
+
+                            // Force fullscreen damage for enabled displays
+                            damage_stream = stream::iter(displays.into_iter().filter(|d| d.is_enabled).map(|d| d.area))
+                                .chain(damage_stream)
+                                .boxed();
                         } else if let Err(e) = self.state.backend.notify_event(event).await {
                             break Err(e);
                         }
                     },
                     Some(area) = damage_stream.next() => {
-                        let pixels = match self.state.backend.capture_area(area).await {
-                            Ok(pixels) => pixels,
-                            Err(e) => {
-                                warn!(error = ?e, ?area, "Failed to capture area");
-                                continue;
+                        if let Some(area) = display_extent.intersection(&area) {
+                            let pixels = match self.state.backend.capture_area(area).await {
+                                Ok(pixels) => pixels,
+                                Err(e) => {
+                                    warn!(error = ?e, ?area, "Failed to capture area");
+                                    continue;
+                                }
+                            };
+                            let area = area.to_box2d();
+                            let fb_data = SubframeBuffer { area, pixels };
+                            if let Err(e) = self.state.damage_tx.send(fb_data) {
+                                break Err(e.into());
                             }
-                        };
-                        let area = area.to_box2d();
-                        let fb_data = SubframeBuffer { area, pixels };
-                        if let Err(e) = self.state.damage_tx.send(fb_data) {
-                            break Err(e.into());
                         }
                     }
                     Some(cursor_change) = cursor_stream.next() => {

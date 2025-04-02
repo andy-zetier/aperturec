@@ -1,4 +1,4 @@
-use aperturec_graphics::prelude::*;
+use aperturec_graphics::{display::Display, prelude::*};
 
 use anyhow::Result;
 use aperturec_protocol::common::*;
@@ -80,7 +80,7 @@ pub enum Event {
         cursor: Cursor,
     },
     Display {
-        size: Dimension,
+        displays: Vec<Display>,
     },
 }
 
@@ -119,7 +119,12 @@ impl TryFrom<em_c2s::Message> for Event {
                     .collect::<Result<_, EventError>>()?,
             },
             em_c2s::Message::DisplayEvent(display_event) => Event::Display {
-                size: display_event.display_size.ok_or(EventError)?,
+                displays: display_event
+                    .as_ref()
+                    .iter()
+                    .map(|di| Display::try_from(*di))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| EventError)?,
             },
         })
     }
@@ -158,6 +163,11 @@ pub struct LockState {
     pub is_num_locked: Option<bool>,
 }
 
+pub struct SetDisplaysSuccess {
+    pub changed: bool,
+    pub displays: Vec<Display>,
+}
+
 mod backend_trait {
     use super::*;
 
@@ -169,14 +179,17 @@ mod backend_trait {
         async fn initialize<N>(
             max_width: N,
             max_height: N,
+            max_display_count: N,
             root_process_cmd: Option<&mut Command>,
         ) -> Result<Self>
         where
             N: Into<Option<usize>> + Send + Sync;
         async fn notify_event(&mut self, event: Event) -> Result<()>;
         async fn set_lock_state(&self, lock_state: LockState) -> Result<()>;
-        async fn set_resolution(&mut self, resolution: &Size) -> Result<()>;
-        async fn resolution(&self) -> Result<Size>;
+        async fn set_displays(
+            &mut self,
+            requested_displays: Vec<Display>,
+        ) -> Result<SetDisplaysSuccess, Vec<Display>>;
         async fn damage_stream(&self) -> Result<impl Stream<Item = Rect> + Send + Unpin + 'static>;
         async fn capture_area(&self, area: Rect) -> Result<Self::PixelMap>;
         async fn cursor_stream(

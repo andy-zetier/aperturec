@@ -9,6 +9,7 @@ use clap::Parser;
 use gethostname::gethostname;
 use humantime::Duration;
 use std::path::PathBuf;
+use std::str::FromStr;
 use tokio::signal::unix::*;
 use tracing::*;
 use tracing_subscriber::prelude::*;
@@ -77,6 +78,73 @@ impl From<TlsGroup> for TlsConfiguration {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ScreenConfig {
+    max_width: usize,
+    max_height: usize,
+    max_displays: usize,
+}
+
+impl FromStr for ScreenConfig {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let re = regex::Regex::new(r"^(?:(\d+)x(\d+))?(?::(\d+))?$").unwrap();
+        let caps = re
+            .captures(s)
+            .ok_or_else(|| format!("Failed to parse '{}'", s))?;
+        let parse_or_default =
+            |group: Option<regex::Match>, default: usize| -> Result<usize, String> {
+                group.map_or(Ok(default), |m| {
+                    m.as_str()
+                        .parse()
+                        .map_err(|_| format!("Invalid number in '{}'", s))
+                })
+            };
+
+        let max_width = parse_or_default(caps.get(1), backend::X::DEFAULT_MAX_WIDTH)?;
+        let max_height = parse_or_default(caps.get(2), backend::X::DEFAULT_MAX_HEIGHT)?;
+        let max_displays = parse_or_default(caps.get(3), backend::X::DEFAULT_MAX_DISPLAY_COUNT)?;
+
+        let constraints = [
+            (
+                "Width",
+                max_width,
+                backend::X::MIN_WIDTH,
+                backend::X::DEFAULT_MAX_WIDTH,
+            ),
+            (
+                "Height",
+                max_height,
+                backend::X::MIN_HEIGHT,
+                backend::X::DEFAULT_MAX_HEIGHT,
+            ),
+            (
+                "Display count",
+                max_displays,
+                1,
+                backend::X::DEFAULT_MAX_DISPLAY_COUNT,
+            ),
+        ];
+
+        if let Some((name, value, min, max)) = constraints
+            .iter()
+            .find(|(_, v, min, max)| *v < *min || *v > *max)
+        {
+            return Err(format!(
+                "{} ({}) must be within the range [{},{}]",
+                name, value, min, max
+            ));
+        }
+
+        Ok(Self {
+            max_width,
+            max_height,
+            max_displays,
+        })
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -92,9 +160,10 @@ struct Args {
     #[arg(short, long, default_value = "::")]
     bind_address: String,
 
-    /// Display size specified as WIDTHxHEIGHT.
-    #[arg(short, long, default_value = format!("{}x{}", backend::X::DEFAULT_MAX_WIDTH, backend::X::DEFAULT_MAX_HEIGHT))]
-    screen_size: String,
+    /// Screen configuration limits specified as [WIDTHxHEIGHT][:COUNT].
+    #[arg(short, long, default_value = format!("{}x{}:{}", backend::X::DEFAULT_MAX_WIDTH,
+            backend::X::DEFAULT_MAX_HEIGHT, backend::X::DEFAULT_MAX_DISPLAY_COUNT))]
+    screen_config: ScreenConfig,
 
     /// Server instance name
     #[arg(short, long, default_value = gethostname())]
@@ -137,20 +206,6 @@ async fn main() -> Result<()> {
 
     info!("ApertureC Server Startup");
 
-    let dims: Vec<usize> = args
-        .screen_size
-        .to_lowercase()
-        .split('x')
-        .map(|d| {
-            d.parse()
-                .unwrap_or_else(|_| panic!("Failed to parse resolution '{}'", d))
-        })
-        .collect();
-
-    if dims.len() != 2 {
-        panic!("Invalid resolution");
-    }
-
     let metrics_exporters = args.metrics.to_exporters(env!("CARGO_CRATE_NAME"));
     if !metrics_exporters.is_empty() {
         aperturec_metrics::MetricsInitializer::default()
@@ -167,8 +222,9 @@ async fn main() -> Result<()> {
         config_builder
             .bind_addr(args.bind_address)
             .name(args.name)
-            .max_width(dims[0])
-            .max_height(dims[1])
+            .max_width(args.screen_config.max_width)
+            .max_height(args.screen_config.max_height)
+            .max_display_count(args.screen_config.max_displays)
             .mbps_max(match args.mbps_max.to_uppercase().as_str() {
                 "NONE" => None,
                 mbps => Some(mbps.parse()?),
@@ -273,7 +329,7 @@ async fn main() -> Result<()> {
     if !handle.is_stopped() {
         if let Err(e) = res {
             error!(%e, "server exiting with error");
-            panic!("server error: {}", e);
+            panic!("server error: {:#?}", e);
         }
     }
     info!("ApertureC Server exiting");

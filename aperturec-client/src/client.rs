@@ -1,8 +1,11 @@
 use crate::frame::*;
-use crate::gtk3::{image::Image, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
+use crate::gtk3::{self, image::Image, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
 
 use aperturec_channel::{self as channel, Receiver as _, Sender as _, Unified};
-use aperturec_graphics::prelude::*;
+use aperturec_graphics::{
+    display::{self, Display},
+    geometry::*,
+};
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
     self as cm, client_to_server as cm_c2s, server_to_client as cm_s2c, Architecture, Bitness,
@@ -10,21 +13,22 @@ use aperturec_protocol::control::{
     ClientInit, ClientInitBuilder, Endianness, Os,
 };
 use aperturec_protocol::event::{
-    button, client_to_server as em_c2s, server_to_client as em_s2c, Button, ButtonStateBuilder,
-    DisplayEvent, KeyEvent, MappedButton, PointerEvent, PointerEventBuilder,
+    self, button, client_to_server as em_c2s, server_to_client as em_s2c, Button,
+    ButtonStateBuilder, DisplayEvent, KeyEvent, MappedButton, PointerEvent, PointerEventBuilder,
 };
 use aperturec_protocol::tunnel;
 use aperturec_utils::log::*;
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{anyhow, bail, ensure, Error, Result};
 use crossbeam::channel::{bounded, never, select, unbounded, Receiver, RecvTimeoutError, Sender};
 use derive_builder::Builder;
 use gtk::glib;
 use openssl::x509::X509;
 use secrecy::{zeroize::Zeroize, ExposeSecret, SecretString};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashSet};
 use std::env::consts;
 use std::io::{prelude::*, ErrorKind};
+use std::iter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::num::NonZeroUsize;
 use std::str::FromStr;
@@ -105,18 +109,26 @@ impl KeyEventMessage {
     }
 }
 
-#[derive(Builder, Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DisplayEventMessage {
-    size: Size,
+    pub(crate) displays: Vec<Display>,
 }
 
 impl DisplayEventMessage {
     pub fn to_display_event(&self) -> DisplayEvent {
-        DisplayEvent {
-            display_size: Some(Dimension::new(
-                self.size.width as u64,
-                self.size.height as u64,
-            )),
+        event::DisplayEvent {
+            displays: self
+                .displays
+                .iter()
+                .map(|di| DisplayInfo {
+                    area: Some(
+                        di.area
+                            .try_into()
+                            .expect("Failed to convert Rect to Rectangle"),
+                    ),
+                    is_enabled: di.is_enabled,
+                })
+                .collect(),
         }
     }
 }
@@ -176,9 +188,16 @@ pub enum EventMessage {
 #[derive(Debug)]
 pub enum UiMessage {
     Quit(String),
-    CursorImage { id: usize, cursor_data: CursorData },
-    CursorChange { id: usize },
-    DisplayChange { dc_id: u64, display_size: Size },
+    CursorImage {
+        id: usize,
+        cursor_data: CursorData,
+    },
+    CursorChange {
+        id: usize,
+    },
+    DisplayChange {
+        display_config: display::DisplayConfiguration,
+    },
 }
 
 impl TryFrom<em_s2c::Message> for UiMessage {
@@ -199,18 +218,9 @@ impl TryFrom<em_s2c::Message> for UiMessage {
                 },
             }),
             em_s2c::Message::DisplayConfiguration(dc) => {
-                let config: DisplayConfig = dc.try_into()?;
-                Ok(config.into())
+                let display_config: display::DisplayConfiguration = dc.try_into()?;
+                Ok(UiMessage::DisplayChange { display_config })
             }
-        }
-    }
-}
-
-impl From<DisplayConfig> for UiMessage {
-    fn from(dc: DisplayConfig) -> UiMessage {
-        UiMessage::DisplayChange {
-            dc_id: dc.id,
-            display_size: dc.display_size,
         }
     }
 }
@@ -228,60 +238,6 @@ pub enum ControlMessage {
     UiClosed(GoodbyeMessage),
     EventChannelDied(GoodbyeMessage),
     SigintReceived,
-}
-
-#[derive(Debug)]
-pub struct DisplayConfig {
-    pub id: u64,
-    pub display_size: Size,
-    pub areas: BTreeMap<u32, Box2D>,
-}
-
-impl TryFrom<DisplayConfiguration> for DisplayConfig {
-    type Error = anyhow::Error;
-    fn try_from(display_config: DisplayConfiguration) -> Result<DisplayConfig> {
-        let decoder_ids_valid = display_config
-            .areas
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .eq(0..display_config.areas.len() as u32);
-        if !decoder_ids_valid {
-            bail!("Decoder IDs are not contiguous from 0..N");
-        }
-
-        let mut areas = BTreeMap::new();
-
-        for (id, decoder_area) in display_config.areas.into_iter() {
-            debug!(?decoder_area);
-            if let DecoderArea {
-                location: Some(location),
-                dimension: Some(dimension),
-                ..
-            } = decoder_area
-            {
-                let area = Rect {
-                    origin: Point::new(location.x_position as usize, location.y_position as usize),
-                    size: Size::new(dimension.width as usize, dimension.height as usize),
-                }
-                .to_box2d();
-                areas.insert(id, area);
-            } else {
-                bail!("Invalid decoder area: {:?}", decoder_area);
-            }
-        }
-
-        let display_size = display_config
-            .display_size
-            .ok_or_else(|| anyhow!("Missing display_size"))?;
-
-        Ok(DisplayConfig {
-            id: display_config.id,
-            display_size: Size::new(display_size.width as usize, display_size.height as usize),
-            areas,
-        })
-    }
 }
 
 fn generate_tunnel_requests(
@@ -367,6 +323,22 @@ impl FromStr for PortForwardArg {
     }
 }
 
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum DisplayMode {
+    Windowed { size: Size },
+    SingleFullscreen,
+    MultiFullscreen,
+}
+
+impl DisplayMode {
+    pub fn is_fullscreen(&self) -> bool {
+        matches!(
+            self,
+            DisplayMode::SingleFullscreen | DisplayMode::MultiFullscreen
+        )
+    }
+}
+
 //
 // Client structs
 //
@@ -376,8 +348,7 @@ pub struct Configuration {
     pub auth_token: SecretString,
     pub decoder_max: NonZeroUsize,
     pub server_addr: String,
-    pub win_width: u64,
-    pub win_height: u64,
+    pub initial_display_mode: DisplayMode,
     #[builder(setter(strip_option), default)]
     pub program_cmdline: Option<String>,
     #[builder(setter(name = "additional_tls_certificate", custom), default)]
@@ -402,13 +373,157 @@ impl ConfigurationBuilder {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum MonitorGeometry {
+    Multi { origin: Rect, other: HashSet<Rect> },
+    Single { size: Size },
+}
+
+impl<'mg> IntoIterator for &'mg MonitorGeometry {
+    type Item = Rect;
+    type IntoIter = Box<dyn Iterator<Item = Rect> + 'mg>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl MonitorGeometry {
+    pub fn extent(&self) -> Rect {
+        match self {
+            MonitorGeometry::Multi { origin, other } => {
+                iter::once(origin).chain(other.iter()).extent().unwrap()
+            }
+            MonitorGeometry::Single { size } => Rect::from_size(*size),
+        }
+    }
+
+    pub fn is_single(&self) -> bool {
+        matches!(self, MonitorGeometry::Single { .. })
+    }
+
+    pub fn is_multi(&self) -> bool {
+        matches!(self, MonitorGeometry::Multi { .. })
+    }
+
+    pub fn iter(&self) -> Box<dyn Iterator<Item = Rect> + '_> {
+        match self {
+            MonitorGeometry::Multi { origin, other } => {
+                Box::new(iter::once(origin).chain(other.iter()).copied())
+            }
+            MonitorGeometry::Single { size } => Box::new(iter::once(Rect::from_size(*size))),
+        }
+    }
+
+    pub fn single_monitor_size(&self) -> Size {
+        match self {
+            MonitorGeometry::Multi { origin, .. } => origin.size,
+            MonitorGeometry::Single { size } => *size,
+        }
+    }
+
+    pub fn num_monitors(&self) -> usize {
+        match self {
+            MonitorGeometry::Multi { other, .. } => other.len() + 1,
+            MonitorGeometry::Single { .. } => 1,
+        }
+    }
+
+    pub fn identify_display_mode(
+        &self,
+        server_display_config: &display::DisplayConfiguration,
+        is_fullscreened: bool,
+        is_multimonitored: bool,
+    ) -> Result<DisplayMode> {
+        ensure!(
+            server_display_config.display_decoder_infos.len() >= 1,
+            "Server display configuration must have at least one display decoder info"
+        );
+        trace!(?is_fullscreened, ?is_multimonitored, ?server_display_config);
+
+        let dc_rects = server_display_config
+            .display_decoder_infos
+            .iter()
+            .filter(|ddi| ddi.display.is_enabled)
+            .map(|ddi| ddi.display.area)
+            .collect::<HashSet<_>>();
+        let first_dc_rect = dc_rects.iter().next().unwrap();
+
+        let windowed = DisplayMode::Windowed {
+            size: first_dc_rect.size,
+        };
+
+        match (self, dc_rects.len(), is_fullscreened, is_multimonitored) {
+            (MonitorGeometry::Single { size }, 1, true, _) => {
+                if first_dc_rect.size.width > size.width || first_dc_rect.size.height > size.height
+                {
+                    warn!(
+                        "Server provided display configuration with display size {}x{}, but the monitor is only {}x{}. There may be visual artifacts, including cut-off parts of the display.",
+                        first_dc_rect.size.width,
+                        first_dc_rect.size.height,
+                        size.width,
+                        size.height
+                    );
+                }
+                Ok(DisplayMode::SingleFullscreen)
+            }
+            (MonitorGeometry::Single { .. }, _, true, _) => {
+                bail!("Server provided multi-display configuration, but only one monitor is configured.");
+            }
+            (MonitorGeometry::Multi { .. }, 1, true, true) => {
+                warn!("Server provided single-display configuration with multi-monitor geometry and multi-monitor mode. Falling back to single-monitor mode.");
+                Ok(DisplayMode::SingleFullscreen)
+            }
+            (MonitorGeometry::Multi { origin, other }, _, true, true) => {
+                let num_server_displays = server_display_config.display_decoder_infos.len();
+                if num_server_displays < self.num_monitors() {
+                    warn!("Server supports only {} displays, but client has {} monitors. Falling back single-monitor mode", num_server_displays, self.num_monitors());
+                    return Ok(DisplayMode::SingleFullscreen);
+                }
+                let mg_rects = iter::once(origin)
+                    .chain(other)
+                    .copied()
+                    .collect::<HashSet<_>>();
+                if mg_rects != dc_rects {
+                    warn!("Server provided display configuration does not match client monitor geometry. Falling back to windowed mode.");
+                    return Ok(windowed);
+                }
+                Ok(DisplayMode::MultiFullscreen)
+            }
+            (MonitorGeometry::Multi { origin, other }, 1, true, false) => {
+                let mg_sizes = iter::once(origin)
+                    .chain(other)
+                    .map(|r| r.size)
+                    .collect::<HashSet<_>>();
+                if !mg_sizes.contains(&first_dc_rect.size) {
+                    warn!(
+                        "Server provided single-display configuration ({}x{}), but it does not match any monitor. Falling back to windowed mode.",
+                        first_dc_rect.size.width,
+                        first_dc_rect.size.height,
+                    );
+                    return Ok(windowed);
+                }
+                Ok(DisplayMode::SingleFullscreen)
+            }
+            (MonitorGeometry::Multi { .. }, _, true, false) => {
+                bail!("Server provided multi-display configuration in single-monitor mode");
+            }
+            (_, 1, false, _) => Ok(windowed),
+            (_, _, false, _) => {
+                bail!("Server provided multi-display configuration in windowed mode");
+            }
+        }
+    }
+}
+
 pub struct Client {
     config: Configuration,
+    monitor_geometry: Option<MonitorGeometry>,
     id: Option<u64>,
     server_name: Option<String>,
     control_jh: Option<thread::JoinHandle<()>>,
     should_stop: Arc<AtomicBool>,
-    display_config: Option<DisplayConfig>,
+    display_config: Option<display::DisplayConfiguration>,
     local_addr: Option<SocketAddr>,
     requested_tunnels: BTreeMap<u64, tunnel::Description>,
     allocated_tunnels: BTreeMap<u64, tunnel::Response>,
@@ -418,6 +533,7 @@ impl Client {
     fn new(config: &Configuration) -> Self {
         Self {
             config: config.clone(),
+            monitor_geometry: None,
             should_stop: Arc::new(AtomicBool::new(false)),
             local_addr: None,
             id: None,
@@ -434,6 +550,9 @@ impl Client {
 
     pub fn startup(config: &Configuration, itc: ClientSideItcChannels) -> Result<Self> {
         let mut this = Client::new(config);
+
+        this.monitor_geometry = Some(gtk3::get_monitor_geometry()?);
+        debug!(monitor_geometry=?this.monitor_geometry);
 
         let (cc, ec, mc, tc) = this.setup_unified_channel()?;
         this.setup_control_channel(
@@ -473,6 +592,53 @@ impl Client {
                 .with_cpu(CpuRefreshKind::everything())
                 .with_memory(MemoryRefreshKind::everything()),
         );
+        let displays = {
+            match self.config.initial_display_mode {
+                DisplayMode::Windowed { size } => {
+                    vec![DisplayInfo {
+                        area: Some(
+                            Rectangle::try_from_size_at_origin(size)
+                                .expect("Failed to generate area"),
+                        ),
+                        is_enabled: true,
+                    }]
+                }
+                DisplayMode::MultiFullscreen => match self.monitor_geometry.as_ref().unwrap() {
+                    MonitorGeometry::Multi { origin, other } => iter::once(origin)
+                        .chain(other)
+                        .map(|rect| DisplayInfo {
+                            area: Some(
+                                Rectangle::try_from(*rect).expect("Failed to generate area"),
+                            ),
+                            is_enabled: true,
+                        })
+                        .collect(),
+                    MonitorGeometry::Single { size } => {
+                        vec![DisplayInfo {
+                            area: Some(
+                                Rectangle::try_from_size_at_origin(*size)
+                                    .expect("Failed to generate area"),
+                            ),
+                            is_enabled: true,
+                        }]
+                    }
+                },
+                DisplayMode::SingleFullscreen => {
+                    let size = match self.monitor_geometry.as_ref().unwrap() {
+                        MonitorGeometry::Multi { origin, .. } => origin.size,
+                        MonitorGeometry::Single { size } => *size,
+                    };
+                    vec![DisplayInfo {
+                        area: Some(
+                            Rectangle::try_from_size_at_origin(size)
+                                .expect("Failed to generate area"),
+                        ),
+                        is_enabled: true,
+                    }]
+                }
+            }
+        };
+
         ClientInfoBuilder::default()
             .version(SemVer::from_cargo().expect("extract version from cargo"))
             .os(match consts::OS {
@@ -501,10 +667,7 @@ impl Client {
             .cpu_id(sys.cpus()[0].brand().to_string())
             .number_of_cores(sys.cpus().len() as u64)
             .amount_of_ram(sys.total_memory().to_string())
-            .display_size(Dimension::new(
-                self.config.win_width,
-                self.config.win_height,
-            ))
+            .displays(displays)
             .build()
             .expect("Failed to generate ClientInfo")
     }
@@ -880,7 +1043,7 @@ impl Client {
     fn setup_media_channel(
         &mut self,
         mut mc: channel::ClientMedia,
-        notify_media_rx: Receiver<DisplayConfig>,
+        notify_media_rx: Receiver<display::DisplayConfiguration>,
         img_tx: glib::Sender<Image>,
         img_rx: Receiver<Image>,
     ) -> Result<()> {
@@ -890,18 +1053,7 @@ impl Client {
             mm_rx_tx.send(msg)?;
         });
 
-        let mut framer = Framer::new(
-            self.display_config
-                .as_ref()
-                .unwrap()
-                .areas
-                .values()
-                .copied()
-                .collect::<Vec<_>>()
-                .as_slice(),
-        );
-
-        let mut display_config_id = self.display_config.as_ref().unwrap().id;
+        let mut framer = Framer::new(self.display_config.as_ref().unwrap().clone());
 
         thread::spawn::<_, Result<()>>(move || loop {
             let draw_recv = if framer.has_draws() {
@@ -912,12 +1064,9 @@ impl Client {
 
             select! {
                 recv(mm_rx_rx) -> msg_res => {
-                    let msg = match msg_res?.message {
-                        Some(msg) => msg,
-                        None => {
-                            warn!("media message with empty body");
-                            continue;
-                        }
+                    let Some(msg) = msg_res?.message else {
+                        warn!("media message with empty body");
+                        continue;
                     };
                     if let Err(e) = framer.report_mm(msg) {
                         warn!("Error processing media message: {}", e)
@@ -925,30 +1074,14 @@ impl Client {
                 },
                 recv(notify_media_rx) -> msg_res => {
                     let new_config = msg_res?;
-
-                    framer = Framer::new(
-                        new_config
-                        .areas
-                        .values()
-                        .copied()
-                        .collect::<Vec<_>>()
-                        .as_slice(),
-                    );
-
-                    display_config_id = new_config.id;
-
-                    debug!(?new_config);
+                    if new_config.id > framer.display_config.id {
+                        framer = Framer::new(new_config);
+                    }
                 },
                 recv(draw_recv.unwrap_or(&never())) -> img_res => {
                     let mut img = img_res?;
-
-                    if img.display_config_id != display_config_id {
-                        if img.display_config_id < display_config_id {
-                            debug!("Dropping Image with DCI {:?} (< {:?})", img.display_config_id, display_config_id);
-                        } else {
-                            warn!("Dropping Image with unexpected DCI {:?}, current DCI is {:?}", img.display_config_id, display_config_id);
-                        }
-                        continue;
+                    if img.display_config_id < framer.display_config.id {
+                        img.update_display_config(&framer.display_config);
                     }
 
                     for draw in framer.get_draws_and_reset() {
@@ -999,15 +1132,12 @@ impl Client {
         );
 
         assert!(
-            self.display_config.as_ref().unwrap().areas.keys().len()
-                <= self.config.decoder_max.into(),
+            self.display_config.as_ref().unwrap().encoder_count() <= self.config.decoder_max.into(),
             "Server returned {} decoders, but our max is {}",
-            self.display_config.as_ref().unwrap().areas.len(),
+            self.display_config.as_ref().unwrap().encoder_count(),
             self.config.decoder_max
         );
 
-        self.config.win_height = self.display_config.as_ref().unwrap().display_size.height as u64;
-        self.config.win_width = self.display_config.as_ref().unwrap().display_size.width as u64;
         self.allocated_tunnels = si.tunnel_responses;
 
         info!(
@@ -1016,13 +1146,6 @@ impl Client {
             &self.server_name.as_ref().unwrap(),
         );
         debug!(client_id = ?self.id.unwrap());
-
-        ui_tx
-            .send(UiMessage::DisplayChange {
-                dc_id: self.display_config.as_ref().unwrap().id,
-                display_size: self.display_config.as_ref().unwrap().display_size,
-            })
-            .expect("Failed to send UI message");
 
         //
         // Setup Control Channel TX/RX threads
@@ -1192,7 +1315,7 @@ impl Client {
         client_ec: channel::ClientEvent,
         notify_event_rx: Receiver<EventMessage>,
         notify_control_tx: Sender<ControlMessage>,
-        notify_media_tx: Sender<DisplayConfig>,
+        notify_media_tx: Sender<display::DisplayConfiguration>,
         ui_tx: glib::Sender<UiMessage>,
     ) -> Result<()> {
         let (mut ec_rx, mut ec_tx) = client_ec.split();
@@ -1202,11 +1325,11 @@ impl Client {
             debug!("Event channel Rx started");
             loop {
                 let msg = ec_rx.receive()?;
+                trace!(?msg);
 
                 if let em_s2c::Message::DisplayConfiguration(ref display_config) = msg {
                     notify_media_tx.send((*display_config).clone().try_into()?)?;
                 }
-
                 ui_tx.send(msg.try_into()?)?;
 
                 if should_stop.load(Ordering::Relaxed) {
@@ -1293,14 +1416,6 @@ impl Client {
         self.local_addr = Some(channel_session.local_addr()?);
         Ok(channel_session.split())
     }
-
-    pub fn get_height(&self) -> i32 {
-        self.config.win_height.try_into().unwrap()
-    }
-
-    pub fn get_width(&self) -> i32 {
-        self.config.win_width.try_into().unwrap()
-    }
 }
 
 pub fn run_client(config: Configuration) -> Result<()> {
@@ -1319,17 +1434,9 @@ pub fn run_client(config: Configuration) -> Result<()> {
     //
     GtkUi::run_ui(
         itc.gtk_half,
-        client.get_width(),
-        client.get_height(),
-        client
-            .display_config
-            .as_ref()
-            .unwrap()
-            .areas
-            .values()
-            .copied()
-            .collect::<Vec<_>>()
-            .as_slice(),
+        config.initial_display_mode,
+        client.monitor_geometry.as_ref().unwrap().clone(),
+        client.display_config.as_ref().unwrap().clone(),
     );
 
     client.shutdown();
@@ -1347,8 +1454,8 @@ mod test {
     fn generate_configuration(
         auth_token: SecretString,
         dec_max: NonZeroUsize,
-        width: u64,
-        height: u64,
+        width: usize,
+        height: usize,
         server_port: u16,
     ) -> Configuration {
         ConfigurationBuilder::default()
@@ -1356,8 +1463,9 @@ mod test {
             .decoder_max(dec_max)
             .name(String::from("test_client"))
             .server_addr(format!("127.0.0.1:{}", server_port))
-            .win_width(width)
-            .win_height(height)
+            .initial_display_mode(DisplayMode::Windowed {
+                size: (width, height).into(),
+            })
             .build()
             .expect("Failed to build Configuration!")
     }
@@ -1395,11 +1503,33 @@ mod test {
                 ServerInitBuilder::default()
                     .client_id(7890_u64)
                     .server_name(String::from("fake quic server"))
-                    .display_configuration(DisplayConfiguration::new(
-                        0,
-                        Some(Dimension::new(800, 600)),
-                        BTreeMap::new(),
-                    ))
+                    .display_configuration(
+                        DisplayConfigurationBuilder::default()
+                            .id(0_u64)
+                            .display_decoder_infos(vec![DisplayDecoderInfoBuilder::default()
+                                .display(
+                                    DisplayInfoBuilder::default()
+                                        .area(
+                                            RectangleBuilder::default()
+                                                .location(Location::new(0, 0))
+                                                .dimension(Dimension::new(800_u64, 600_u64))
+                                                .build()
+                                                .expect("Rectangle build"),
+                                        )
+                                        .is_enabled(true)
+                                        .build()
+                                        .expect("DisplayInfo build"),
+                                )
+                                .decoder_areas(vec![RectangleBuilder::default()
+                                    .location(Location::new(0, 0))
+                                    .dimension(Dimension::new(800_u64, 600_u64))
+                                    .build()
+                                    .expect("Rectangle build")])
+                                .build()
+                                .expect("DisplayDecoderInfo build")])
+                            .build()
+                            .expect("DisplayConfiguration build"),
+                    )
                     .build()
                     .unwrap()
                     .into(),

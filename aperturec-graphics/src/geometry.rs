@@ -40,3 +40,42 @@ impl AsNdarraySlice for Box2D {
         s![self.min.y..self.max.y, self.min.x..self.max.x]
     }
 }
+
+pub trait BoundingBox {
+    fn bounding_box(&self, other: &Self) -> Self;
+}
+
+impl BoundingBox for Rect {
+    fn bounding_box(&self, other: &Self) -> Self {
+        self.union(other)
+    }
+}
+
+impl BoundingBox for Box2D {
+    fn bounding_box(&self, other: &Self) -> Self {
+        self.union(other)
+    }
+}
+
+pub trait Extent {
+    type Box;
+    fn extent(self) -> Option<Self::Box>;
+}
+
+impl<'b, I, B> Extent for I
+where
+    I: IntoIterator<Item = &'b B>,
+    B: BoundingBox + Copy + 'b,
+{
+    type Box = B;
+
+    fn extent(self) -> Option<Self::Box> {
+        self.into_iter().fold(None, |acc, b| {
+            Some(if let Some(acc) = acc {
+                acc.bounding_box(b)
+            } else {
+                *b
+            })
+        })
+    }
+}

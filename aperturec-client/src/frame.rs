@@ -1,4 +1,4 @@
-use aperturec_graphics::prelude::*;
+use aperturec_graphics::{display::*, prelude::*};
 use aperturec_protocol::common::Codec;
 use aperturec_protocol::media::{server_to_client as mm_s2c, EmptyFrameTerminal, FrameFragment};
 
@@ -68,6 +68,8 @@ struct EncodedFragmentData {
     frame: usize,
     decoder: usize,
     sequence: usize,
+    display: usize,
+    display_config: usize,
     terminal: bool,
     codec: Codec,
     size: Size,
@@ -88,6 +90,8 @@ impl TryFrom<FrameFragment> for EncodedFragmentData {
             frame: frag.frame.try_into()?,
             decoder: frag.encoder.try_into()?,
             sequence: frag.sequence.try_into()?,
+            display: frag.display.try_into()?,
+            display_config: frag.display_config.try_into()?,
             terminal: frag.terminal,
             codec: frag.codec.try_into()?,
             size,
@@ -225,7 +229,7 @@ struct InFlightFrame {
 }
 
 impl InFlightFrame {
-    fn new(areas: &[Box2D]) -> Self {
+    fn new(areas: &[Rect]) -> Self {
         InFlightFrame {
             decoder_frame_states: vec![DecoderFrameState::default(); areas.len()]
                 .into_boxed_slice(),
@@ -369,18 +373,20 @@ impl DrawState {
     }
 }
 
-pub struct Framer {
-    areas: Box<[Box2D]>,
+pub struct DisplayFramer {
+    area: Rect,
+    decoder_areas: Box<[Rect]>,
     in_flight: BTreeMap<usize, InFlightFrame>,
     early_draw: BTreeMap<usize, EarlyDrawFrame>,
     complete: RangeSetBlaze<usize>,
     draw_state: DrawState,
 }
 
-impl Framer {
-    pub fn new(areas: &[Box2D]) -> Self {
-        Framer {
-            areas: areas.to_vec().into_boxed_slice(),
+impl DisplayFramer {
+    fn new(area: Rect, decoder_areas: &[Rect]) -> Self {
+        DisplayFramer {
+            area,
+            decoder_areas: decoder_areas.to_vec().into_boxed_slice(),
             in_flight: BTreeMap::new(),
             early_draw: BTreeMap::new(),
             complete: RangeSetBlaze::new(),
@@ -388,16 +394,9 @@ impl Framer {
         }
     }
 
-    fn report_fragment(&mut self, frag: FrameFragment) -> Result<()> {
-        let encoded_frag = EncodedFragmentData::try_from(frag)?;
-        trace!(
-            "Received frame/decoder/sequence {}/{}/{}",
-            encoded_frag.frame,
-            encoded_frag.decoder,
-            encoded_frag.sequence
-        );
+    fn report_fragment(&mut self, encoded_frag: EncodedFragmentData) -> Result<()> {
         ensure!(
-            encoded_frag.decoder < self.areas.len(),
+            encoded_frag.decoder < self.decoder_areas.len(),
             "Invalid decoder {}",
             encoded_frag.decoder
         );
@@ -430,12 +429,12 @@ impl Framer {
                 for f in curr_max..frame {
                     self.in_flight
                         .entry(f)
-                        .or_insert(InFlightFrame::new(&self.areas));
+                        .or_insert(InFlightFrame::new(&self.decoder_areas));
                 }
             }
             self.in_flight
                 .entry(frame)
-                .or_insert(InFlightFrame::new(&self.areas))
+                .or_insert(InFlightFrame::new(&self.decoder_areas))
                 .add_fragment(decoded_frag)?;
         }
 
@@ -453,7 +452,11 @@ impl Framer {
             term.encoder
         );
         let decoder = term.encoder as usize;
-        ensure!(decoder < self.areas.len(), "Invalid decoder {}", decoder);
+        ensure!(
+            decoder < self.decoder_areas.len(),
+            "Invalid decoder {}",
+            decoder
+        );
 
         let frame = term.frame as usize;
         ensure!(
@@ -467,7 +470,7 @@ impl Framer {
         } else {
             self.in_flight
                 .entry(frame)
-                .or_insert(InFlightFrame::new(&self.areas))
+                .or_insert(InFlightFrame::new(&self.decoder_areas))
                 .terminate_empty(decoder)?;
         }
 
@@ -479,7 +482,11 @@ impl Framer {
             !self.complete.contains(frame),
             "terminal for complete frame"
         );
-        ensure!(decoder < self.areas.len(), "invalid decoder {}", decoder);
+        ensure!(
+            decoder < self.decoder_areas.len(),
+            "invalid decoder {}",
+            decoder
+        );
 
         if let Some(early_draw) = self.early_draw.remove(&frame) {
             match early_draw.try_complete() {
@@ -533,22 +540,7 @@ impl Framer {
         Ok(())
     }
 
-    pub fn report_mm(&mut self, msg: mm_s2c::Message) -> Result<()> {
-        let res = match msg {
-            mm_s2c::Message::Fragment(frag) => self.report_fragment(frag),
-            mm_s2c::Message::Terminal(term) => self.report_empty_frame_terminal(term),
-        };
-
-        trace!(
-            "in-flight/early-drawn/complete : {}/{}/{}",
-            self.in_flight.len(),
-            self.early_draw.len(),
-            self.complete.len()
-        );
-        res
-    }
-
-    pub fn get_draws_and_reset(&mut self) -> Vec<Draw> {
+    fn get_draws_and_reset(&mut self) -> Vec<Draw> {
         let draw_state = mem::take(&mut self.draw_state);
 
         let mut draws = draw_state
@@ -556,25 +548,123 @@ impl Framer {
             .into_iter()
             .map(|df| Draw {
                 frame: df.frame,
-                origin: df.decoder_relative_origin + self.areas[df.decoder].min.to_vector(),
+                origin: df.decoder_relative_origin
+                    + self.decoder_areas[df.decoder].origin.to_vector(),
                 pixels: df.pixmap,
             })
             .collect::<Vec<_>>();
         draws.sort_by_key(|draw| draw.frame);
-        for draw in &draws {
-            trace!(
-                "Drawing {} @ {:?}/{:?}",
-                draw.frame,
-                draw.origin,
-                draw.pixels.size()
-            );
-        }
-        // draws.reverse();
         draws
     }
 
-    pub fn has_draws(&self) -> bool {
+    fn has_draws(&self) -> bool {
         !self.draw_state.is_empty()
+    }
+}
+
+pub struct Framer {
+    pub display_config: DisplayConfiguration,
+    displays: Box<[DisplayFramer]>,
+}
+
+impl Framer {
+    pub fn new(config: DisplayConfiguration) -> Self {
+        Framer {
+            displays: config
+                .display_decoder_infos
+                .iter()
+                .map(|d| DisplayFramer::new(d.display.area, &d.decoder_areas))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            display_config: config,
+        }
+    }
+
+    pub fn in_flight(&self) -> usize {
+        self.displays.iter().map(|d| d.in_flight.len()).sum()
+    }
+
+    pub fn early_draw(&self) -> usize {
+        self.displays.iter().map(|d| d.early_draw.len()).sum()
+    }
+
+    pub fn complete(&self) -> usize {
+        self.displays.iter().map(|d| d.complete.len()).sum::<u128>() as usize
+    }
+
+    pub fn report_mm(&mut self, msg: mm_s2c::Message) -> Result<()> {
+        let res = match msg {
+            mm_s2c::Message::Fragment(frag) => self.report_fragment(frag),
+            mm_s2c::Message::Terminal(term) => self.report_empty_frame_terminal(term),
+        };
+
+        trace!(
+            in_flight = self.in_flight(),
+            early_draw = self.early_draw(),
+            complete = self.complete(),
+        );
+        res
+    }
+
+    fn report_fragment(&mut self, frag: FrameFragment) -> Result<()> {
+        let encoded_frag = EncodedFragmentData::try_from(frag)?;
+        trace!(
+            display_config = encoded_frag.display_config,
+            display = encoded_frag.display,
+            frame = encoded_frag.frame,
+            decoder = encoded_frag.decoder,
+            sequence = encoded_frag.sequence,
+            "received"
+        );
+        ensure!(
+            encoded_frag.display_config == self.display_config.id,
+            "Mismatching display config id {} != {}",
+            encoded_frag.display_config,
+            self.display_config.id
+        );
+        ensure!(
+            encoded_frag.display < self.displays.len(),
+            "Invalid display {}",
+            encoded_frag.display
+        );
+        self.displays[encoded_frag.display].report_fragment(encoded_frag)
+    }
+
+    fn report_empty_frame_terminal(&mut self, term: EmptyFrameTerminal) -> Result<()> {
+        trace!(
+            display_config = term.display_config,
+            display = term.display,
+            frame = term.frame,
+            decoder = term.encoder,
+            "received empty frame terminal"
+        );
+        let display_config = term.display_config as usize;
+        ensure!(
+            display_config == self.display_config.id,
+            "Mismatching display config id {} != {}",
+            display_config,
+            self.display_config.id
+        );
+        let display = term.display as usize;
+        ensure!(display < self.displays.len(), "Invalid display {}", display);
+        self.displays[display].report_empty_frame_terminal(term)
+    }
+
+    pub fn get_draws_and_reset(&mut self) -> Vec<Draw> {
+        self.displays
+            .iter_mut()
+            .flat_map(|df| {
+                df.get_draws_and_reset().into_iter().map(|draw| Draw {
+                    frame: draw.frame,
+                    origin: draw.origin + df.area.origin.to_vector(),
+                    pixels: draw.pixels,
+                })
+            })
+            .collect()
+    }
+
+    pub fn has_draws(&self) -> bool {
+        self.displays.iter().any(DisplayFramer::has_draws)
     }
 }
 

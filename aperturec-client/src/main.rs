@@ -1,4 +1,5 @@
 use aperturec_client::{client, gtk3};
+use aperturec_graphics::prelude::*;
 use aperturec_utils::{args, warn_early};
 
 use anyhow::{anyhow, ensure, Result};
@@ -16,39 +17,46 @@ use tracing::*;
 use tracing_subscriber::prelude::*;
 use url::Url;
 
+fn parse_resolution(s: &str) -> Result<Size, String> {
+    let re = regex::Regex::new(r"^(\d+)[xX](\d+)$").expect("build regex");
+    let Some((_, [width, height])) = re.captures(s).map(|c| c.extract()) else {
+        return Err("Resolution must be in the form WIDTHxHEIGHT".to_string());
+    };
+    let width = width
+        .parse()
+        .map_err(|w| format!("Invalid width: '{}'", w))?;
+    let height = height
+        .parse()
+        .map_err(|h| format!("Invalid height: '{}'", h))?;
+    Ok(Size::new(width, height))
+}
+
 #[derive(Debug, clap::Args)]
 #[group(required = false, multiple = false)]
 pub struct ResolutionGroup {
     /// Display size specified as WIDTHxHEIGHT
-    #[arg(short, long, default_value_t = format!("{}x{}", gtk3::DEFAULT_RESOLUTION.0, gtk3::DEFAULT_RESOLUTION.1))]
-    resolution: String,
+    #[arg(short, long, default_value = format!("{:?}", gtk3::DEFAULT_RESOLUTION), value_parser = parse_resolution)]
+    resolution: Size,
 
-    /// Set resolution to your primary display's current size and startup in fullscreen mode.
-    /// Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
+    /// Set resolution to your primary display's current size and startup in multi-monitor
+    /// fullscreen mode. Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     fullscreen: bool,
+
+    /// Set resolution to the current display's size and startup in single-monitor fullscreen mode.
+    /// Single-monitor fullscreen mode can be toggled at any time with Ctrl+Alt+Shift+Enter
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    single_fullscreen: bool,
 }
 
-impl From<ResolutionGroup> for (u64, u64) {
-    fn from(g: ResolutionGroup) -> (u64, u64) {
+impl From<ResolutionGroup> for client::DisplayMode {
+    fn from(g: ResolutionGroup) -> Self {
         if g.fullscreen {
-            let full = gtk3::get_fullscreen_dims().expect("fullscreen dims");
-            (full.0 as u64, full.1 as u64)
+            client::DisplayMode::MultiFullscreen
+        } else if g.single_fullscreen {
+            client::DisplayMode::SingleFullscreen
         } else {
-            let dims: Vec<u64> = g
-                .resolution
-                .to_lowercase()
-                .split('x')
-                .map(|d| {
-                    d.parse().unwrap_or_else(|e| {
-                        panic!("Failed to parse resolution '{}': {}", g.resolution, e)
-                    })
-                })
-                .collect();
-            if dims.len() != 2 {
-                panic!("Invalid resolution: {}", g.resolution);
-            }
-            (dims[0], dims[1])
+            client::DisplayMode::Windowed { size: g.resolution }
         }
     }
 }
@@ -170,8 +178,6 @@ fn main() -> Result<()> {
 
     info!("ApertureC Client Startup");
 
-    let (width, height) = args.resolution.into();
-
     let config = {
         // Scope config_builder to ensure it is dropped and any auth-token leaves memory
         let mut config_builder = client::ConfigurationBuilder::default();
@@ -186,9 +192,8 @@ fn main() -> Result<()> {
             .decoder_max(args.decoder_max)
             .name(gethostname().into_string().unwrap())
             .server_addr(args.server_address)
-            .win_height(height)
-            .win_width(width)
             .auth_token(auth_token)
+            .initial_display_mode(args.resolution.into())
             .allow_insecure_connection(args.insecure)
             .client_bound_tunnel_reqs(args.local)
             .server_bound_tunnel_reqs(args.remote);

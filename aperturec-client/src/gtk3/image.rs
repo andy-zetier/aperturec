@@ -1,6 +1,6 @@
-use aperturec_graphics::prelude::*;
-
 use crate::frame::*;
+
+use aperturec_graphics::{display::*, geometry::*, prelude::*};
 
 use anyhow::{ensure, Result};
 use gtk::cairo::{Format, ImageSurface};
@@ -8,18 +8,57 @@ use ndarray::{prelude::*, Zip};
 
 #[derive(Debug, Clone)]
 pub struct Image {
-    pub display_config_id: u64,
+    pub display_config_id: usize,
     pub pixels: Pixel32Map,
     pub responsible_frames: Array2<usize>,
     pub update_history: BoxSet,
 }
 
 impl Image {
-    pub fn new(size: Size, display_config_id: u64) -> Self {
+    pub fn new(display_config: &DisplayConfiguration) -> Self {
+        Self::with_rgba(display_config, 0, 0, 0, 0)
+    }
+
+    pub fn black(display_config: &DisplayConfiguration) -> Self {
+        Self::with_rgb(display_config, 0, 0, 0)
+    }
+
+    pub fn green(display_config: &DisplayConfiguration) -> Self {
+        Self::with_rgb(display_config, 0, u8::MAX, 0)
+    }
+
+    pub fn blue(display_config: &DisplayConfiguration) -> Self {
+        Self::with_rgb(display_config, 0, 0, u8::MAX)
+    }
+
+    pub fn red(display_config: &DisplayConfiguration) -> Self {
+        Self::with_rgb(display_config, u8::MAX, 0, 0)
+    }
+
+    pub fn with_rgb(display_config: &DisplayConfiguration, red: u8, green: u8, blue: u8) -> Image {
+        Self::with_rgba(display_config, red, green, blue, u8::MAX)
+    }
+
+    pub fn with_rgba(
+        display_config: &DisplayConfiguration,
+        red: u8,
+        green: u8,
+        blue: u8,
+        alpha: u8,
+    ) -> Image {
+        let pixel = Pixel32 {
+            red,
+            green,
+            blue,
+            alpha,
+        };
+        let extent = display_config
+            .derive_extent()
+            .expect("derive display extents");
         Image {
-            display_config_id,
-            pixels: Pixel32Map::from_elem(size.as_shape(), Pixel32::default()),
-            responsible_frames: Array2::zeros(size.as_shape()),
+            display_config_id: display_config.id,
+            pixels: Pixel32Map::from_elem(extent.as_shape(), pixel),
+            responsible_frames: Array2::zeros(extent.as_shape()),
             update_history: BoxSet::default(),
         }
     }
@@ -34,6 +73,25 @@ impl Image {
 
     pub fn clear_history(&mut self) {
         self.update_history.clear()
+    }
+
+    pub fn update_display_config(&mut self, display_config: &DisplayConfiguration) {
+        let extent = display_config
+            .derive_extent()
+            .expect("derive display extents");
+        self.display_config_id = display_config.id;
+        let mut new_pixels = Pixel32Map::from_elem(extent.as_shape(), Pixel32::default());
+        let intersection =
+            Box2D::from_size(self.pixels.size()).intersection(&Box2D::from_size(new_pixels.size()));
+        if let Some(intersection) = intersection {
+            new_pixels
+                .as_ndarray_mut()
+                .slice_mut(intersection.as_slice())
+                .assign(&self.pixels.as_ndarray().slice(intersection.as_slice()));
+        }
+
+        self.pixels = new_pixels;
+        self.responsible_frames = Array2::zeros(extent.as_shape());
     }
 
     pub fn copy_updates(&mut self, src: &Image) -> Result<()> {
@@ -59,7 +117,6 @@ impl Image {
 
         // History is no longer valid now that we've copied updates from another Image
         self.clear_history();
-
         Ok(())
     }
 
@@ -160,10 +217,24 @@ mod tests {
     use super::*;
     use test_log::test;
 
+    impl Image {
+        fn new_with_size_and_dcid(size: Size, display_config_id: usize) -> Self {
+            let pixels = Pixel32Map::from_elem(size.as_shape(), Pixel32::default());
+            let responsible_frames = Array2::zeros(size.as_shape());
+            let update_history = BoxSet::default();
+            Image {
+                display_config_id,
+                pixels,
+                responsible_frames,
+                update_history,
+            }
+        }
+    }
+
     #[test]
     fn copy_updates_simple() {
         let size = Size::new(1920, 1080);
-        let mut image1 = Image::new(size, 0);
+        let mut image1 = Image::new_with_size_and_dcid(size, 0);
         let mut image2 = image1.clone();
 
         let draw = Draw {
@@ -190,7 +261,7 @@ mod tests {
     #[test]
     fn copy_updates_out_of_order_frames() {
         let size = Size::new(1920, 1080);
-        let mut image1 = Image::new(size, 1);
+        let mut image1 = Image::new_with_size_and_dcid(size, 0);
         let mut image2 = image1.clone();
 
         let mut draw = Draw {
@@ -249,8 +320,8 @@ mod tests {
 
     #[test]
     fn copy_updates_partial_overlapping() {
-        let size = Size::new(1920, 1080);
-        let mut image1 = Image::new(size, 2);
+        let size = Size::new(800, 600);
+        let mut image1 = Image::new_with_size_and_dcid(size, 0);
         let mut image2 = image1.clone();
 
         let mut draw = Draw {

@@ -52,7 +52,7 @@ message PointerEvent {
   common.Cursor cursor = 3;
 }
 
-message DisplayEvent { common.Dimension display_size = 1; }
+message DisplayEvent { repeated common.DisplayInfo displays = 1; }
 
 message ClientToServer {
   oneof message {

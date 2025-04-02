@@ -7,16 +7,20 @@ message FrameFragment {
   uint64 frame = 1;
   uint32 encoder = 2;
   uint32 sequence = 3;
-  bool terminal = 4;
-  common.Codec codec = 5;
-  common.Location location = 6;
-  common.Dimension dimension = 7;
-  bytes data = 8;
+  uint32 display = 4;
+  uint32 display_config = 5;
+  bool terminal = 6;
+  common.Codec codec = 7;
+  common.Location location = 8;
+  common.Dimension dimension = 9;
+  bytes data = 10;
 }
 
 message EmptyFrameTerminal {
   uint64 frame = 1;
   uint32 encoder = 2;
+  uint32 display = 3;
+  uint32 display_config = 4;
 }
 
 message ServerToClient {

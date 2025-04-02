@@ -85,14 +85,14 @@ fn tracking_buffer_pixels(c: &mut Criterion<UndamagedPixelsCaptured>) {
                                 let mut new = curr.clone();
                                 let updates = generate_updates(&curr, num_areas);
 
-                                let mut tb = TrackingBuffer::new(dim);
-                                tb.update(SubframeBuffer {
+                                let mut tb = TrackingBuffer::new(0, to_display(dim), 0);
+                                tb.update(&SubframeBuffer {
                                     area: Rect::new(Point::new(0, 0), dim).to_box2d(),
                                     pixels: curr.clone(),
                                 });
                                 let _ = tb.cut_frame();
                                 for update in updates {
-                                    tb.update(update);
+                                    tb.update(&update);
                                 }
                                 if let Some(frame) = tb.cut_frame() {
                                     let pixels_captured = frame

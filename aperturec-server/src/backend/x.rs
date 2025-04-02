@@ -1,14 +1,14 @@
-use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState};
+use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState, SetDisplaysSuccess};
 use crate::metrics::{BackendEvent, DisplayHeight, DisplayWidth};
 use crate::process_utils::{self, DisplayableExitStatus};
 
-use aperturec_graphics::prelude::*;
+use aperturec_graphics::{display::*, prelude::*};
 use aperturec_protocol::event as em;
 
 use anyhow::{anyhow, bail, Result};
 use futures::{future, stream, Future, Stream, StreamExt, TryFutureExt};
 use ndarray::{prelude::*, AssignElem};
-use rand::distributions::{Alphanumeric, DistString};
+use std::collections::BTreeMap;
 use std::env;
 use std::fmt::{self, Debug, Formatter};
 use std::iter::Iterator;
@@ -26,7 +26,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::*;
 use xcb::damage::{self, Damage};
 use xcb::x::{self, Drawable, GetImage, ImageFormat, ScreenBuf, Window};
-use xcb::{randr, xfixes, xtest, BaseEvent, Connection, Extension};
+use xcb::{randr, xfixes, xtest, BaseEvent, Connection, Extension, Xid, XidNew};
 use xcb::{CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply};
 
 const CHILD_STARTUP_WAIT_TIME_MS: Duration = Duration::from_millis(1000);
@@ -42,12 +42,20 @@ fn u8_for_button(button: &em::Button) -> u8 {
 }
 
 #[derive(Debug)]
+struct XDisplay {
+    crtc: randr::Crtc,
+    output: randr::Output,
+}
+
+#[derive(Debug)]
 pub struct X {
     pub display_name: String,
-    max_width: usize,
-    max_height: usize,
     connection: XConnection,
-    last_created_mode: Option<randr::Mode>,
+    default_mode_id: u32,
+    displays: BTreeMap<usize, XDisplay>,
+    max_display_count: usize,
+    max_height: usize,
+    max_width: usize,
     root_drawable: Drawable,
     root_process: Option<Child>,
     xvfb_process: Child,
@@ -221,7 +229,7 @@ impl Backend for X {
     }
 
     async fn damage_stream(&self) -> Result<impl Stream<Item = Rect> + Send + Unpin + 'static> {
-        let size = self.resolution().await?;
+        let size = Size::new(self.max_width, self.max_height);
         let rect = Rect {
             origin: Point::new(0, 0),
             size,
@@ -268,6 +276,7 @@ impl Backend for X {
     async fn initialize<N>(
         max_width: N,
         max_height: N,
+        max_display_count: N,
         root_process_cmd: Option<&mut Command>,
     ) -> Result<Self>
     where
@@ -275,15 +284,28 @@ impl Backend for X {
     {
         let max_width = max_width.into().unwrap_or(Self::DEFAULT_MAX_WIDTH);
         let max_height = max_height.into().unwrap_or(Self::DEFAULT_MAX_HEIGHT);
+        let mut max_display_count = max_display_count
+            .into()
+            .unwrap_or(Self::DEFAULT_MAX_DISPLAY_COUNT);
 
         debug!(
-            "Starting X Server with max resolution {}x{}",
-            max_width, max_height
+            "Starting X Server with screen size {}x{}, max displays {}",
+            max_width, max_height, max_display_count
         );
 
         let xvfb_path = env::var("XVFB").unwrap_or_else(|_| "Xvfb".to_string());
         if let Err(error) = which::which(&xvfb_path) {
             bail!("Xvfb executable not found: {}", error);
+        }
+
+        let xvfb_help = Command::new(&xvfb_path).arg("-help").output().await?.stderr;
+        if !String::from_utf8_lossy(&xvfb_help).contains("-crtcs n") {
+            warn!(
+                "{} does not support the -crtcs option. Multi-display is disabled",
+                xvfb_path
+            );
+
+            max_display_count = 1;
         }
 
         let mut xvfb_cmd = Command::new(xvfb_path);
@@ -296,6 +318,11 @@ impl Backend for X {
             .stdout(Stdio::piped())
             .stderr(process_utils::StderrTracer::new(Level::DEBUG))
             .kill_on_drop(true);
+
+        if max_display_count > 1 {
+            xvfb_cmd.arg("-crtcs").arg(max_display_count.to_string());
+        }
+
         debug!("Starting Xvfb with command `{:?}`", xvfb_cmd);
         let mut xvfb_process = xvfb_cmd.spawn()?;
         time::sleep(CHILD_STARTUP_WAIT_TIME_MS).await;
@@ -336,13 +363,17 @@ impl Backend for X {
             Some(cmd) => Some(do_exec_command(&display_name, cmd).await?),
         };
 
+        let (displays, default_mode_id) = X::setup_displays(&connection, &root_window).await?;
+
         trace!("X initialized");
         Ok(X {
-            display_name,
-            max_width,
-            max_height,
             connection,
-            last_created_mode: None,
+            default_mode_id,
+            display_name,
+            displays,
+            max_display_count,
+            max_height,
+            max_width,
             root_drawable,
             root_process,
             xvfb_process,
@@ -366,7 +397,6 @@ impl Backend for X {
                     // hard-coded for same reasons as pointer event
                     3
                 } as u8;
-                trace!(?key);
                 let req = xtest::FakeInput {
                     r#type: event_type_num,
                     detail: key as u8,
@@ -376,6 +406,7 @@ impl Backend for X {
                     root_y: 0,
                     deviceid: 0,
                 };
+                trace!(key_event=?req);
                 self.connection.checked_void_request(req).await?;
             }
             Event::Pointer {
@@ -394,7 +425,6 @@ impl Backend for X {
                         // (https://xcb.freedesktop.org/manual/group__XCB____API.html)
                         5
                     } as u8;
-                    debug!("event_type_num: {}", event_type_num);
                     let req = xtest::FakeInput {
                         r#type: event_type_num,
                         detail: u8_for_button(&button) + 1,
@@ -405,7 +435,7 @@ impl Backend for X {
                         deviceid: 0,
                     };
 
-                    trace!("Sending event {:#?}", req);
+                    trace!(mouse_event=?req);
                     self.connection.checked_void_request(req).await?;
                 }
                 let req = xtest::FakeInput {
@@ -421,12 +451,12 @@ impl Backend for X {
                     root_y: location.y_position as i16,
                     deviceid: 0,
                 };
-                trace!("Sending event {:#?}", req);
+                trace!(motion_event=?req);
                 self.connection.checked_void_request(req).await?;
             }
-            Event::Display { size } => {
-                let size = Size::new(size.width as usize, size.height as usize);
-                self.set_resolution(&size).await?;
+            Event::Display { displays: _ } => {
+                // Display Events are handled in backend.rs directly and not sent via notify_event
+                unreachable!("Unexpected Display Event");
             }
         }
 
@@ -540,154 +570,90 @@ impl Backend for X {
         Ok(())
     }
 
-    async fn set_resolution(&mut self, resolution: &Size) -> Result<()> {
-        anyhow::ensure!(
-            resolution.width <= self.max_width
-                && resolution.height <= self.max_height
-                && resolution.width >= Self::MIN_WIDTH
-                && resolution.height >= Self::MIN_HEIGHT,
-            "Resolution {}x{} is out of bounds {}x{}-{}x{}",
-            resolution.width,
-            resolution.height,
-            Self::MIN_WIDTH,
-            Self::MIN_HEIGHT,
-            self.max_width,
-            self.max_height
-        );
-        if resolution == &self.resolution().await? {
-            return Ok(());
-        }
+    async fn set_displays(
+        &mut self,
+        mut requested_displays: Vec<Display>,
+    ) -> Result<SetDisplaysSuccess, Vec<Display>> {
+        let mut errors = false;
+        let mut changed = false;
 
-        let window = self.root_window()?;
-        let screen_resources = self.screen_resources().await?;
-        if screen_resources.outputs().len() != 1 {
-            bail!(
-                "num outputs != 1 ({}), only one screen supported",
-                screen_resources.outputs().len()
-            );
-        }
-        if screen_resources.crtcs().len() != 1 {
-            bail!(
-                "num crtcs != 1 ({}), only one screen supported",
-                screen_resources.crtcs().len()
-            );
-        }
-        if screen_resources.modes().is_empty() {
-            bail!("no modes for any output");
-        }
-
-        trace!(?screen_resources);
-        let curr_output = screen_resources.outputs()[0];
-        let curr_output_info = self
-            .connection
-            .checked_request_with_reply(randr::GetOutputInfo {
-                config_timestamp: x::CURRENT_TIME,
-                output: curr_output,
-            })
-            .await?;
-        if curr_output_info.modes().is_empty() {
-            bail!("no modes for current output");
-        }
-        let curr_crtc = curr_output_info.crtcs()[0];
-
-        let name = format!(
-            "aperturec_{}x{}_{}",
-            resolution.width,
-            resolution.height,
-            Alphanumeric.sample_string(&mut rand::thread_rng(), 16)
-        );
-        let mut new_mode_info = screen_resources.modes()[0];
-        new_mode_info.width = resolution.width as u16;
-        new_mode_info.height = resolution.height as u16;
-        new_mode_info.name_len = name.len() as u16;
-
-        let create_mode_reply = self
-            .connection
-            .checked_request_with_reply(randr::CreateMode {
-                window,
-                mode_info: new_mode_info,
-                name: name.as_bytes(),
-            })
-            .await?;
-
-        self.connection
-            .checked_void_request(randr::AddOutputMode {
-                output: screen_resources.outputs()[0],
-                mode: create_mode_reply.mode(),
-            })
-            .await?;
-
-        self.connection
-            .checked_request_with_reply(randr::SetCrtcConfig {
-                crtc: curr_crtc,
-                timestamp: x::CURRENT_TIME,
-                config_timestamp: x::CURRENT_TIME,
-                x: 0,
-                y: 0,
-                mode: create_mode_reply.mode(),
-                rotation: randr::Rotation::ROTATE_0,
-                outputs: &[curr_output],
-            })
-            .await?;
-
-        if let Some(mode) = self.last_created_mode.replace(create_mode_reply.mode()) {
-            if let Err(err) = self
-                .connection
-                .checked_void_request(randr::DeleteOutputMode {
-                    output: screen_resources.outputs()[0],
-                    mode,
-                })
-                .and_then(|_| {
-                    self.connection
-                        .checked_void_request(randr::DestroyMode { mode })
-                })
-                .await
-            {
-                warn!(?err);
+        if requested_displays.len() != self.max_display_count {
+            changed = true;
+            if requested_displays.len() > self.max_display_count {
+                warn!(
+                    "Received {} display requests, truncating to {}",
+                    requested_displays.len(),
+                    self.max_display_count
+                );
+            } else {
+                debug!(
+                    "Received {} display requests, expanding to {}",
+                    requested_displays.len(),
+                    self.max_display_count
+                );
             }
         }
 
-        DisplayWidth::update(resolution.width as f64);
-        DisplayHeight::update(resolution.height as f64);
+        requested_displays.resize_with(self.max_display_count, Display::default);
 
-        Ok(())
-    }
+        let _ = self.check_screen_size(&requested_displays).await;
 
-    async fn resolution(&self) -> Result<Size> {
-        let screen_resources = self.screen_resources().await?;
-        trace!("crtcs: {:#?}", screen_resources.crtcs());
-        if screen_resources.crtcs().len() != 1 {
-            bail!(
-                "Only support single monitor, {} monitors identified",
-                screen_resources.crtcs().len()
-            );
+        let mut final_displays: Vec<Display> = Vec::with_capacity(requested_displays.len());
+        for (id, display) in requested_displays.into_iter().enumerate() {
+            match self.set_display(id, &display).await {
+                Ok(kind) => {
+                    if let SetDisplaySuccess::Updated = kind {
+                        changed = true;
+                    }
+                    final_displays.push(display.clone())
+                }
+                Err(err) => {
+                    errors = true;
+                    match self.get_display(id).await {
+                        Ok(current_display) => {
+                            warn!(
+                                "Failed to set display {}: {:?}. Current display is {:?}",
+                                id, err, current_display
+                            );
+                            final_displays.push(current_display)
+                        }
+                        Err(err) => warn!("Failed to update display {}: {:?}. Ignoring", id, err),
+                    }
+                }
+            }
         }
-        let crtc = screen_resources.crtcs()[0];
-        let crtc_info = self
-            .connection
-            .checked_request_with_reply(randr::GetCrtcInfo {
-                crtc,
-                config_timestamp: x::CURRENT_TIME,
-            })
-            .await?;
-        trace!("crtc_info: {:?}", crtc_info);
 
-        Ok(Size::new(
-            crtc_info.width() as usize,
-            crtc_info.height() as usize,
-        ))
+        if let Ok(extent) = final_displays.derive_extent() {
+            DisplayWidth::update(extent.width as f64);
+            DisplayHeight::update(extent.height as f64);
+        }
+
+        if errors {
+            Err(final_displays)
+        } else {
+            Ok(SetDisplaysSuccess {
+                changed,
+                displays: final_displays,
+            })
+        }
     }
 }
 
+enum SetDisplaySuccess {
+    NoChange,
+    Updated,
+}
+
 impl X {
-    pub const DEFAULT_MAX_WIDTH: usize = 3840;
-    pub const DEFAULT_MAX_HEIGHT: usize = 2160;
+    pub const DEFAULT_MAX_DISPLAY_COUNT: usize = 4;
+    pub const DEFAULT_MAX_WIDTH: usize = Self::DEFAULT_MAX_DISPLAY_COUNT * 3840;
+    pub const DEFAULT_MAX_HEIGHT: usize = Self::DEFAULT_MAX_DISPLAY_COUNT * 2160;
     pub const MIN_WIDTH: usize = 800;
     pub const MIN_HEIGHT: usize = 600;
 
-    async fn screen_resources(&self) -> Result<randr::GetScreenResourcesReply> {
+    async fn screen_resources(&self) -> Result<randr::GetScreenResourcesCurrentReply> {
         self.connection
-            .checked_request_with_reply(randr::GetScreenResources {
+            .checked_request_with_reply(randr::GetScreenResourcesCurrent {
                 window: self.root_window()?,
             })
             .await
@@ -828,6 +794,276 @@ impl X {
             })
             .await
     }
+
+    async fn setup_displays(
+        connection: &XConnection,
+        window: &Window,
+    ) -> Result<(BTreeMap<usize, XDisplay>, u32)> {
+        let screen_resources = connection
+            .checked_request_with_reply(randr::GetScreenResources { window: *window })
+            .await?;
+
+        debug!(?screen_resources);
+
+        let crtcs = screen_resources.crtcs();
+        let outputs = screen_resources.outputs();
+        let modes = screen_resources.modes();
+
+        if crtcs.len() != outputs.len() {
+            error!(?screen_resources);
+            bail!("num crtcs {} != num outputs {}", crtcs.len(), outputs.len());
+        }
+
+        if modes.is_empty() {
+            error!(?screen_resources);
+            bail!("num modes is 0");
+        }
+
+        let displays: BTreeMap<usize, XDisplay> = crtcs
+            .iter()
+            .zip(outputs.iter())
+            .enumerate()
+            .map(|(key, (&crtc, &output))| (key, XDisplay { crtc, output }))
+            .collect();
+
+        Ok((displays, modes[0].id))
+    }
+
+    async fn check_screen_size(&self, displays: &[Display]) -> Result<()> {
+        let extent = displays.derive_extent()?;
+        let (width, height) = (extent.width as u16, extent.height as u16);
+
+        let window = self.root_window()?;
+
+        let screen_info = self
+            .connection
+            .checked_request_with_reply(randr::GetScreenInfo { window })
+            .await?;
+
+        let Some(current) = screen_info.sizes().get(screen_info.size_id() as usize) else {
+            warn!(?screen_info);
+            bail!("Screen size id {} does not exist", screen_info.size_id());
+        };
+
+        if width <= current.width && height <= current.height {
+            return Ok(());
+        }
+
+        // From Xvfb's vfbRandRInit()
+        let dpi = 96.0;
+        let px_to_mm = 25.4 / dpi;
+
+        let mm_width = (width as f64 * px_to_mm).round() as u32;
+        let mm_height = (height as f64 * px_to_mm).round() as u32;
+
+        debug!(new_screen_size=?(width, height, mm_width, mm_height));
+
+        self.connection
+            .checked_void_request(randr::SetScreenSize {
+                window,
+                width,
+                height,
+                mm_width,
+                mm_height,
+            })
+            .await
+    }
+
+    async fn find_mode_by_name(&self, target_name: &str) -> Result<Option<randr::Mode>> {
+        let sr = self.screen_resources().await?;
+
+        let mut offset = 0;
+
+        for mode in sr.modes() {
+            let len = mode.name_len as usize;
+
+            if offset + len <= sr.names().len() {
+                let bytes = &sr.names()[offset..offset + len];
+
+                if let Ok(name) = std::str::from_utf8(bytes) {
+                    if name == target_name {
+                        //
+                        // Safety: XCB advises against calling new() directly, as it can create
+                        // XIDs that have not been allocated by the X server. However, the
+                        // `mode.id` used here is retrieved directly from the most recent
+                        // `GetScreenResourcesCurrent` call. Since these mode IDs originate from
+                        // X11 itself, they are guaranteed to be valid and not arbitrarily
+                        // generated.
+                        //
+                        return Ok(Some(unsafe { randr::Mode::new(mode.id) }));
+                    }
+                }
+            }
+
+            offset += len;
+        }
+
+        Ok(None)
+    }
+
+    async fn get_display(&mut self, id: usize) -> Result<Display> {
+        let crtc = self
+            .displays
+            .get(&id)
+            .ok_or_else(|| anyhow!("Cannot find display id {}", id))?
+            .crtc;
+
+        let crtc_info = self
+            .connection
+            .checked_request_with_reply(randr::GetCrtcInfo {
+                crtc,
+                config_timestamp: x::CURRENT_TIME,
+            })
+            .await?;
+
+        let (x, y, width, height, is_enabled) = (
+            crtc_info.x() as usize,
+            crtc_info.y() as usize,
+            crtc_info.width() as usize,
+            crtc_info.height() as usize,
+            !crtc_info.outputs().is_empty(),
+        );
+
+        Ok(Display {
+            area: Rect::new(Point::new(x, y), Size::new(width, height)),
+            is_enabled,
+        })
+    }
+
+    async fn set_display(&mut self, id: usize, display: &Display) -> Result<SetDisplaySuccess> {
+        let xdisplay = self
+            .displays
+            .get(&id)
+            .ok_or_else(|| anyhow!("Cannot find display id {}", id))?;
+
+        let crtc_info = self
+            .connection
+            .checked_request_with_reply(randr::GetCrtcInfo {
+                crtc: xdisplay.crtc,
+                config_timestamp: x::CURRENT_TIME,
+            })
+            .await?;
+
+        let is_crtc_enabled = !crtc_info.outputs().is_empty();
+
+        if !display.is_enabled && !is_crtc_enabled {
+            return Ok(SetDisplaySuccess::NoChange);
+        }
+
+        let width: u16 = display.area.size.width.try_into()?;
+        let height: u16 = display.area.size.height.try_into()?;
+        let x: i16 = display.origin().x.try_into()?;
+        let y: i16 = display.origin().y.try_into()?;
+
+        if is_crtc_enabled
+            && display.is_enabled
+            && crtc_info.width() == width
+            && crtc_info.height() == height
+            && crtc_info.x() == x
+            && crtc_info.y() == y
+        {
+            return Ok(SetDisplaySuccess::NoChange);
+        }
+
+        let (mode, x, y, outputs) = if display.is_enabled {
+            anyhow::ensure!(
+                Rect::new(Point::zero(), (self.max_width, self.max_height).into())
+                    .contains_rect(&display.area)
+                    && display.area.size.width >= Self::MIN_WIDTH
+                    && display.area.size.height >= Self::MIN_HEIGHT,
+                "Display {}x{} @ ({}, {}) is out of bounds {}x{} - {}x{} {:?}",
+                width,
+                height,
+                x,
+                y,
+                Self::MIN_WIDTH,
+                Self::MIN_HEIGHT,
+                self.max_width,
+                self.max_height,
+                display,
+            );
+
+            let name = format!("{}x{}", width, height);
+
+            let mode = if let Some(mode) = self.find_mode_by_name(&name).await? {
+                mode
+            } else {
+                //
+                // New Mode must have refresh frequency components that evaluate to > 1
+                //
+                self.connection
+                    .checked_request_with_reply(randr::CreateMode {
+                        window: self.root_window()?,
+                        name: name.as_bytes(),
+                        mode_info: randr::ModeInfo {
+                            id: 0,
+                            width,
+                            height,
+                            dot_clock: 60,
+                            hsync_start: 0,
+                            hsync_end: 0,
+                            htotal: 1,
+                            hskew: 0,
+                            vsync_start: 0,
+                            vsync_end: 0,
+                            vtotal: 1,
+                            name_len: name.len() as u16,
+                            mode_flags: randr::ModeFlag::empty(),
+                        },
+                    })
+                    .await?
+                    .mode()
+            };
+
+            self.connection
+                .checked_void_request(randr::AddOutputMode {
+                    output: xdisplay.output,
+                    mode,
+                })
+                .await?;
+            (mode, x, y, vec![xdisplay.output])
+        } else {
+            (randr::Mode::none(), 0, 0, vec![])
+        };
+
+        self.connection
+            .checked_request_with_reply(randr::SetCrtcConfig {
+                crtc: xdisplay.crtc,
+                timestamp: x::CURRENT_TIME,
+                config_timestamp: x::CURRENT_TIME,
+                x,
+                y,
+                mode,
+                rotation: randr::Rotation::ROTATE_0,
+                outputs: &outputs,
+            })
+            .await?;
+
+        if is_crtc_enabled
+            && crtc_info.mode() != mode
+            && crtc_info.mode().resource_id() != self.default_mode_id
+        {
+            //
+            // Remove Modes no longer in use by the Output. This may fail if a Mode is currently in
+            // use by another Output or the Mode was created by the display driver. Failures can be
+            // safely ignored
+            //
+            let mode = crtc_info.mode();
+            let _ = self
+                .connection
+                .checked_void_request(randr::DeleteOutputMode {
+                    output: xdisplay.output,
+                    mode,
+                })
+                .and_then(|_| {
+                    self.connection
+                        .checked_void_request(randr::DestroyMode { mode })
+                })
+                .await;
+        }
+
+        Ok(SetDisplaySuccess::Updated)
+    }
 }
 
 struct XEventStreamMux {
@@ -904,9 +1140,21 @@ impl XConnection {
         let cookie = self.inner.send_request(&req);
         self.inner.flush()?;
         loop {
-            if let Some(response) = self.inner.poll_for_reply(&cookie).transpose()? {
-                return Ok(response);
+            if let Some(response) = self.inner.poll_for_reply(&cookie) {
+                if let Err(e) = response {
+                    match e {
+                        xcb::Error::Protocol(ref e) => {
+                            debug!(x_error=?e, ?req, "X checked request error")
+                        }
+                        xcb::Error::Connection(ref e) => {
+                            debug!(conn_error=?e, ?req, "X checked request error")
+                        }
+                    };
+                    bail!(e)
+                }
+                return Ok(response.unwrap());
             }
+
             time::sleep(Duration::from_micros(1)).await;
         }
     }
@@ -919,7 +1167,7 @@ impl XConnection {
         Ok(tokio::task::block_in_place(move || {
             let reply = inner.send_and_check_request(&req);
             if let Err(e) = &reply {
-                error!("X returned an error for request {:?}: {}", req, e);
+                debug!(x_error=?e, ?req, "X void request error");
             }
             reply
         })?)
@@ -970,7 +1218,7 @@ mod test {
     #[serial]
     async fn retrieve_damage_from_stream() {
         const NUM_UPDATES: usize = 20;
-        let x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))
+        let x = X::initialize(1920, 1080, 1, Some(&mut Command::new("glxgears")))
             .await
             .expect("x initialize");
         let damage_stream = x.damage_stream().await.expect("damage stream");
@@ -986,47 +1234,159 @@ mod test {
 
     #[test(tokio::test(flavor = "multi_thread"))]
     #[serial]
-    async fn get_resolution() {
-        let x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))
-            .await
-            .expect("x initialize");
-        let res = x.resolution().await.expect("resolution");
-        assert_eq!(res.width, 1920);
-        assert_eq!(res.height, 1080);
+    async fn setup_displays() {
+        let mut x = X::initialize(
+            1920,
+            1080,
+            X::DEFAULT_MAX_DISPLAY_COUNT,
+            Some(&mut Command::new("glxgears")),
+        )
+        .await
+        .expect("x initialize");
+
+        assert_eq!(x.displays.keys().len(), x.max_display_count);
+
+        let mut displays = Vec::with_capacity(x.max_display_count);
+        for i in 0..x.max_display_count {
+            displays.push(x.get_display(i).await.expect("get display"));
+        }
+
+        // Expect only the first Display to be enabled
+        assert!(displays[0].is_enabled);
+        assert!(!displays[1..].iter().any(|d| d.is_enabled))
     }
 
     #[test(tokio::test(flavor = "multi_thread"))]
     #[serial]
-    async fn set_resolution() {
-        let mut x = X::initialize(1920, 1080, Some(&mut Command::new("glxgears")))
-            .await
-            .expect("x initialize");
+    async fn set_display() {
+        let max_width = 1920;
+        let max_height = 1080;
+
+        let mut x = X::initialize(
+            max_width,
+            max_height,
+            X::DEFAULT_MAX_DISPLAY_COUNT,
+            Some(&mut Command::new("glxgears")),
+        )
+        .await
+        .expect("x initialize");
 
         let resolutions = vec![
+            Size::new(max_width, max_height),
+            Size::new(X::MIN_WIDTH, X::MIN_HEIGHT),
             Size::new(1024, 768),
             Size::new(800, 600),
             Size::new(1440, 900),
             Size::new(1280, 1024),
             Size::new(823, 688),
+            Size::new(823, 688),
             Size::new(800, 600),
         ];
 
-        for new in resolutions {
-            x.set_resolution(&new).await.expect("set resolution");
-            assert_eq!(new, x.resolution().await.expect("get resolution"));
-            let res = x.resolution().await.expect("resolution");
-            assert_eq!(res.width, new.width);
-            assert_eq!(res.height, new.height);
+        let mut display = Display {
+            area: Rect::default(),
+            is_enabled: true,
+        };
+
+        // Ensure resolution / origin changes work
+        for res in &resolutions {
+            // Ensure new resolution at the origin works
+            display.area = Rect::new(Point::new(0, 0), *res);
+            x.set_display(0, &display).await.expect("set display");
+            assert_eq!(display, x.get_display(0).await.expect("get display"));
+
+            // Ensure new resolution at shifted origin works
+            display.area = Rect::new(
+                Point::new(max_width - res.width, max_height - res.height),
+                *res,
+            );
+            x.set_display(0, &display).await.expect("set display");
+            assert_eq!(display, x.get_display(0).await.expect("get display"));
         }
 
-        // Ensure only the initial mode and the current mode still exist
-        assert_eq!(
-            x.screen_resources()
-                .await
-                .expect("screen resources")
-                .modes()
-                .len(),
-            2
+        // Ensure only 2 modes still exist
+        let screen_resources = x.screen_resources().await.expect("screen resources");
+        assert_eq!(screen_resources.modes().len(), 2);
+
+        // Ensure the default mode is first
+        assert_eq!(screen_resources.modes()[0].id, x.default_mode_id);
+
+        // Ensure the most recent resolution is last
+        let last_res = resolutions.last().expect("last");
+        let name = format!("{}x{}", last_res.width, last_res.height);
+        assert_eq! {
+            screen_resources
+                .modes().last().expect("last").id,
+            x.find_mode_by_name(&name).await.expect("find_by_name").expect("missing mode").resource_id()
+        }
+
+        for id in 1..x.max_display_count {
+            // Ensure next CRTC is (still) disabled
+            display.area = Rect::default();
+            display.is_enabled = false;
+            assert_eq!(display, x.get_display(id).await.expect("get display"));
+
+            // Ensure next CRTC is enabled
+            display.area.size = *last_res;
+            display.is_enabled = true;
+            x.set_display(id, &display).await.expect("set display");
+            assert_eq!(display, x.get_display(id).await.expect("get display"));
+        }
+
+        // Ensure setting Display beyond max bounds fails
+        display.area.origin = Point::new(max_width, max_height);
+        assert!(x.set_display(0, &display).await.is_err());
+
+        // Ensure setting Display too small fails
+        display.area = Rect::new(
+            Point::new(0, 0),
+            Size::new(X::MIN_WIDTH - 5, X::MIN_HEIGHT - 5),
         );
+        assert!(x.set_display(0, &display).await.is_err());
+    }
+
+    fn create_displays(width: usize, height: usize, count: usize) -> Vec<Display> {
+        let size = Size::new(width / count, height);
+        Display::linear_displays(count, size)
+    }
+
+    #[test(tokio::test(flavor = "multi_thread"))]
+    #[serial]
+    async fn set_displays() {
+        let max_width = (X::DEFAULT_MAX_DISPLAY_COUNT + 5) * X::MIN_WIDTH;
+        let max_height = 1080;
+
+        let mut x = X::initialize(
+            max_width,
+            max_height,
+            X::DEFAULT_MAX_DISPLAY_COUNT,
+            Some(&mut Command::new("glxgears")),
+        )
+        .await
+        .expect("x initialize");
+
+        let displays = create_displays(max_width, max_height, x.max_display_count);
+        let result = x.set_displays(displays).await.expect("set displays");
+
+        // Ensure resulting display count matches what we proposed
+        assert!(result.displays.len() == x.max_display_count);
+
+        let displays = create_displays(max_width, max_height, x.max_display_count + 5);
+        let result = x.set_displays(displays).await.expect("set displays");
+
+        // Ensure resulting displays are truncated to max_display_count
+        assert!(result.displays.len() == x.max_display_count);
+
+        let displays = create_displays(max_width, max_height, 1);
+        let mut result = x.set_displays(displays).await.expect("set displays");
+
+        // Ensure resulting displays are expanded to max_display_count
+        assert!(result.displays.len() == x.max_display_count);
+        result.displays.swap_remove(0);
+
+        // Ensure expanded displays are disabled
+        for d in &result.displays {
+            assert!(!d.is_enabled);
+        }
     }
 }

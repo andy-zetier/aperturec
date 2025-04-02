@@ -1,31 +1,40 @@
 use crate::client::{
-    ControlMessage, CursorData, DisplayConfig, DisplayEventMessageBuilder, EventMessage,
-    GoodbyeMessageBuilder, KeyEventMessageBuilder, MouseButtonEventMessageBuilder,
+    ControlMessage, CursorData, DisplayEventMessage, DisplayMode, EventMessage,
+    GoodbyeMessageBuilder, KeyEventMessageBuilder, MonitorGeometry, MouseButtonEventMessageBuilder,
     PointerEventMessageBuilder, UiMessage,
 };
 use crate::gtk3::image::Image;
 
-use aperturec_graphics::prelude::*;
+use aperturec_graphics::{display::*, prelude::*};
 
-use anyhow::Context as _;
+use anyhow::{anyhow, bail, Context as _, Result};
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use gtk::cairo::{Context, ImageSurface};
-use gtk::gdk::{keys, Display, EventMask, Keymap, ModifierType, ScrollDirection, WindowState};
+use gtk::gdk::{
+    self, keys, Display as GdkDisplay, EventMask, Keymap, ModifierType, ScrollDirection,
+};
 use gtk::prelude::*;
 use gtk::{glib, Adjustment, ApplicationWindow, DrawingArea, ScrolledWindow};
 use keycode::{KeyMap, KeyMapping, KeyMappingId};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::iter;
 use std::rc::Rc;
+use std::sync::LazyLock;
 use std::time::Duration;
 use tracing::*;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
 
+static GTK_INIT: LazyLock<()> = LazyLock::new(|| {
+    gdk::set_allowed_backends("x11,*");
+    gtk::init().expect("Failed to initialize GTK");
+});
+
 pub mod image;
 
-pub const DEFAULT_RESOLUTION: (u64, u64) = (800, 600);
+pub const DEFAULT_RESOLUTION: Size = Size::new(800, 600);
 
 pub struct ClientSideItcChannels {
     pub ui_tx: glib::Sender<UiMessage>,
@@ -34,8 +43,8 @@ pub struct ClientSideItcChannels {
     pub notify_control_tx: Sender<ControlMessage>,
     pub notify_event_rx: Receiver<EventMessage>,
     pub notify_event_tx: Sender<EventMessage>,
-    pub notify_media_rx: Receiver<DisplayConfig>,
-    pub notify_media_tx: Sender<DisplayConfig>,
+    pub notify_media_rx: Receiver<DisplayConfiguration>,
+    pub notify_media_tx: Sender<DisplayConfiguration>,
     pub img_rx: Receiver<Image>,
 }
 
@@ -102,8 +111,8 @@ pub struct LockState {
 
 impl LockState {
     pub fn get_current() -> Self {
-        gtk::init().expect("Failed to initialize GTK");
-        let display = Display::default().expect("Failed to get default GTK display");
+        *GTK_INIT;
+        let display = GdkDisplay::default().expect("Failed to get default GTK display");
         match Keymap::for_display(&display) {
             None => panic!("can't get keymap"),
             Some(keymap) => Self {
@@ -115,9 +124,90 @@ impl LockState {
     }
 }
 
+/// Generate a `MonitorGeometry` using `gdk`'s API. The returned `MonitorGeometry` is guaranteed to
+/// have a display rooted at the origin and only contain monitors which are non-overlapping and
+/// contiguous.
+pub fn get_monitor_geometry() -> Result<MonitorGeometry> {
+    *GTK_INIT;
+
+    fn gdkrect2rect(geo: gdk::Rectangle) -> Rect {
+        Rect::new(
+            Point::new(geo.x() as _, geo.y() as _),
+            Size::new(geo.width() as _, geo.height() as _),
+        )
+    }
+
+    let display = GdkDisplay::default().ok_or(anyhow!("Failed to get default GTK display"))?;
+    let num_monitors = display.n_monitors();
+    if num_monitors <= 0 {
+        bail!("No GTK monitors found for display {:?}", display);
+    }
+
+    let origin_monitor = display.monitor_at_point(0, 0).ok_or(anyhow!(
+        "Failed to get origin GTK monitor for display {:?}",
+        display
+    ))?;
+    let origin_rect = gdkrect2rect(origin_monitor.geometry());
+    let single = MonitorGeometry::Single {
+        size: origin_rect.size,
+    };
+
+    if num_monitors == 1 {
+        return Ok(single);
+    }
+
+    let mut unvisited = vec![origin_monitor.clone()];
+    let mut visited = HashSet::new();
+    while let Some(monitor) = unvisited.pop() {
+        if visited.contains(&monitor) {
+            continue;
+        }
+
+        let geo = monitor.geometry();
+        if let Some(above) = display.monitor_at_point(geo.x(), geo.y() - 1) {
+            unvisited.push(above);
+        }
+        if let Some(below) = display.monitor_at_point(geo.x(), geo.y() + geo.height() + 1) {
+            unvisited.push(below);
+        }
+        if let Some(left) = display.monitor_at_point(geo.x() - 1, geo.y()) {
+            unvisited.push(left);
+        }
+        if let Some(right) = display.monitor_at_point(geo.x() + geo.width() + 1, geo.y()) {
+            unvisited.push(right);
+        }
+
+        visited.insert(monitor);
+    }
+
+    if visited.len() != num_monitors as usize {
+        warn!(
+            gtk_monitors = num_monitors,
+            discovered_monitors = visited.len(),
+            "GTK monitors found != monitors discovered, falling back to single monitor"
+        );
+        return Ok(single);
+    }
+
+    let mut rects = visited
+        .iter()
+        .map(|monitor| gdkrect2rect(monitor.geometry()))
+        .collect::<HashSet<_>>();
+    if rects.len() != num_monitors as usize {
+        warn!("Some monitors were overlapping, falling back to single monitor");
+        return Ok(single);
+    }
+
+    rects.remove(&origin_rect);
+    Ok(MonitorGeometry::Multi {
+        origin: origin_rect,
+        other: rects,
+    })
+}
+
 pub fn get_fullscreen_dims() -> anyhow::Result<(i32, i32)> {
-    gtk::init()?;
-    let display = Display::default().context("Failed to get default GTK display")?;
+    *GTK_INIT;
+    let display = GdkDisplay::default().context("Failed to get default GTK display")?;
     let monitor = display
         .monitor_at_point(0, 0)
         .context("Failed to get GTK monitor at (0,0)")?;
@@ -127,7 +217,7 @@ pub fn get_fullscreen_dims() -> anyhow::Result<(i32, i32)> {
 }
 
 enum KeyboardShortcut {
-    ToggleFullscreen,
+    ToggleFullscreen { multi_monitor: bool },
     Disconnect,
 }
 
@@ -138,7 +228,15 @@ impl KeyboardShortcut {
         if !state.contains(ModifierType::CONTROL_MASK | ModifierType::MOD1_MASK) {
             None
         } else if key_event.keyval() == keys::constants::Return {
-            Some(Self::ToggleFullscreen)
+            if state.contains(ModifierType::SHIFT_MASK) {
+                Some(Self::ToggleFullscreen {
+                    multi_monitor: false,
+                })
+            } else {
+                Some(Self::ToggleFullscreen {
+                    multi_monitor: true,
+                })
+            }
         } else if key_event.keyval() == keys::constants::F12
             && state.contains(ModifierType::SHIFT_MASK)
         {
@@ -205,26 +303,25 @@ pub struct GtkUi;
 impl GtkUi {
     pub fn run_ui(
         itc: GtkSideItcChannels,
-        initial_width: i32,
-        initial_height: i32,
-        decoder_areas: &[Box2D],
+        initial_display_mode: DisplayMode,
+        monitor_geometry: MonitorGeometry,
+        display_config: DisplayConfiguration,
     ) {
         let app = gtk::Application::builder()
             .application_id("com.zetier.aperturec.client")
             .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
             .build();
 
-        // Need to copy decoder vector
-        let decoder_areas = decoder_areas.to_vec();
-        debug!(
-            "GTK UI starting with {}x{} window, {:?}",
-            initial_width, initial_height, &decoder_areas
-        );
-
         let itc = Cell::new(Some(itc));
         app.connect_activate(move |app| {
             if let Some(itc) = itc.take() {
-                build_ui(app, itc, initial_width, initial_height)
+                build_ui(
+                    app,
+                    itc,
+                    initial_display_mode,
+                    monitor_geometry.clone(),
+                    display_config.clone(),
+                )
             }
         });
 
@@ -233,26 +330,6 @@ impl GtkUi {
         //
         app.run_with_args(&[""; 0]);
     }
-}
-
-fn init_image_black(size: Size, display_config_id: u64) -> Image {
-    init_image_rgb(size, display_config_id, 0.0, 0.0, 0.0)
-}
-
-fn init_image_green(size: Size, display_config_id: u64) -> Image {
-    init_image_rgb(size, display_config_id, 0.0, 1.0, 0.0)
-}
-
-fn init_image_rgb(size: Size, display_config_id: u64, red: f64, green: f64, blue: f64) -> Image {
-    let mut image = Image::new(size, display_config_id);
-
-    image.with_surface(|surface| {
-        let cr = Context::new(surface).expect("GTK failed to create Cairo ctx!");
-        cr.set_source_rgb(red, green, blue);
-        cr.paint().expect("GTK invalid Cairo surface state");
-    });
-
-    image
 }
 
 fn render_image(cr: &Context, image: &ImageSurface) {
@@ -270,16 +347,39 @@ fn render_image(cr: &Context, image: &ImageSurface) {
     cr.fill().expect("cairo fill");
 }
 
+struct UiWorkspace {
+    image: RefCell<Image>,
+    img_tx: Sender<Image>,
+    is_fullscreen: Cell<bool>,
+    is_multimonitored: Cell<bool>,
+    can_multimonitor: Cell<bool>,
+    windowed_size: Cell<Size>,
+    display_config: RefCell<DisplayConfiguration>,
+    monitor_geometry: MonitorGeometry,
+}
+
 fn build_ui(
     app: &gtk::Application,
     itc: GtkSideItcChannels,
-    initial_width: i32,
-    initial_height: i32,
+    initial_display_mode: DisplayMode,
+    monitor_geometry: MonitorGeometry,
+    display_config: DisplayConfiguration,
 ) {
+    let windowed_size = match &initial_display_mode {
+        DisplayMode::MultiFullscreen | DisplayMode::SingleFullscreen => {
+            let halved = monitor_geometry.single_monitor_size() / 2;
+            Size::new(
+                halved.width.max(DEFAULT_RESOLUTION.width),
+                halved.height.max(DEFAULT_RESOLUTION.height),
+            )
+        }
+        DisplayMode::Windowed { size } => *size,
+    };
+
     let window = ApplicationWindow::builder()
         .application(app)
-        .default_width(initial_width)
-        .default_height(initial_height)
+        .default_width(windowed_size.width as _)
+        .default_height(windowed_size.height as _)
         .resizable(true)
         .title("ApertureC Client")
         .build();
@@ -291,10 +391,7 @@ fn build_ui(
     scrolled_window.add(&area);
     window.add(&scrolled_window);
 
-    area.set_size_request(
-        DEFAULT_RESOLUTION.0.try_into().unwrap(),
-        DEFAULT_RESOLUTION.1.try_into().unwrap(),
-    );
+    area.set_size_request(windowed_size.width as _, windowed_size.height as _);
     area.set_can_focus(true);
     area.add_events(
         EventMask::KEY_PRESS_MASK
@@ -309,30 +406,30 @@ fn build_ui(
     //
     // Setup Images
     //
-    let image = init_image_green(
-        Size::new(initial_width as usize, initial_height as usize),
-        u64::MAX,
-    );
-
-    let workspace = Rc::new((RefCell::new(image), itc.img_tx));
+    let img = Image::blue(&display_config);
+    itc.img_tx.send(img.clone()).unwrap_or_else(|error| {
+        warn!(%error, "GTK failed to tx Image");
+    });
+    let workspace = Rc::new(UiWorkspace {
+        image: RefCell::new(img),
+        img_tx: itc.img_tx,
+        is_fullscreen: false.into(),
+        is_multimonitored: matches!(initial_display_mode, DisplayMode::MultiFullscreen).into(),
+        can_multimonitor: monitor_geometry.is_multi().into(),
+        windowed_size: windowed_size.into(),
+        monitor_geometry,
+        display_config: display_config.into(),
+    });
 
     area.connect_draw(
         glib::clone!(@weak workspace => @default-return gtk::Inhibit(false), move |_, cr| {
-            let (ref image, _) = *workspace;
-
+            let UiWorkspace { ref image, .. } = *workspace;
             image.borrow_mut().with_surface(|surface| {
                 render_image(cr, surface);
             });
             gtk::Inhibit(false)
         }),
     );
-
-    //
-    // Setup Window state tracking
-    //
-    let window_state = Rc::new(Cell::new(WindowState::empty()));
-    let ws_update = window_state.clone();
-    let ws_key = window_state.clone();
 
     //
     // Setup mouse tracking
@@ -371,35 +468,80 @@ fn build_ui(
     //
     // Setup keyboard tracking
     //
-    area.connect_key_press_event(glib::clone!(@strong window => move |_, key| {
-        trace!("GTK KeyPressEvent: {:?} : {:?}", key.keyval(), key.state());
+    area.connect_key_press_event(
+        glib::clone!(@strong window, @strong workspace => move |_, key| {
+            trace!("GTK KeyPressEvent: {:?} : {:?}", key.keyval(), key.state());
 
-        match KeyboardShortcut::from_event(key) {
-            Some(KeyboardShortcut::ToggleFullscreen) => {
-                if ws_key.get().contains(WindowState::FULLSCREEN) {
-                    window.unfullscreen();
-                } else {
-                    window.fullscreen();
-                }
-            },
-            Some(KeyboardShortcut::Disconnect) => window.close(),
-            None => {
-                key_press_tx.send(
-                    EventMessage::KeyEventMessage(
-                        KeyEventMessageBuilder::default()
-                        .key(gtk_key_to_x11(key).into())
-                        .is_pressed(true)
-                        .build()
-                        .expect("GTK failed to build KeyEventMessage!")
-                        )
-                    ).unwrap_or_else(|err| {
-                    warn!("GTK failed to tx KeyEventMessage: {}", err)
-                });
-            },
-        }
+            let UiWorkspace {
+                ref is_multimonitored,
+                ref can_multimonitor,
+                ref is_fullscreen,
+                ..
+            } = *workspace;
 
-        gtk::Inhibit(false)
-    }));
+            match KeyboardShortcut::from_event(key) {
+                Some(KeyboardShortcut::ToggleFullscreen { multi_monitor }) => {
+                    if is_fullscreen.get() {
+                        if is_multimonitored.get() {
+                            if multi_monitor {
+                                debug!("fullscreen multi-monitor -> windowed");
+                                window.unfullscreen();
+                            } else {
+                                debug!("fullscreen multi-monitor -> fullscreen single-monitor");
+                                is_multimonitored.set(false);
+                                set_fullscreen_mode(&window, false);
+                            }
+                        } else if multi_monitor {
+                            if can_multimonitor.get() {
+                                debug!("fullscreen single-monitor -> fullscreen multi-monitor");
+                                is_multimonitored.set(true);
+                                set_fullscreen_mode(&window, true);
+                            } else {
+                                debug!("fullscreen single-monitor -> windowed");
+                                window.unfullscreen();
+                            }
+                        } else {
+                            debug!("fullscreen single-monitor -> windowed");
+                            window.unfullscreen();
+                        }
+                    } else {
+                        if multi_monitor {
+                            if can_multimonitor.get() {
+                                debug!("windowed -> fullscreen multi-monitor");
+                                is_multimonitored.set(true);
+                                set_fullscreen_mode(&window, true);
+                            } else {
+                                warn!("Multi-monitor mode disabled");
+                                is_multimonitored.set(false);
+                                set_fullscreen_mode(&window, false);
+                            }
+                        } else {
+                            debug!("windowed -> fullscreen single-monitor");
+                            is_multimonitored.set(false);
+                            set_fullscreen_mode(&window, false);
+                        }
+                        window.fullscreen();
+                    }
+                },
+                Some(KeyboardShortcut::Disconnect) => window.close(),
+                None => {
+                    key_press_tx.send(
+                        EventMessage::KeyEventMessage(
+                            KeyEventMessageBuilder::default()
+                            .key(gtk_key_to_x11(key).into())
+                            .is_pressed(true)
+                            .build()
+                            .expect("GTK failed to build KeyEventMessage!")
+                            )
+                        ).unwrap_or_else(|err| {
+                        warn!("GTK failed to tx KeyEventMessage: {}", err)
+                    });
+                },
+            }
+
+            gtk::Inhibit(false)
+        }),
+    );
 
     area.connect_key_release_event(glib::clone!(@strong window => move |_, key| {
         trace!("GTK KeyReleaseEvent: {:?} : {:?}", key.keyval(), key.state());
@@ -563,41 +705,96 @@ fn build_ui(
         gtk::Inhibit(false)
     });
 
-    let resize_timeout = Rc::new(RefCell::new(None::<glib::source::SourceId>));
-
+    const RESIZE_TIMER: Duration = Duration::from_millis(600);
+    let resize_timeout: Rc<Cell<Option<glib::source::SourceId>>> = Rc::default();
     area.connect_size_allocate(glib::clone!(@strong window, @strong workspace => move |_, allocation| {
-        let (ref image, _) = *workspace;
 
-        if let Some(source_id) = resize_timeout.borrow_mut().take() {
-            source_id.remove();
+        if let Some(old_source_id) = resize_timeout.take() {
+            old_source_id.remove();
         }
 
-        let new_size = Size::new(
-            allocation.width().try_into().unwrap(),
-            allocation.height().try_into().unwrap()
-        );
+        let new_size = Size::new(allocation.width() as _, allocation.height() as _);
+        let new_position = Point::new(allocation.x() as _, allocation.y() as _);
+        let new_extent = Rect::new(new_position, new_size);
+        trace!(?new_extent);
 
-        if new_size == image.borrow().size() {
-            return;
+        let timeout_handler = {
+            let timeout = resize_timeout.clone();
+            let tx = window_resize_tx.clone();
+            let workspace = workspace.clone();
+
+            move || {
+                let UiWorkspace {
+                    ref windowed_size,
+                    ref is_fullscreen,
+                    ref is_multimonitored,
+                    ref monitor_geometry,
+                    ref can_multimonitor,
+                    ..
+                } = *workspace;
+
+                if !is_fullscreen.get() && windowed_size.get() == new_size {
+                    timeout.set(None);
+                    return;
+                }
+                debug!(?new_size, "resized");
+
+                let display_infos = match (monitor_geometry, is_fullscreen.get(), is_multimonitored.get()) {
+                    (MonitorGeometry::Multi { origin, other }, true, true) => {
+                        if monitor_geometry.extent() != new_extent {
+                            if monitor_geometry.iter().any(|r| r == new_extent) {
+                                warn!("Multiple monitors detected, but window is fullscreen in a single monitor");
+                            } else {
+                                warn!("Attempted fullscreening, but the window does not match any monitor geometry - there may be visual artifacts");
+                            }
+                            info!("Reverting to single-monitor mode and disabling multi-monitor mode");
+                            can_multimonitor.set(false);
+                            is_multimonitored.set(false);
+                            vec![Display { area: Rect::from_size(new_size), is_enabled: true }]
+                        } else {
+                            iter::once(origin)
+                                .chain(other)
+                                .map(|rect| Display {
+                                    area: *rect,
+                                    is_enabled: true,
+                                })
+                                .collect()
+                        }
+                    }
+                    (_, false, _) => vec![Display {
+                        area: Rect::from_size(new_size), is_enabled: true
+                    }],
+                    (_, true, _) => vec![Display {
+                        area: Rect::from_size(new_size),
+                        is_enabled: true,
+                    }],
+                };
+                tx.send(EventMessage::DisplayEventMessage(DisplayEventMessage {
+                    displays: display_infos
+                }))
+                .unwrap_or_else(|err| warn!(%err, "GTK failed to tx DisplayEventMessage"));
+                windowed_size.set(new_size);
+                timeout.set(None);
+            }
+        };
+
+        let timeout_source_id = glib::source::timeout_add_local_once(RESIZE_TIMER, timeout_handler);
+        resize_timeout.set(Some(timeout_source_id));
+    }));
+
+    window.connect_window_state_event(glib::clone!(@strong workspace => move |_, event| {
+        let UiWorkspace { ref is_fullscreen, .. } = *workspace;
+        if event.changed_mask() & gdk::WindowState::FULLSCREEN != gdk::WindowState::empty() {
+            if is_fullscreen.get() {
+                debug!("unfullscreening");
+                is_fullscreen.set(false);
+            } else {
+                debug!("fullscreening");
+                is_fullscreen.set(true);
+            }
         }
 
-        let timeout = resize_timeout.clone();
-        let tx = window_resize_tx.clone();
-
-        const RESIZE_TIMER : Duration = Duration::from_millis(600);
-        *resize_timeout.borrow_mut() = Some(glib::source::timeout_add_local(RESIZE_TIMER, move || {
-            debug!("Generating DisplayEvent: {:?}", new_size);
-            tx.send(EventMessage::DisplayEventMessage(
-                DisplayEventMessageBuilder::default()
-                    .size(new_size)
-                    .build()
-                    .expect("GTK failed to build DisplayEventMessage!"),
-            ))
-            .unwrap_or_else(|err| warn!("GTK failed to tx DisplayEventMessage: {}", err));
-
-            *timeout.borrow_mut() = None;
-            glib::source::Continue(false)
-        }));
+        gtk::Inhibit(false)
     }));
 
     window.connect_delete_event(move |_, _| {
@@ -611,21 +808,22 @@ fn build_ui(
         gtk::Inhibit(false)
     });
 
-    window.connect_window_state_event(move |_, event| {
-        ws_update.set(event.new_window_state());
-        gtk::Inhibit(false)
-    });
-
     itc.img_rx.attach(
         None,
-        glib::clone!(@strong area, @strong window, @strong workspace => move |updated_img| {
-            let (ref image, ref tx) = *workspace;
+        glib::clone!(@strong area, @strong window, @strong workspace => move |mut updated_img| {
+            let UiWorkspace {
+                ref image,
+                ref img_tx,
+                ref display_config,
+                ..
+            } = *workspace;
 
-            if updated_img.display_config_id < image.borrow().display_config_id {
-                debug!("GTK Dropping Image with DCI {:?} (< {:?})",
+            if updated_img.display_config_id < display_config.borrow().id {
+                debug!(
+                    "received image with out-of-date display config ID {}",
                     updated_img.display_config_id,
-                    image.borrow().display_config_id);
-                return glib::source::Continue(true);
+                );
+                updated_img.update_display_config(&display_config.borrow());
             }
 
             //
@@ -644,14 +842,19 @@ fn build_ui(
                 );
             }
 
-            if let Err(err) = stale_img.copy_updates(&image.borrow()) {
-                error!("GTK Failed to copy Image updates: {}, dropping Image with DCI {:?}",
-                    err,
-                    stale_img.display_config_id);
+            if stale_img.display_config_id < display_config.borrow().id {
+                debug!(
+                    "Replacing stale image with DC ID {} with new DC ID {}",
+                    stale_img.display_config_id, display_config.borrow().id
+                );
+                stale_img.update_display_config(&display_config.borrow());
             } else {
-                tx.send(stale_img)
-                    .unwrap_or_else(|err| warn!("GTK failed to send image to client: {}", err));
+                stale_img.copy_updates(&image.borrow()).unwrap_or_else(|err| {
+                    warn!("Failed to copy updates from new image to stale image: {}", err)
+                });
             }
+            img_tx.send(stale_img)
+                .unwrap_or_else(|err| warn!("GTK failed to send image to client: {}", err));
 
             glib::source::Continue(true)
         }),
@@ -685,7 +888,7 @@ fn build_ui(
                         height,
                         width * 4,
                     );
-                    let cursor = gtk::gdk::Cursor::from_pixbuf(&Display::default().unwrap(), &pixbuf, x_hot, y_hot);
+                    let cursor = gtk::gdk::Cursor::from_pixbuf(&GdkDisplay::default().unwrap(), &pixbuf, x_hot, y_hot);
                     cursor_map.insert(id, cursor);
 
                     area.window().unwrap().set_cursor(Some(cursor_map.get(&id).unwrap()))
@@ -696,42 +899,92 @@ fn build_ui(
                         None => warn!("No cursor for ID {}. Ignoring", id),
                     }
                 }
-                UiMessage::DisplayChange { dc_id, display_size } => {
-                    let (ref image, ref tx) = *workspace;
+                UiMessage::DisplayChange { display_config: new_display_config } => {
+                    let UiWorkspace {
+                        ref is_fullscreen,
+                        ref monitor_geometry,
+                        ref display_config,
+                        ref image,
+                        ref is_multimonitored,
+                        ..
+                    } = *workspace;
+                    trace!(?new_display_config);
 
-                    if dc_id != image.borrow().display_config_id {
-                        debug!("DisplayChange {{ dc_id: {:?}, display_size: {:?} }}", dc_id, display_size);
-                        //
-                        // Re-create Images. Set to render and send clone to client
-                        //
-                        let new_image = init_image_black(display_size, dc_id);
-                        image.replace(new_image.clone());
-                        tx.send(new_image)
-                            .unwrap_or_else(|err| warn!("GTK failed to send image to client: {}", err));
-                    } else {
-                        debug!("DisplayChange request matches current DCI {}, ignoring", dc_id);
+                    if new_display_config.id == display_config.borrow().id {
+                        trace!("Ignoring display configuration with same ID");
+                        return glib::source::Continue(true);
                     }
 
-                    window.resize(display_size.width.try_into().unwrap(), display_size.height.try_into().unwrap());
-                    window.queue_draw();
+                    if new_display_config.display_decoder_infos.is_empty() {
+                        warn!("Server provided display configuration has no displays. Ignoring");
+                        return glib::source::Continue(true);
+                    }
+                    let display_mode = match monitor_geometry.identify_display_mode(
+                        &new_display_config,
+                         is_fullscreen.get(),
+                         is_multimonitored.get(),
+                     ) {
+                        Ok(dm) => dm,
+                        Err(error) => {
+                            warn!(%error, "Ignoring invalid display configuration");
+                            return glib::source::Continue(true);
+                        }
+                    };
+
+                    match display_mode {
+                        DisplayMode::MultiFullscreen => {
+                            let supports_fullscreen = matches!(monitor_geometry, MonitorGeometry::Multi { .. });
+                            is_multimonitored.set(supports_fullscreen);
+                            set_fullscreen_mode(&window, supports_fullscreen);
+                        }
+                        DisplayMode::SingleFullscreen => {
+                            is_multimonitored.set(false);
+                            set_fullscreen_mode(&window, false);
+                        }
+                        DisplayMode::Windowed { size } => {
+                            if is_fullscreen.get() {
+                                window.unfullscreen();
+                            }
+                            window.resize(size.width as _, size.height as _);
+                        }
+                    }
+                    display_config.replace(new_display_config);
+                    image.borrow_mut().update_display_config(&display_config.borrow());
                 }
             }
             glib::source::Continue(true)
         }),
     );
 
-    //
-    // Set to fullscreen
-    //
-    if get_fullscreen_dims().expect("fullscreen dims") == (initial_width, initial_height) {
-        window.set_default_width(initial_width / 2);
-        window.set_default_height(initial_height / 2);
-        window.fullscreen();
-    }
+    window.connect_show(move |window| {
+        let UiWorkspace {
+            ref is_multimonitored,
+            ..
+        } = *workspace;
+        set_fullscreen_mode(window, is_multimonitored.get());
 
-    debug!(
-        "GTK UI built, showing {}x{} window",
-        initial_width, initial_height
-    );
+        if initial_display_mode.is_fullscreen() {
+            window.fullscreen();
+        }
+    });
+
     window.show_all()
+}
+
+fn set_fullscreen_mode(window: &ApplicationWindow, multi_monitor: bool) {
+    static WARN_ONCE: LazyLock<()> = LazyLock::new(|| {
+        warn!("Not running in X11. Multi-monitor fullscreen may be disabled");
+    });
+    if let Some(gdk_window) = window.window() {
+        if multi_monitor {
+            gdk_window.set_fullscreen_mode(gdk::FullscreenMode::AllMonitors);
+            if !GdkDisplay::default().unwrap().backend().is_x11() {
+                *WARN_ONCE;
+            }
+        } else {
+            gdk_window.set_fullscreen_mode(gdk::FullscreenMode::CurrentMonitor);
+        }
+    } else {
+        warn!("GTK failed to get GDK window, cannot set fullscreen mode spanning all monitors");
+    }
 }

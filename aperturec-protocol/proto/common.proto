@@ -27,15 +27,24 @@ enum Codec {
   CODEC_JPEGXL = 3;
 }
 
-message DecoderArea {
+message Rectangle {
   Location location = 1;
   Dimension dimension = 2;
 }
 
+message DisplayInfo {
+  Rectangle area = 1;
+  bool is_enabled = 2;
+}
+
+message DisplayDecoderInfo {
+  DisplayInfo display = 1;
+  repeated Rectangle decoder_areas = 2;
+}
+
 message DisplayConfiguration {
   uint64 id = 1;
-  Dimension display_size = 2;
-  map<uint32, DecoderArea> areas = 3;
+  repeated DisplayDecoderInfo display_decoder_infos = 2;
 }
 
 message ClientCaps { repeated Codec supported_codecs = 1; }

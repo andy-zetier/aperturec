@@ -1,5 +1,6 @@
 pub mod axis;
 pub mod boxset;
+pub mod display;
 pub mod geometry;
 pub mod ndarray_convert;
 pub mod partition;
