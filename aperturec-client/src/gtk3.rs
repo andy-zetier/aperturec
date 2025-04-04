@@ -5,7 +5,7 @@ use crate::client::{
 };
 use crate::gtk3::image::Image;
 
-use aperturec_graphics::{display::*, prelude::*};
+use aperturec_graphics::{display::*, euclid_collections::EuclidSet, prelude::*};
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use crossbeam::channel::{unbounded, Receiver, Sender};
@@ -192,13 +192,13 @@ pub fn get_monitor_geometry() -> Result<MonitorGeometry> {
     let mut rects = visited
         .iter()
         .map(|monitor| gdkrect2rect(monitor.geometry()))
-        .collect::<HashSet<_>>();
+        .collect::<EuclidSet>();
     if rects.len() != num_monitors as usize {
         warn!("Some monitors were overlapping, falling back to single monitor");
         return Ok(single);
     }
 
-    rects.remove(&origin_rect);
+    rects.remove_all_overlaps(origin_rect);
     Ok(MonitorGeometry::Multi {
         origin: origin_rect,
         other: rects,
@@ -752,10 +752,10 @@ fn build_ui(
                             is_multimonitored.set(false);
                             vec![Display { area: Rect::from_size(new_size), is_enabled: true }]
                         } else {
-                            iter::once(origin)
+                            iter::once(*origin)
                                 .chain(other)
                                 .map(|rect| Display {
-                                    area: *rect,
+                                    area: rect,
                                     is_enabled: true,
                                 })
                                 .collect()

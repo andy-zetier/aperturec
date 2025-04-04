@@ -89,7 +89,7 @@ where
                     has_origin_display = true
                 }
             })
-            .map(|display| &display.area)
+            .map(|display| display.area)
             .extent();
 
         let Some(extent) = extent else {

@@ -4,6 +4,7 @@ use crate::gtk3::{self, image::Image, ClientSideItcChannels, GtkUi, ItcChannels,
 use aperturec_channel::{self as channel, Receiver as _, Sender as _, Unified};
 use aperturec_graphics::{
     display::{self, Display},
+    euclid_collections::EuclidSet,
     geometry::*,
 };
 use aperturec_protocol::common::*;
@@ -375,7 +376,7 @@ impl ConfigurationBuilder {
 
 #[derive(Debug, Clone)]
 pub enum MonitorGeometry {
-    Multi { origin: Rect, other: HashSet<Rect> },
+    Multi { origin: Rect, other: EuclidSet },
     Single { size: Size },
 }
 
@@ -392,7 +393,7 @@ impl MonitorGeometry {
     pub fn extent(&self) -> Rect {
         match self {
             MonitorGeometry::Multi { origin, other } => {
-                iter::once(origin).chain(other.iter()).extent().unwrap()
+                iter::once(*origin).chain(other).extent().unwrap()
             }
             MonitorGeometry::Single { size } => Rect::from_size(*size),
         }
@@ -408,9 +409,7 @@ impl MonitorGeometry {
 
     pub fn iter(&self) -> Box<dyn Iterator<Item = Rect> + '_> {
         match self {
-            MonitorGeometry::Multi { origin, other } => {
-                Box::new(iter::once(origin).chain(other.iter()).copied())
-            }
+            MonitorGeometry::Multi { origin, other } => Box::new(iter::once(*origin).chain(other)),
             MonitorGeometry::Single { size } => Box::new(iter::once(Rect::from_size(*size))),
         }
     }
@@ -480,10 +479,7 @@ impl MonitorGeometry {
                     warn!("Server supports only {} displays, but client has {} monitors. Falling back single-monitor mode", num_server_displays, self.num_monitors());
                     return Ok(DisplayMode::SingleFullscreen);
                 }
-                let mg_rects = iter::once(origin)
-                    .chain(other)
-                    .copied()
-                    .collect::<HashSet<_>>();
+                let mg_rects = iter::once(*origin).chain(other).collect::<HashSet<_>>();
                 if mg_rects != dc_rects {
                     warn!("Server provided display configuration does not match client monitor geometry. Falling back to windowed mode.");
                     return Ok(windowed);
@@ -491,7 +487,7 @@ impl MonitorGeometry {
                 Ok(DisplayMode::MultiFullscreen)
             }
             (MonitorGeometry::Multi { origin, other }, 1, true, false) => {
-                let mg_sizes = iter::once(origin)
+                let mg_sizes = iter::once(*origin)
                     .chain(other)
                     .map(|r| r.size)
                     .collect::<HashSet<_>>();
@@ -604,12 +600,10 @@ impl Client {
                     }]
                 }
                 DisplayMode::MultiFullscreen => match self.monitor_geometry.as_ref().unwrap() {
-                    MonitorGeometry::Multi { origin, other } => iter::once(origin)
+                    MonitorGeometry::Multi { origin, other } => iter::once(*origin)
                         .chain(other)
                         .map(|rect| DisplayInfo {
-                            area: Some(
-                                Rectangle::try_from(*rect).expect("Failed to generate area"),
-                            ),
+                            area: Some(Rectangle::try_from(rect).expect("Failed to generate area")),
                             is_enabled: true,
                         })
                         .collect(),

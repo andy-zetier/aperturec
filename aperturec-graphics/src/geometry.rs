@@ -62,19 +62,19 @@ pub trait Extent {
     fn extent(self) -> Option<Self::Box>;
 }
 
-impl<'b, I, B> Extent for I
+impl<I, B> Extent for I
 where
-    I: IntoIterator<Item = &'b B>,
-    B: BoundingBox + Copy + 'b,
+    I: IntoIterator<Item = B>,
+    B: BoundingBox + Copy,
 {
     type Box = B;
 
     fn extent(self) -> Option<Self::Box> {
         self.into_iter().fold(None, |acc, b| {
             Some(if let Some(acc) = acc {
-                acc.bounding_box(b)
+                acc.bounding_box(&b)
             } else {
-                *b
+                b
             })
         })
     }
