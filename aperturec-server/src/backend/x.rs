@@ -8,6 +8,7 @@ use aperturec_protocol::event as em;
 use anyhow::{anyhow, bail, Result};
 use futures::{future, stream, Future, Stream, StreamExt, TryFutureExt};
 use ndarray::{prelude::*, AssignElem};
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt::{self, Debug, Formatter};
@@ -365,8 +366,7 @@ impl Backend for X {
 
         let (displays, default_mode_id) = X::setup_displays(&connection, &root_window).await?;
 
-        trace!("X initialized");
-        Ok(X {
+        let mut x = X {
             connection,
             default_mode_id,
             display_name,
@@ -377,7 +377,17 @@ impl Backend for X {
             root_drawable,
             root_process,
             xvfb_process,
-        })
+        };
+
+        x.set_displays(vec![Display::new(
+            Rect::from_size(Size::new(X::MIN_WIDTH, X::MIN_HEIGHT)),
+            true,
+        )])
+        .await
+        .map_err(|_| anyhow!("Failed to set minimal Displays"))?;
+
+        trace!("X initialized");
+        Ok(x)
     }
 
     async fn notify_event(&mut self, event: Event) -> Result<()> {
@@ -596,7 +606,12 @@ impl Backend for X {
 
         requested_displays.resize_with(self.max_display_count, Display::default);
 
-        let _ = self.check_screen_size(&requested_displays).await;
+        if let Err(e) = self
+            .resize_screen_if(&requested_displays, Ordering::Greater)
+            .await
+        {
+            warn!("Failed to expand screen size: {:?}", e);
+        }
 
         let mut final_displays: Vec<Display> = Vec::with_capacity(requested_displays.len());
         for (id, display) in requested_displays.into_iter().enumerate() {
@@ -626,6 +641,12 @@ impl Backend for X {
         if let Ok(extent) = final_displays.derive_extent() {
             DisplayWidth::update(extent.width as f64);
             DisplayHeight::update(extent.height as f64);
+        }
+
+        if changed {
+            if let Err(e) = self.resize_screen_if(&final_displays, Ordering::Less).await {
+                warn!("Failed to trim screen size: {:?}", e);
+            }
         }
 
         if errors {
@@ -829,7 +850,7 @@ impl X {
         Ok((displays, modes[0].id))
     }
 
-    async fn check_screen_size(&self, displays: &[Display]) -> Result<()> {
+    async fn resize_screen_if(&self, displays: &[Display], resize_if: Ordering) -> Result<()> {
         let extent = displays.derive_extent()?;
         let (width, height) = (extent.width as u16, extent.height as u16);
 
@@ -845,7 +866,7 @@ impl X {
             bail!("Screen size id {} does not exist", screen_info.size_id());
         };
 
-        if width <= current.width && height <= current.height {
+        if width.cmp(&current.width) != resize_if && height.cmp(&current.height) != resize_if {
             return Ok(());
         }
 
