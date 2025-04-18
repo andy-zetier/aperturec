@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use super::map::{Entry, EuclidMap};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EuclidSet {
     inner: EuclidMap<()>,
 }
@@ -33,23 +33,42 @@ impl EuclidSet {
         self.inner
             .insert(key, ())
             .into_iter()
-            .map(|entry| entry.key)
+            .map(|(key, _)| key)
             .collect()
     }
 
     pub fn get(&self, point: Point) -> Option<Rect> {
-        self.inner.get(point).map(|entry| entry.key)
+        self.inner.get(point).map(|(key, _)| key)
+    }
+
+    pub fn get_at_origin(&self) -> Option<Rect> {
+        self.get(Point::zero())
+    }
+
+    pub fn contains_point(&self, point: Point) -> bool {
+        self.get(point).is_some()
+    }
+
+    pub fn contains<R: Into<Rect>>(&self, key: R) -> bool {
+        let key = key.into();
+        self.get(key.origin)
+            .map(|rect| rect == key)
+            .unwrap_or(false)
     }
 
     pub fn remove_at_point(&mut self, point: Point) -> Option<Rect> {
-        self.inner.remove_at_point(point).map(|entry| entry.key)
+        self.inner.remove_at_point(point).map(|(key, _)| key)
+    }
+
+    pub fn remove_at_origin(&mut self) -> Option<Rect> {
+        self.remove_at_point(Point::zero())
     }
 
     pub fn remove_all_overlaps<R: Into<Rect>>(&mut self, key: R) -> Vec<Rect> {
         self.inner
             .remove_all_overlaps(key)
             .into_iter()
-            .map(|entry| entry.key)
+            .map(|(key, _)| key)
             .collect()
     }
 

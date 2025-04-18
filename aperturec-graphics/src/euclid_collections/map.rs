@@ -2,13 +2,31 @@ use crate::prelude::*;
 
 use std::{slice, vec};
 
-#[derive(Debug, Clone)]
-pub struct Entry<V> {
-    pub key: Rect,
-    pub value: V,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Entry<V> {
+    pub(super) key: Rect,
+    pub(super) value: V,
 }
 
-#[derive(Debug, Clone)]
+impl<'e, V> From<&'e Entry<V>> for (Rect, &'e V) {
+    fn from(entry: &'e Entry<V>) -> (Rect, &'e V) {
+        (entry.key, &entry.value)
+    }
+}
+
+impl<'e, V> From<&'e mut Entry<V>> for (Rect, &'e mut V) {
+    fn from(entry: &'e mut Entry<V>) -> (Rect, &'e mut V) {
+        (entry.key, &mut entry.value)
+    }
+}
+
+impl<V> From<Entry<V>> for (Rect, V) {
+    fn from(entry: Entry<V>) -> (Rect, V) {
+        (entry.key, entry.value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EuclidMap<V> {
     entries: Vec<Entry<V>>,
 }
@@ -24,39 +42,88 @@ impl<V> EuclidMap<V> {
         Self::default()
     }
 
-    pub fn insert<R: Into<Rect>>(&mut self, key: R, value: V) -> Vec<Entry<V>> {
+    pub fn insert<R: Into<Rect>>(&mut self, key: R, value: V) -> Vec<(Rect, V)> {
         let key = key.into();
         let existing = self.remove_all_overlaps(key);
         self.entries.push(Entry { key, value });
+        self.entries
+            .sort_by_key(|entry| <(_, _)>::from(entry.key.origin));
         existing
     }
 
-    pub fn get(&self, point: Point) -> Option<&Entry<V>> {
-        self.entries.iter().find(|entry| entry.key.contains(point))
+    pub fn get(&self, point: Point) -> Option<(Rect, &V)> {
+        self.entries
+            .iter()
+            .find(|entry| entry.key.contains(point))
+            .map(Into::into)
     }
 
-    pub fn remove_at_point(&mut self, point: Point) -> Option<Entry<V>> {
+    pub fn get_mut(&mut self, point: Point) -> Option<(Rect, &mut V)> {
+        self.entries
+            .iter_mut()
+            .find(|entry| entry.key.contains(point))
+            .map(Into::into)
+    }
+
+    pub fn get_at_origin(&self) -> Option<(Rect, &V)> {
+        self.get(Point::zero())
+    }
+
+    pub fn get_at_origin_mut(&mut self) -> Option<(Rect, &mut V)> {
+        self.get_mut(Point::zero())
+    }
+
+    pub fn get_all_overlaps<R: Into<Rect>>(&self, key: R) -> impl Iterator<Item = (Rect, &V)> {
+        let key = key.into();
+
+        self.entries
+            .iter()
+            .filter(move |entry| entry.key.intersects(&key))
+            .map(Into::into)
+    }
+
+    pub fn get_all_overlaps_mut<R: Into<Rect>>(
+        &mut self,
+        key: R,
+    ) -> impl Iterator<Item = (Rect, &mut V)> {
+        let key = key.into();
+
+        self.entries
+            .iter_mut()
+            .filter(move |entry| entry.key.intersects(&key))
+            .map(Into::into)
+    }
+
+    pub fn remove_at_point(&mut self, point: Point) -> Option<(Rect, V)> {
         let pos = self
             .entries
             .iter()
             .position(|entry| entry.key.contains(point));
-        pos.map(|pos| self.entries.remove(pos))
+        pos.map(|pos| self.entries.remove(pos).into())
     }
 
-    pub fn remove_all_overlaps<R: Into<Rect>>(&mut self, key: R) -> Vec<Entry<V>> {
+    pub fn remove_at_origin(&mut self) -> Option<(Rect, V)> {
+        self.remove_at_point(Point::zero())
+    }
+
+    pub fn remove_all_overlaps<R: Into<Rect>>(&mut self, key: R) -> Vec<(Rect, V)> {
         let key = key.into();
         let mut i = 0;
         let mut existing = vec![];
 
         while i < self.entries.len() {
             if self.entries[i].key.intersects(&key) {
-                existing.push(self.entries.swap_remove(i));
+                existing.push(self.entries.swap_remove(i).into());
             } else {
                 i += 1;
             }
         }
 
         existing
+    }
+
+    pub fn pop(&mut self) -> Option<(Rect, V)> {
+        self.entries.pop().map(Into::into)
     }
 
     pub fn len(&self) -> usize {
@@ -69,6 +136,14 @@ impl<V> EuclidMap<V> {
 
     pub fn keys(&self) -> impl Iterator<Item = Rect> + use<'_, V> {
         self.entries.iter().map(|Entry { key, .. }| *key)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.entries.iter().map(|Entry { value, .. }| value)
+    }
+
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        self.entries.iter_mut().map(|Entry { value, .. }| value)
     }
 
     pub fn iter(&self) -> Iter<'_, V> {
@@ -179,88 +254,83 @@ mod tests {
     use super::*;
     use euclid::rect;
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
+    #[test]
+    fn test_insert_and_get() {
+        let mut map = EuclidMap::new();
+        let rect1 = rect(0, 0, 10, 10);
+        let point_inside = Point::new(5, 5);
 
-        #[test]
-        fn test_insert_and_get() {
-            let mut map = EuclidMap::new();
-            let rect1 = rect(0, 0, 10, 10);
-            let point_inside = Point::new(5, 5);
+        map.insert(rect1, "value1");
 
-            map.insert(rect1, "value1");
+        let retrieved = map.get(point_inside);
+        assert!(retrieved.is_some());
+        assert_eq!(*retrieved.unwrap().1, "value1");
+    }
 
-            let retrieved = map.get(point_inside);
-            assert!(retrieved.is_some());
-            assert_eq!(retrieved.unwrap().value, "value1");
+    #[test]
+    fn test_remove_at_point() {
+        let mut map = EuclidMap::new();
+        let rect1 = rect(0, 0, 10, 10);
+        let point_inside = Point::new(5, 5);
+
+        map.insert(rect1, "value1");
+
+        let removed = map.remove_at_point(point_inside);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().1, "value1");
+
+        // Ensure it's gone from the map.
+        assert!(map.get(point_inside).is_none());
+    }
+
+    #[test]
+    fn test_remove_all_overlaps() {
+        let mut map = EuclidMap::new();
+        let rect1 = rect(0, 0, 10, 10);
+        let rect2 = rect(5, 5, 10, 10);
+
+        map.insert(rect1, "value1");
+        map.insert(rect2, "value2"); // Overlaps with rect1
+
+        let removed = map.remove_all_overlaps(rect(2, 2, 20, 20));
+        assert_eq!(removed.len(), 1); // Both should be removed
+    }
+
+    #[test]
+    fn test_len_and_is_empty() {
+        let mut map = EuclidMap::new();
+        assert_eq!(map.len(), 0);
+        assert!(map.is_empty());
+        let rect1 = rect(0, 0, 10, 10);
+        map.insert(rect1, "value1");
+        assert_eq!(map.len(), 1);
+        assert!(!map.is_empty());
+        map.remove_at_point(Point::new(5, 5));
+        assert_eq!(map.len(), 0);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_iteration() {
+        let mut map = EuclidMap::new();
+        let rect1 = rect(0, 0, 10, 10);
+        let rect2 = rect(20, 20, 5, 5);
+
+        map.insert(rect1, "value1");
+        map.insert(rect2, "value2");
+
+        // Test immutable iteration
+        let collected: Vec<_> = map.iter().map(|(_, value)| *value).collect();
+        assert_eq!(collected.len(), 2);
+        assert!(collected.contains(&"value1"));
+        assert!(collected.contains(&"value2"));
+
+        // Test mutable iteration
+        for (_, value) in map.iter_mut() {
+            *value = "mutated";
         }
 
-        #[test]
-        fn test_remove_at_point() {
-            let mut map = EuclidMap::new();
-            let rect1 = rect(0, 0, 10, 10);
-            let point_inside = Point::new(5, 5);
-
-            map.insert(rect1, "value1");
-
-            let removed = map.remove_at_point(point_inside);
-            assert!(removed.is_some());
-            assert_eq!(removed.unwrap().value, "value1");
-
-            // Ensure it's gone from the map.
-            assert!(map.get(point_inside).is_none());
-        }
-
-        #[test]
-        fn test_remove_all_overlaps() {
-            let mut map = EuclidMap::new();
-            let rect1 = rect(0, 0, 10, 10);
-            let rect2 = rect(5, 5, 10, 10);
-
-            map.insert(rect1, "value1");
-            map.insert(rect2, "value2"); // Overlaps with rect1
-
-            let removed = map.remove_all_overlaps(rect(2, 2, 20, 20));
-            assert_eq!(removed.len(), 1); // Both should be removed
-        }
-
-        #[test]
-        fn test_len_and_is_empty() {
-            let mut map = EuclidMap::new();
-            assert_eq!(map.len(), 0);
-            assert!(map.is_empty());
-            let rect1 = rect(0, 0, 10, 10);
-            map.insert(rect1, "value1");
-            assert_eq!(map.len(), 1);
-            assert!(!map.is_empty());
-            map.remove_at_point(Point::new(5, 5));
-            assert_eq!(map.len(), 0);
-            assert!(map.is_empty());
-        }
-
-        #[test]
-        fn test_iteration() {
-            let mut map = EuclidMap::new();
-            let rect1 = rect(0, 0, 10, 10);
-            let rect2 = rect(20, 20, 5, 5);
-
-            map.insert(rect1, "value1");
-            map.insert(rect2, "value2");
-
-            // Test immutable iteration
-            let collected: Vec<_> = map.iter().map(|(_, value)| *value).collect();
-            assert_eq!(collected.len(), 2);
-            assert!(collected.contains(&"value1"));
-            assert!(collected.contains(&"value2"));
-
-            // Test mutable iteration
-            for (_, value) in map.iter_mut() {
-                *value = "mutated";
-            }
-
-            let collected: Vec<_> = map.iter().map(|(_, value)| *value).collect();
-            assert_eq!(collected, vec!["mutated", "mutated"]);
-        }
+        let collected: Vec<_> = map.iter().map(|(_, value)| *value).collect();
+        assert_eq!(collected, vec!["mutated", "mutated"]);
     }
 }
