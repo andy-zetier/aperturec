@@ -2,7 +2,11 @@ use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState, SetDi
 use crate::metrics::{BackendEvent, DisplayHeight, DisplayWidth};
 use crate::process_utils::{self, DisplayableExitStatus};
 
-use aperturec_graphics::{display::*, prelude::*};
+use aperturec_graphics::{
+    display::{self, *},
+    geometry::*,
+    prelude::*,
+};
 use aperturec_protocol::event as em;
 
 use anyhow::{anyhow, bail, Result};
@@ -850,23 +854,46 @@ impl X {
         Ok((displays, modes[0].id))
     }
 
-    async fn resize_screen_if(&self, displays: &[Display], resize_if: Ordering) -> Result<()> {
-        let extent = displays.derive_extent()?;
-        let (width, height) = (extent.width as u16, extent.height as u16);
-
+    async fn resize_screen_if(
+        &self,
+        displays: impl IntoIterator<Item = &Display> + Clone,
+        resize_if: Ordering,
+    ) -> Result<()> {
+        let requested = match displays.clone().into_iter().derive_extent() {
+            Ok(size) => size,
+            Err(display::Error::NoEnabledDisplays) => Size::zero(),
+            Err(display::Error::NoDisplayAtOrigin) => {
+                let bb = displays
+                    .into_iter()
+                    .filter(|d| d.is_enabled)
+                    .map(|d| d.area)
+                    .extent()
+                    .unwrap_or(Rect::zero())
+                    .to_box2d();
+                Size::new(bb.max.x, bb.max.y)
+            }
+        };
         let window = self.root_window()?;
 
-        let screen_info = self
+        let current = self
             .connection
-            .checked_request_with_reply(randr::GetScreenInfo { window })
+            .checked_request_with_reply(x::GetGeometry {
+                drawable: self.root_drawable,
+            })
             .await?;
-
-        let Some(current) = screen_info.sizes().get(screen_info.size_id() as usize) else {
-            warn!(?screen_info);
-            bail!("Screen size id {} does not exist", screen_info.size_id());
+        let current = Size::new(current.width() as _, current.height() as _);
+        let combined = match resize_if {
+            Ordering::Less => requested.min(current),
+            Ordering::Greater => requested.max(current),
+            Ordering::Equal => {
+                unimplemented!("resize_if should be Ordering::Less or Ordering::Greater")
+            }
         };
+        debug!(?current, ?requested, ?combined);
 
-        if width.cmp(&current.width) != resize_if && height.cmp(&current.height) != resize_if {
+        if combined.width.cmp(&current.width) != resize_if
+            && combined.height.cmp(&current.height) != resize_if
+        {
             return Ok(());
         }
 
@@ -874,16 +901,16 @@ impl X {
         let dpi = 96.0;
         let px_to_mm = 25.4 / dpi;
 
-        let mm_width = (width as f64 * px_to_mm).round() as u32;
-        let mm_height = (height as f64 * px_to_mm).round() as u32;
+        let mm_width = (combined.width as f64 * px_to_mm).round() as u32;
+        let mm_height = (combined.height as f64 * px_to_mm).round() as u32;
 
-        debug!(new_screen_size=?(width, height, mm_width, mm_height));
+        debug!(new_screen_size=?(combined.width, combined.height, mm_width, mm_height));
 
         self.connection
             .checked_void_request(randr::SetScreenSize {
                 window,
-                width,
-                height,
+                width: combined.width as _,
+                height: combined.height as _,
                 mm_width,
                 mm_height,
             })
@@ -986,9 +1013,12 @@ impl X {
             return Ok(SetDisplaySuccess::NoChange);
         }
 
+        // We assume that the scren size has been appropriately set when `set_display` is called
+        // from `set_displays` and therefore we do not have to call `resize_screen_if` again
+
         let (mode, x, y, outputs) = if display.is_enabled {
             anyhow::ensure!(
-                Rect::new(Point::zero(), (self.max_width, self.max_height).into())
+                Rect::from_size(Size::new(self.max_width, self.max_height))
                     .contains_rect(&display.area)
                     && display.area.size.width >= Self::MIN_WIDTH
                     && display.area.size.height >= Self::MIN_HEIGHT,
@@ -1280,8 +1310,8 @@ mod test {
     #[test(tokio::test(flavor = "multi_thread"))]
     #[serial]
     async fn set_display() {
-        let max_width = 1920;
-        let max_height = 1080;
+        let max_width = 7680;
+        let max_height = 4320;
 
         let mut x = X::initialize(
             max_width,
@@ -1292,16 +1322,29 @@ mod test {
         .await
         .expect("x initialize");
 
-        let resolutions = vec![
-            Size::new(max_width, max_height),
-            Size::new(X::MIN_WIDTH, X::MIN_HEIGHT),
-            Size::new(1024, 768),
-            Size::new(800, 600),
-            Size::new(1440, 900),
-            Size::new(1280, 1024),
-            Size::new(823, 688),
-            Size::new(823, 688),
-            Size::new(800, 600),
+        let areas = vec![
+            Rect::new(Point::zero(), Size::new(max_width, max_height)),
+            Rect::new(Point::zero(), Size::new(1920, 1080)),
+            Rect::new(Point::new(1920, 0), Size::new(1920, 1080)),
+            Rect::new(Point::zero(), Size::new(X::MIN_WIDTH, X::MIN_HEIGHT)),
+            Rect::new(
+                Point::new(X::MIN_WIDTH, 0),
+                Size::new(X::MIN_WIDTH, X::MIN_HEIGHT),
+            ),
+            Rect::new(Point::zero(), Size::new(1024, 768)),
+            Rect::new(Point::new(1024, 0), Size::new(1024, 768)),
+            Rect::new(Point::zero(), Size::new(800, 600)),
+            Rect::new(Point::new(800, 0), Size::new(800, 600)),
+            Rect::new(Point::zero(), Size::new(1440, 900)),
+            Rect::new(Point::new(1440, 0), Size::new(1440, 900)),
+            Rect::new(Point::zero(), Size::new(1280, 1024)),
+            Rect::new(Point::new(1280, 0), Size::new(1280, 1024)),
+            Rect::new(Point::zero(), Size::new(823, 688)),
+            Rect::new(Point::new(823, 0), Size::new(823, 688)),
+            Rect::new(Point::zero(), Size::new(823, 688)),
+            Rect::new(Point::new(823, 0), Size::new(823, 688)),
+            Rect::new(Point::zero(), Size::new(800, 600)),
+            Rect::new(Point::new(800, 0), Size::new(800, 600)),
         ];
 
         let mut display = Display {
@@ -1309,19 +1352,15 @@ mod test {
             is_enabled: true,
         };
 
-        // Ensure resolution / origin changes work
-        for res in &resolutions {
-            // Ensure new resolution at the origin works
-            display.area = Rect::new(Point::new(0, 0), *res);
-            x.set_display(0, &display).await.expect("set display");
-            assert_eq!(display, x.get_display(0).await.expect("get display"));
-
-            // Ensure new resolution at shifted origin works
-            display.area = Rect::new(
-                Point::new(max_width - res.width, max_height - res.height),
-                *res,
-            );
-            x.set_display(0, &display).await.expect("set display");
+        // Ensure display changes work at both origin and offset
+        for area in &areas {
+            display.area = *area;
+            x.resize_screen_if([&display], Ordering::Greater)
+                .await
+                .expect("resize screen");
+            x.set_display(0, &display)
+                .await
+                .unwrap_or_else(|err| panic!("set display to {:?}: {}", display, err));
             assert_eq!(display, x.get_display(0).await.expect("get display"));
         }
 
@@ -1333,8 +1372,8 @@ mod test {
         assert_eq!(screen_resources.modes()[0].id, x.default_mode_id);
 
         // Ensure the most recent resolution is last
-        let last_res = resolutions.last().expect("last");
-        let name = format!("{}x{}", last_res.width, last_res.height);
+        let last_area = areas.last().expect("last");
+        let name = format!("{}x{}", last_area.width(), last_area.height());
         assert_eq! {
             screen_resources
                 .modes().last().expect("last").id,
@@ -1348,7 +1387,7 @@ mod test {
             assert_eq!(display, x.get_display(id).await.expect("get display"));
 
             // Ensure next CRTC is enabled
-            display.area.size = *last_res;
+            display.area = *last_area;
             display.is_enabled = true;
             x.set_display(id, &display).await.expect("set display");
             assert_eq!(display, x.get_display(id).await.expect("get display"));
@@ -1399,7 +1438,10 @@ mod test {
         assert!(result.displays.len() == x.max_display_count);
 
         let displays = create_displays(max_width, max_height, 1);
-        let mut result = x.set_displays(displays).await.expect("set displays");
+        let mut result = x
+            .set_displays(displays.clone())
+            .await
+            .unwrap_or_else(|_| panic!("set displays {:?} failed", displays));
 
         // Ensure resulting displays are expanded to max_display_count
         assert!(result.displays.len() == x.max_display_count);
