@@ -2,11 +2,7 @@ use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState, SetDi
 use crate::metrics::{BackendEvent, DisplayHeight, DisplayWidth};
 use crate::process_utils::{self, DisplayableExitStatus};
 
-use aperturec_graphics::{
-    display::{self, *},
-    geometry::*,
-    prelude::*,
-};
+use aperturec_graphics::{display::*, geometry::*, prelude::*};
 use aperturec_protocol::event as em;
 
 use anyhow::{anyhow, bail, Result};
@@ -859,20 +855,7 @@ impl X {
         displays: impl IntoIterator<Item = &Display> + Clone,
         resize_if: Ordering,
     ) -> Result<()> {
-        let requested = match displays.clone().into_iter().derive_extent() {
-            Ok(size) => size,
-            Err(display::Error::NoEnabledDisplays) => Size::zero(),
-            Err(display::Error::NoDisplayAtOrigin) => {
-                let bb = displays
-                    .into_iter()
-                    .filter(|d| d.is_enabled)
-                    .map(|d| d.area)
-                    .extent()
-                    .unwrap_or(Rect::zero())
-                    .to_box2d();
-                Size::new(bb.max.x, bb.max.y)
-            }
-        };
+        let requested = displays.clone().into_iter().derive_extent()?;
         let window = self.root_window()?;
 
         let current = self

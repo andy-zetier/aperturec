@@ -5,8 +5,6 @@ use thiserror::Error;
 pub enum Error {
     #[error("no displays are enabled")]
     NoEnabledDisplays,
-    #[error("no display at origin")]
-    NoDisplayAtOrigin,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -96,11 +94,8 @@ where
             return Err(Error::NoEnabledDisplays);
         };
 
-        if !has_origin_display {
-            return Err(Error::NoDisplayAtOrigin);
-        }
-
-        Ok(extent.size)
+        let b = extent.to_box2d();
+        Ok(Size::new(b.max.x, b.max.y))
     }
 }
 
@@ -200,14 +195,6 @@ mod test {
                     },
                 ],
                 Err(Error::NoEnabledDisplays),
-            ),
-            (
-                "Error if no display at origin",
-                vec![Display {
-                    area: Rect::new(Point::new(100, 100), Size::new(1920, 1080)),
-                    is_enabled: true,
-                }],
-                Err(Error::NoDisplayAtOrigin),
             ),
         ];
 
