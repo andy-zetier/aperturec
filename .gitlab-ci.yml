@@ -164,6 +164,21 @@ create-images:deploy-manifest:
   before_script:
     - export CARGO_ARGS=`sed -e 's/^/-p /g' -e 's/,/ -p /g' <<< $CRATES`
 
+cargo:check-license:
+  stage: check-build-test
+  extends:
+    - .runner-arch:independent
+    - .cargo
+  script:
+    - cargo deny check licenses
+  parallel:
+    matrix:
+      - CRATES: !reference [.crates:package]
+  allow_failure: true
+  needs:
+    - job: create-images:deploy-manifest
+      optional: true
+
 cargo:check-build-test:
   stage: check-build-test
   extends:
