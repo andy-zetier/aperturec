@@ -541,45 +541,76 @@ mod signal_handlers {
     }
 
     pub fn scroll(workspace: &UiWorkspace, event: &gdk::EventScroll) {
-        let button = match event.direction() {
-            gdk::ScrollDirection::Up => 3,
-            gdk::ScrollDirection::Down => 4,
-            gdk::ScrollDirection::Left => 5,
-            gdk::ScrollDirection::Right => 6,
-            _ => 0,
+        let (up_mag, down_mag, left_mag, right_mag) = match event.direction() {
+            gdk::ScrollDirection::Up => (1, 0, 0, 0),
+            gdk::ScrollDirection::Down => (0, 1, 0, 0),
+            gdk::ScrollDirection::Left => (0, 0, 1, 0),
+            gdk::ScrollDirection::Right => (0, 0, 0, 1),
+            gdk::ScrollDirection::Smooth => {
+                let (xdelta, ydelta) = event.delta();
+                let left_mag = if xdelta < 0. {
+                    xdelta.abs().ceil() as usize
+                } else {
+                    0
+                };
+                let right_mag = if xdelta > 0. {
+                    xdelta.ceil() as usize
+                } else {
+                    0
+                };
+                let up_mag = if ydelta < 0. {
+                    ydelta.abs().ceil() as usize
+                } else {
+                    0
+                };
+                let down_mag = if ydelta > 0. {
+                    ydelta.ceil() as usize
+                } else {
+                    0
+                };
+                (up_mag, down_mag, left_mag, right_mag)
+            }
+            _ => (0, 0, 0, 0),
         };
+        let buttons = iter::repeat_n(3, up_mag)
+            .chain(iter::repeat_n(4, down_mag))
+            .chain(iter::repeat_n(5, left_mag))
+            .chain(iter::repeat_n(6, right_mag))
+            .collect::<Vec<_>>();
         let mouse_pos = workspace.last_mouse_pos.get();
         trace!(
             "GTK ButtonPressEvent: {:?} @ {:?} (scroll)",
-            button,
+            buttons,
             mouse_pos
         );
 
-        //
-        // Synthesize a press / release event
-        //
-        workspace
-            .event_tx
-            .send(EventMessage::MouseButtonEventMessage(
-                MouseButtonEventMessageBuilder::default()
-                    .button(button)
-                    .is_pressed(true)
-                    .pos(mouse_pos)
-                    .build()
-                    .expect("GTK failed to build MouseButtonEventMessage!"),
-            ))
-            .unwrap_or_else(|err| warn!("GTK failed to tx MouseButtonEventMessage: {}", err));
-        workspace
-            .event_tx
-            .send(EventMessage::MouseButtonEventMessage(
-                MouseButtonEventMessageBuilder::default()
-                    .button(button)
-                    .is_pressed(false)
-                    .pos(mouse_pos)
-                    .build()
-                    .expect("GTK failed to build MouseButtonEventMessage!"),
-            ))
-            .unwrap_or_else(|err| warn!("GTK failed to tx MouseButtonEventMessage: {}", err));
+        for button in &buttons {
+            //
+            // Synthesize a press and release event
+            //
+            workspace
+                .event_tx
+                .send(EventMessage::MouseButtonEventMessage(
+                    MouseButtonEventMessageBuilder::default()
+                        .button(*button)
+                        .is_pressed(true)
+                        .pos(mouse_pos)
+                        .build()
+                        .expect("GTK failed to build MouseButtonEventMessage!"),
+                ))
+                .unwrap_or_else(|err| warn!("GTK failed to tx MouseButtonEventMessage: {}", err));
+            workspace
+                .event_tx
+                .send(EventMessage::MouseButtonEventMessage(
+                    MouseButtonEventMessageBuilder::default()
+                        .button(*button)
+                        .is_pressed(false)
+                        .pos(mouse_pos)
+                        .build()
+                        .expect("GTK failed to build MouseButtonEventMessage!"),
+                ))
+                .unwrap_or_else(|err| warn!("GTK failed to tx MouseButtonEventMessage: {}", err));
+        }
     }
 
     pub fn motion(workspace: &UiWorkspace, event: &gdk::EventMotion, offset: Point) {
