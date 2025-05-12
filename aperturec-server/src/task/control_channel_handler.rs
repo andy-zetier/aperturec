@@ -79,7 +79,7 @@ impl Transitionable<Running> for Task<Created> {
                                     debug!(%error, "flush control channel");
                                 })
                             }
-                        ).await.unwrap_or_else(|_| warn!("Timeout flushing control channel"));
+                        ).await.unwrap_or_else(|_| debug!("Timeout flushing control channel"));
                         break Ok(());
                     }
                     else => bail!("CC Tx messages exhausted"),

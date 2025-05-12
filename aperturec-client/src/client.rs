@@ -1,10 +1,10 @@
 use crate::frame::*;
-use crate::gtk3::{self, image::Image, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
+use crate::gtk3::{self, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
 
 use aperturec_channel::{self as channel, Receiver as _, Sender as _, Unified};
 use aperturec_graphics::{
     display::{self, Display},
-    euclid_collections::EuclidSet,
+    euclid_collections::*,
     geometry::*,
 };
 use aperturec_protocol::common::*;
@@ -20,16 +20,15 @@ use aperturec_protocol::event::{
 use aperturec_protocol::tunnel;
 use aperturec_utils::log::*;
 
-use anyhow::{anyhow, bail, ensure, Error, Result};
-use crossbeam::channel::{bounded, never, select, unbounded, Receiver, RecvTimeoutError, Sender};
+use anyhow::{anyhow, bail, Error, Result};
+use crossbeam::channel::{bounded, select, unbounded, Receiver, RecvTimeoutError, Sender};
 use derive_builder::Builder;
 use gtk::glib;
 use openssl::x509::X509;
 use secrecy::{zeroize::Zeroize, ExposeSecret, SecretString};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::env::consts;
 use std::io::{prelude::*, ErrorKind};
-use std::iter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::num::NonZeroUsize;
 use std::str::FromStr;
@@ -198,6 +197,9 @@ pub enum UiMessage {
     },
     DisplayChange {
         display_config: display::DisplayConfiguration,
+    },
+    Draw {
+        draw: Draw,
     },
 }
 
@@ -374,147 +376,45 @@ impl ConfigurationBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum MonitorGeometry {
-    Multi { origin: Rect, other: EuclidSet },
-    Single { size: Size },
+#[derive(Debug, Clone, Copy)]
+pub struct MonitorGeometry {
+    pub total_area: Rect,
+    pub usable_area: Rect,
 }
 
-impl<'mg> IntoIterator for &'mg MonitorGeometry {
-    type Item = Rect;
-    type IntoIter = Box<dyn Iterator<Item = Rect> + 'mg>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
+#[derive(Debug, Clone, Default)]
+pub struct MonitorsGeometry {
+    pub(crate) monitors: EuclidMap<Rect>,
 }
 
-impl MonitorGeometry {
-    pub fn extent(&self) -> Rect {
-        match self {
-            MonitorGeometry::Multi { origin, other } => {
-                iter::once(*origin).chain(other).extent().unwrap()
-            }
-            MonitorGeometry::Single { size } => Rect::from_size(*size),
-        }
+impl MonitorsGeometry {
+    pub fn iter(&self) -> impl Iterator<Item = MonitorGeometry> + use<'_> {
+        self.monitors
+            .iter()
+            .map(|(total_area, &usable_area)| MonitorGeometry {
+                total_area,
+                usable_area,
+            })
     }
 
-    pub fn is_single(&self) -> bool {
-        matches!(self, MonitorGeometry::Single { .. })
-    }
-
-    pub fn is_multi(&self) -> bool {
-        matches!(self, MonitorGeometry::Multi { .. })
-    }
-
-    pub fn iter(&self) -> Box<dyn Iterator<Item = Rect> + '_> {
-        match self {
-            MonitorGeometry::Multi { origin, other } => Box::new(iter::once(*origin).chain(other)),
-            MonitorGeometry::Single { size } => Box::new(iter::once(Rect::from_size(*size))),
-        }
-    }
-
-    pub fn single_monitor_size(&self) -> Size {
-        match self {
-            MonitorGeometry::Multi { origin, .. } => origin.size,
-            MonitorGeometry::Single { size } => *size,
-        }
-    }
-
-    pub fn num_monitors(&self) -> usize {
-        match self {
-            MonitorGeometry::Multi { other, .. } => other.len() + 1,
-            MonitorGeometry::Single { .. } => 1,
-        }
-    }
-
-    pub fn identify_display_mode(
-        &self,
-        server_display_config: &display::DisplayConfiguration,
-        is_fullscreened: bool,
-        is_multimonitored: bool,
-    ) -> Result<DisplayMode> {
-        ensure!(
-            server_display_config.display_decoder_infos.len() >= 1,
-            "Server display configuration must have at least one display decoder info"
-        );
-        trace!(?is_fullscreened, ?is_multimonitored, ?server_display_config);
-
-        let dc_rects = server_display_config
+    pub fn matches(&self, display_configuration: &display::DisplayConfiguration) -> bool {
+        display_configuration
             .display_decoder_infos
             .iter()
             .filter(|ddi| ddi.display.is_enabled)
             .map(|ddi| ddi.display.area)
-            .collect::<HashSet<_>>();
-        let first_dc_rect = dc_rects.iter().next().unwrap();
+            .collect::<EuclidSet>()
+            == self.monitors.keys().collect()
+    }
 
-        let windowed = DisplayMode::Windowed {
-            size: first_dc_rect.size,
-        };
-
-        match (self, dc_rects.len(), is_fullscreened, is_multimonitored) {
-            (MonitorGeometry::Single { size }, 1, true, _) => {
-                if first_dc_rect.size.width > size.width || first_dc_rect.size.height > size.height
-                {
-                    warn!(
-                        "Server provided display configuration with display size {}x{}, but the monitor is only {}x{}. There may be visual artifacts, including cut-off parts of the display.",
-                        first_dc_rect.size.width,
-                        first_dc_rect.size.height,
-                        size.width,
-                        size.height
-                    );
-                }
-                Ok(DisplayMode::SingleFullscreen)
-            }
-            (MonitorGeometry::Single { .. }, _, true, _) => {
-                bail!("Server provided multi-display configuration, but only one monitor is configured.");
-            }
-            (MonitorGeometry::Multi { .. }, 1, true, true) => {
-                warn!("Server provided single-display configuration with multi-monitor geometry and multi-monitor mode. Falling back to single-monitor mode.");
-                Ok(DisplayMode::SingleFullscreen)
-            }
-            (MonitorGeometry::Multi { origin, other }, _, true, true) => {
-                let num_server_displays = server_display_config.display_decoder_infos.len();
-                if num_server_displays < self.num_monitors() {
-                    warn!("Server supports only {} displays, but client has {} monitors. Falling back single-monitor mode", num_server_displays, self.num_monitors());
-                    return Ok(DisplayMode::SingleFullscreen);
-                }
-                let mg_rects = iter::once(*origin).chain(other).collect::<HashSet<_>>();
-                if mg_rects != dc_rects {
-                    warn!("Server provided display configuration does not match client monitor geometry. Falling back to windowed mode.");
-                    return Ok(windowed);
-                }
-                Ok(DisplayMode::MultiFullscreen)
-            }
-            (MonitorGeometry::Multi { origin, other }, 1, true, false) => {
-                let mg_sizes = iter::once(*origin)
-                    .chain(other)
-                    .map(|r| r.size)
-                    .collect::<HashSet<_>>();
-                if !mg_sizes.contains(&first_dc_rect.size) {
-                    warn!(
-                        "Server provided single-display configuration ({}x{}), but it does not match any monitor. Falling back to windowed mode.",
-                        first_dc_rect.size.width,
-                        first_dc_rect.size.height,
-                    );
-                    return Ok(windowed);
-                }
-                Ok(DisplayMode::SingleFullscreen)
-            }
-            (MonitorGeometry::Multi { .. }, _, true, false) => {
-                bail!("Server provided multi-display configuration in single-monitor mode");
-            }
-            (_, 1, false, _) => Ok(windowed),
-            (_, _, false, _) => {
-                bail!("Server provided multi-display configuration in windowed mode");
-            }
-        }
+    pub fn is_multi(&self) -> bool {
+        self.monitors.len() > 1
     }
 }
 
 pub struct Client {
     config: Configuration,
-    monitor_geometry: Option<MonitorGeometry>,
+    monitor_geometry: Option<MonitorsGeometry>,
     id: Option<u64>,
     server_name: Option<String>,
     control_jh: Option<thread::JoinHandle<()>>,
@@ -547,7 +447,7 @@ impl Client {
     pub fn startup(config: &Configuration, itc: ClientSideItcChannels) -> Result<Self> {
         let mut this = Client::new(config);
 
-        this.monitor_geometry = Some(gtk3::get_monitor_geometry()?);
+        this.monitor_geometry = Some(gtk3::get_monitors_geometry()?);
         debug!(monitor_geometry=?this.monitor_geometry);
 
         let (cc, ec, mc, tc) = this.setup_unified_channel()?;
@@ -562,9 +462,9 @@ impl Client {
             itc.notify_event_rx,
             itc.notify_control_tx,
             itc.notify_media_tx,
-            itc.ui_tx,
+            itc.ui_tx.clone(),
         )?;
-        this.setup_media_channel(mc, itc.notify_media_rx, itc.img_tx, itc.img_rx)?;
+        this.setup_media_channel(mc, itc.notify_media_rx, itc.ui_tx)?;
         this.setup_tunnel_channel(tc)?;
 
         Ok(this)
@@ -599,29 +499,28 @@ impl Client {
                         is_enabled: true,
                     }]
                 }
-                DisplayMode::MultiFullscreen => match self.monitor_geometry.as_ref().unwrap() {
-                    MonitorGeometry::Multi { origin, other } => iter::once(*origin)
-                        .chain(other)
-                        .map(|rect| DisplayInfo {
-                            area: Some(Rectangle::try_from(rect).expect("Failed to generate area")),
-                            is_enabled: true,
-                        })
-                        .collect(),
-                    MonitorGeometry::Single { size } => {
-                        vec![DisplayInfo {
-                            area: Some(
-                                Rectangle::try_from_size_at_origin(*size)
-                                    .expect("Failed to generate area"),
-                            ),
-                            is_enabled: true,
-                        }]
-                    }
-                },
+                DisplayMode::MultiFullscreen => self
+                    .monitor_geometry
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|MonitorGeometry { total_area, .. }| DisplayInfo {
+                        area: Some(
+                            Rectangle::try_from(total_area).expect("Failed to generate area"),
+                        ),
+                        is_enabled: true,
+                    })
+                    .collect(),
                 DisplayMode::SingleFullscreen => {
-                    let size = match self.monitor_geometry.as_ref().unwrap() {
-                        MonitorGeometry::Multi { origin, .. } => origin.size,
-                        MonitorGeometry::Single { size } => *size,
-                    };
+                    let size = self
+                        .monitor_geometry
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .next()
+                        .expect("no monitors")
+                        .usable_area
+                        .size;
                     vec![DisplayInfo {
                         area: Some(
                             Rectangle::try_from_size_at_origin(size)
@@ -1038,54 +937,67 @@ impl Client {
         &mut self,
         mut mc: channel::ClientMedia,
         notify_media_rx: Receiver<display::DisplayConfiguration>,
-        img_tx: glib::Sender<Image>,
-        img_rx: Receiver<Image>,
+        ui_tx: glib::Sender<UiMessage>,
     ) -> Result<()> {
         let (mm_rx_tx, mm_rx_rx) = unbounded();
-        thread::spawn::<_, Result<()>>(move || loop {
-            let msg = mc.receive()?;
-            mm_rx_tx.send(msg)?;
+        let should_stop = self.should_stop.clone();
+        thread::spawn::<_, Result<()>>(move || {
+            let res = loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    break Ok(());
+                }
+                let msg = mc.receive()?;
+                mm_rx_tx.send(msg)?;
+            };
+            should_stop.store(true, Ordering::Relaxed);
+            res
         });
 
         let mut framer = Framer::new(self.display_config.as_ref().unwrap().clone());
 
-        thread::spawn::<_, Result<()>>(move || loop {
-            let draw_recv = if framer.has_draws() {
-                Some(&img_rx)
-            } else {
-                None
+        let should_stop = self.should_stop.clone();
+        thread::spawn::<_, Result<()>>(move || {
+            let res: Result<()> = 'outer: loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    break Ok(());
+                }
+
+                select! {
+                    recv(mm_rx_rx) -> msg_res => {
+                        let Some(msg) = msg_res?.message else {
+                            warn!("media message with empty body");
+                            continue;
+                        };
+                        if let Err(error) = framer.report_mm(msg) {
+                            warn!(%error, "error processing media message");
+                        }
+                    },
+                    recv(notify_media_rx) -> msg_res => {
+                        let display_config = msg_res?;
+                        if display_config.id > framer.display_config.id {
+                            framer = Framer::new(display_config.clone());
+                        }
+                        if let Err(error) = ui_tx.send(UiMessage::DisplayChange { display_config }) {
+                            warn!(%error, "failed sending display config to UI");
+                            break Err(error.into());
+                        }
+                    },
+                }
+
+                if framer.has_draws() {
+                    for draw in framer.get_draws_and_reset() {
+                        if let Err(error) = ui_tx.send(UiMessage::Draw { draw }) {
+                            warn!(%error, "failed sending draw to UI");
+                            break 'outer Err(error.into());
+                        }
+                    }
+                }
             };
 
-            select! {
-                recv(mm_rx_rx) -> msg_res => {
-                    let Some(msg) = msg_res?.message else {
-                        warn!("media message with empty body");
-                        continue;
-                    };
-                    if let Err(e) = framer.report_mm(msg) {
-                        warn!("Error processing media message: {}", e)
-                    }
-                },
-                recv(notify_media_rx) -> msg_res => {
-                    let new_config = msg_res?;
-                    if new_config.id > framer.display_config.id {
-                        framer = Framer::new(new_config);
-                    }
-                },
-                recv(draw_recv.unwrap_or(&never())) -> img_res => {
-                    let mut img = img_res?;
-                    if img.display_config_id < framer.display_config.id {
-                        img.update_display_config(&framer.display_config);
-                    }
-
-                    for draw in framer.get_draws_and_reset() {
-                        img.draw(&draw);
-                    }
-
-                    img_tx.send(img)?;
-                },
-            }
+            should_stop.store(true, Ordering::Relaxed);
+            res
         });
+
         Ok(())
     }
 
@@ -1151,8 +1063,12 @@ impl Client {
         let (control_tx_tx, control_tx_rx) = unbounded();
         let (control_rx_tx, control_rx_rx) = unbounded();
 
+        let should_stop = self.should_stop.clone();
         thread::spawn(move || {
             loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    break;
+                }
                 match client_cc_read.receive() {
                     Ok(cm_s2c) => {
                         let is_server_gb = matches!(cm_s2c, cm_s2c::Message::ServerGoodbye(_));
@@ -1177,32 +1093,40 @@ impl Client {
                     }
                 }
             }
+            should_stop.store(true, Ordering::Relaxed);
             trace!("Control channel rx exiting");
         });
 
+        let should_stop = self.should_stop.clone();
         thread::spawn(move || {
             while let Ok(cm_c2s) = control_tx_rx.recv() {
-                let should_exit = matches!(cm_c2s, cm_c2s::Message::ClientGoodbye(_));
+                if should_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let is_client_gb = matches!(cm_c2s, cm_c2s::Message::ClientGoodbye(_));
                 if let Err(err) = client_cc_write.send(cm_c2s) {
                     error!("Failed to send: {}", err);
                     break;
                 }
 
-                if should_exit {
+                if is_client_gb {
                     break;
                 }
             }
+            should_stop.store(true, Ordering::Relaxed);
             trace!("Control channel tx exiting");
         });
 
         //
         // Setup SIGINT handler
         //
+        let should_stop = self.should_stop.clone();
         ctrlc::set_handler(move || {
             info!("Received Ctrl-C, exiting");
             notify_control_tx
                 .send(ControlMessage::SigintReceived)
                 .expect("Failed to notify control channel of SIGINT");
+            should_stop.store(true, Ordering::Relaxed);
         })
         .unwrap_or_else(|e| error!("Unable to install SIGINT handler: '{}'", e));
 
@@ -1318,18 +1242,21 @@ impl Client {
         thread::spawn::<_, Result<()>>(move || {
             debug!("Event channel Rx started");
             loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    break;
+                }
                 let msg = ec_rx.receive()?;
                 trace!(?msg);
 
                 if let em_s2c::Message::DisplayConfiguration(ref display_config) = msg {
                     notify_media_tx.send((*display_config).clone().try_into()?)?;
-                }
-                ui_tx.send(msg.try_into()?)?;
-
-                if should_stop.load(Ordering::Relaxed) {
-                    break Ok(());
+                } else {
+                    let ui_msg = UiMessage::try_from(msg)?;
+                    ui_tx.send(ui_msg)?;
                 }
             }
+            should_stop.store(true, Ordering::Relaxed);
+            Ok(())
         });
 
         let should_stop = self.should_stop.clone();
@@ -1345,6 +1272,7 @@ impl Client {
                     }
                     EventMessage::KeyEventMessage(kem) => em_c2s::Message::from(kem.to_key_event()),
                     EventMessage::DisplayEventMessage(dem) => {
+                        debug!(?dem);
                         em_c2s::Message::from(dem.to_display_event())
                     }
                 };
@@ -1363,6 +1291,7 @@ impl Client {
             } // for event_rx.iter()
 
             debug!("Event channel exiting");
+            should_stop.store(true, Ordering::Relaxed);
         }); // thread::spawn
 
         Ok(())
@@ -1423,15 +1352,17 @@ pub fn run_client(config: Configuration) -> Result<()> {
     //
     let client = Client::startup(&config, itc.client_half)?;
 
-    //
-    // Start up the UI on main thread
-    //
-    GtkUi::run_ui(
+    let ui = GtkUi::new(
         itc.gtk_half,
         config.initial_display_mode,
         client.monitor_geometry.as_ref().unwrap().clone(),
         client.display_config.as_ref().unwrap().clone(),
-    );
+    )?;
+
+    //
+    // Start up the UI on main thread
+    //
+    ui.run();
 
     client.shutdown();
 
@@ -1441,15 +1372,13 @@ pub fn run_client(config: Configuration) -> Result<()> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::gtk3;
     use aperturec_protocol::control::ServerInitBuilder;
     use test_log::test;
 
     fn generate_configuration(
         auth_token: SecretString,
         dec_max: NonZeroUsize,
-        width: usize,
-        height: usize,
+        size: Size,
         server_port: u16,
     ) -> Configuration {
         ConfigurationBuilder::default()
@@ -1457,9 +1386,7 @@ mod test {
             .decoder_max(dec_max)
             .name(String::from("test_client"))
             .server_addr(format!("127.0.0.1:{}", server_port))
-            .initial_display_mode(DisplayMode::Windowed {
-                size: (width, height).into(),
-            })
+            .initial_display_mode(DisplayMode::Windowed { size })
             .build()
             .expect("Failed to build Configuration!")
     }
@@ -1477,13 +1404,10 @@ mod test {
             .build_sync()
             .expect("Create qserver");
 
-        let (width, height) = gtk3::get_fullscreen_dims().expect("fullscreen dims");
-
         let mut config = generate_configuration(
             SecretString::default(),
             8.try_into().unwrap(),
-            width.try_into().unwrap(),
-            height.try_into().unwrap(),
+            Size::new(800, 600),
             qserver.local_addr().expect("local addr").port(),
         );
         config

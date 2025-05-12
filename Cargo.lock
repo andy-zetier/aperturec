@@ -182,6 +182,7 @@ dependencies = [
  "flate2",
  "gethostname",
  "gtk",
+ "itertools 0.14.0",
  "jpegxl-rs",
  "keycode",
  "ndarray",

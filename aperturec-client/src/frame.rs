@@ -200,7 +200,7 @@ impl DecoderFrameState {
                     *self = DecoderFrameState::Complete
                 }
             }
-            DecoderFrameState::Complete { .. } => {
+            DecoderFrameState::Complete => {
                 bail!("marking sequence received for complete decoder frame")
             }
         }
@@ -353,8 +353,8 @@ pub struct Draw {
 }
 
 impl Draw {
-    pub fn area(&self) -> Box2D {
-        Rect::new(self.origin, self.pixels.size()).to_box2d()
+    pub fn area(&self) -> Rect {
+        Rect::new(self.origin, self.pixels.size())
     }
 }
 
@@ -540,21 +540,14 @@ impl DisplayFramer {
         Ok(())
     }
 
-    fn get_draws_and_reset(&mut self) -> Vec<Draw> {
+    fn get_draws_and_reset(&mut self) -> impl Iterator<Item = Draw> + use<'_> {
         let draw_state = mem::take(&mut self.draw_state);
 
-        let mut draws = draw_state
-            .undrawn_fragments
-            .into_iter()
-            .map(|df| Draw {
-                frame: df.frame,
-                origin: df.decoder_relative_origin
-                    + self.decoder_areas[df.decoder].origin.to_vector(),
-                pixels: df.pixmap,
-            })
-            .collect::<Vec<_>>();
-        draws.sort_by_key(|draw| draw.frame);
-        draws
+        draw_state.undrawn_fragments.into_iter().map(|df| Draw {
+            frame: df.frame,
+            origin: df.decoder_relative_origin + self.decoder_areas[df.decoder].origin.to_vector(),
+            pixels: df.pixmap,
+        })
     }
 
     fn has_draws(&self) -> bool {
@@ -616,6 +609,9 @@ impl Framer {
             sequence = encoded_frag.sequence,
             "received"
         );
+        if encoded_frag.display_config < self.display_config.id {
+            return Ok(());
+        }
         ensure!(
             encoded_frag.display_config == self.display_config.id,
             "Mismatching display config id {} != {}",
@@ -639,6 +635,9 @@ impl Framer {
             "received empty frame terminal"
         );
         let display_config = term.display_config as usize;
+        if display_config < self.display_config.id {
+            return Ok(());
+        }
         ensure!(
             display_config == self.display_config.id,
             "Mismatching display config id {} != {}",
@@ -650,17 +649,15 @@ impl Framer {
         self.displays[display].report_empty_frame_terminal(term)
     }
 
-    pub fn get_draws_and_reset(&mut self) -> Vec<Draw> {
-        self.displays
-            .iter_mut()
-            .flat_map(|df| {
-                df.get_draws_and_reset().into_iter().map(|draw| Draw {
-                    frame: draw.frame,
-                    origin: draw.origin + df.area.origin.to_vector(),
-                    pixels: draw.pixels,
-                })
+    pub fn get_draws_and_reset(&mut self) -> impl Iterator<Item = Draw> + use<'_> {
+        self.displays.iter_mut().flat_map(|df: &mut DisplayFramer| {
+            let display_origin = df.area.origin;
+            df.get_draws_and_reset().map(move |draw: Draw| Draw {
+                frame: draw.frame,
+                origin: display_origin + draw.origin.to_vector(),
+                pixels: draw.pixels,
             })
-            .collect()
+        })
     }
 
     pub fn has_draws(&self) -> bool {

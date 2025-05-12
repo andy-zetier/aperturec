@@ -38,8 +38,8 @@ pub struct ResolutionGroup {
     #[arg(short, long, default_value = format!("{:?}", gtk3::DEFAULT_RESOLUTION), value_parser = parse_resolution)]
     resolution: Size,
 
-    /// Set resolution to your primary display's current size and startup in multi-monitor
-    /// fullscreen mode. Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
+    /// Set resolution to your displays' current sizes and startup in multi-monitor fullscreen
+    /// mode. Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     fullscreen: bool,
 
