@@ -182,8 +182,7 @@ dependencies = [
  "flate2",
  "gethostname",
  "gtk",
- "itertools 0.14.0",
- "jpegxl-rs",
+ "jxl-sys",
  "keycode",
  "ndarray",
  "openssl",
@@ -271,7 +270,7 @@ dependencies = [
  "futures",
  "gethostname",
  "humantime",
- "jpegxl-rs",
+ "jxl-sys",
  "libc",
  "ndarray",
  "nix",
@@ -327,6 +326,7 @@ dependencies = [
  "directories",
  "file-rotate",
  "git-version",
+ "jxl-sys",
  "num",
  "ouroboros",
  "secrecy",
@@ -490,7 +490,7 @@ version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29003a681b2b9465c1139bfb726da452a841a8b025f35953f3bce71139f10b21"
 dependencies = [
- "bindgen",
+ "bindgen 0.69.5",
  "cc",
  "cmake",
  "dunce",
@@ -518,7 +518,7 @@ version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54ac4f13dad353b209b34cbec082338202cbc01c8f00336b55c750c13ac91f8f"
 dependencies = [
- "bindgen",
+ "bindgen 0.69.5",
  "cc",
  "cmake",
  "dunce",
@@ -615,7 +615,7 @@ dependencies = [
  "bitflags 2.8.0",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools 0.10.5",
  "lazy_static",
  "lazycell",
  "log",
@@ -623,10 +623,28 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "shlex",
  "syn 2.0.98",
  "which 4.4.2",
+]
+
+[[package]]
+name = "bindgen"
+version = "0.71.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+dependencies = [
+ "bitflags 2.8.0",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.10.5",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.1",
+ "shlex",
+ "syn 2.0.98",
 ]
 
 [[package]]
@@ -2396,39 +2414,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jpegxl-rs"
-version = "0.11.2+libjxl-0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "875063ddd0cb50c5668b9c3214152ee54e6ca1f42b662d66c0855f76687033c0"
-dependencies = [
- "byteorder",
- "derive_builder",
- "half",
- "image",
- "jpegxl-sys",
- "thiserror 2.0.11",
-]
-
-[[package]]
-name = "jpegxl-src"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96c328aa9d824459bfb9aef47b8b3defa126df1bbd6fd3a1e59e703911d6dd00"
-dependencies = [
- "cmake",
-]
-
-[[package]]
-name = "jpegxl-sys"
-version = "0.11.2+libjxl-0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdaef0388e8220dc89a4ab47f92f942b68dfc237fa2dd3c3881948c5d88ce2f0"
-dependencies = [
- "jpegxl-src",
- "pkg-config",
-]
-
-[[package]]
 name = "js-sys"
 version = "0.3.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2436,6 +2421,19 @@ checksum = "1cfaf33c695fc6e08064efbc1f72ec937429614f25eef83af942d0e227c3a28f"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "jxl-sys"
+version = "0.1.4+libjxl-0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "641513f363d35ca99b20728f51e5ef4c5296b60b6f4c4c0c85b1334ff7515995"
+dependencies = [
+ "anyhow",
+ "bindgen 0.71.1",
+ "cmake",
+ "regex",
+ "semver",
 ]
 
 [[package]]
@@ -2497,7 +2495,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -3771,6 +3769,12 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
 name = "rustc_version"

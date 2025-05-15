@@ -1,5 +1,6 @@
 pub mod args;
 pub mod continuity;
+pub mod jxl;
 #[macro_use]
 pub mod log;
 pub mod paths;

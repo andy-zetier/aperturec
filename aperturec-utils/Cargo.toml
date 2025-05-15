@@ -11,6 +11,7 @@ anyhow = "1.0"
 clap = { version = "4.3", features = ["derive", "env", "string"] }
 directories = "6.0"
 file-rotate = "0.7"
+jxl-sys = "0.1"
 git-version = "0.3"
 ouroboros = "0.18"
 num = "0.4"

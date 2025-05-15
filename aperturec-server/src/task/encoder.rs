@@ -6,12 +6,14 @@ use aperturec_protocol::common::{Dimension as AcDimension, Location as AcLocatio
 use aperturec_protocol::media::{self as mm, server_to_client as mm_s2c};
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use flate2::{write::DeflateEncoder, Compression};
 use futures::{prelude::*, stream::FuturesUnordered};
 use ndarray::prelude::*;
+use std::ffi::c_void;
 use std::io::Write;
-use std::mem;
+use std::mem::{self, MaybeUninit};
+use std::ptr;
 use std::slice;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
@@ -60,7 +62,7 @@ mod compression {
             match codec {
                 Codec::Raw => Ok(Scheme::Raw),
                 Codec::Zlib => Ok(Scheme::Zlib(zlib::Compressor::default())),
-                Codec::Jpegxl => Ok(Scheme::Jpegxl(jxl::Compressor::default())),
+                Codec::Jpegxl => Ok(Scheme::Jpegxl(jxl::Compressor::new()?)),
                 _ => bail!("Unsupported codec"),
             }
         }
@@ -140,49 +142,407 @@ mod compression {
 
     pub mod jxl {
         use super::*;
+        use aperturec_utils::jxl::*;
 
-        use jpegxl_rs::encode::JxlEncoder;
+        use jxl_sys::*;
 
-        struct SendEncoder {
-            inner: JxlEncoder<'static, 'static>,
+        struct InputSource<'b> {
+            bytes: &'b [u8],
+            size: Size,
+            stride_to_next_row: usize,
         }
 
-        // SAFETY: `SendEncoder` is not `Send` because `JxlEncoder` has raw pointers. However, accesses to
-        // raw pointers can be safely `Send` if they are exclusive. The raw pointers within
-        // `JxlEncoder` are allocated by libjxl and libjxl does not provide access to these
-        // pointers (the `JxlEncoder` struct is opaque).
-        unsafe impl Send for SendEncoder {}
+        impl<'b> InputSource<'b> {
+            fn new(bytes: &'b [u8], size: Size, stride_to_next_row: usize) -> Result<Self> {
+                ensure!(
+                    bytes.len()
+                        == (size.width + stride_to_next_row)
+                            * size.height
+                            * mem::size_of::<Pixel24>(),
+                    "invalid input source size"
+                );
+                Ok(InputSource {
+                    bytes,
+                    size,
+                    stride_to_next_row,
+                })
+            }
 
-        pub struct Compressor {
-            encoder: AsyncMutex<SendEncoder>,
-        }
+            // SAFETY: null check relevant parameters and return null if any of them are null
+            unsafe extern "C" fn get_color_channels_pixel_format_extern(
+                _: *mut c_void,
+                pixel_format: *mut JxlPixelFormat,
+            ) {
+                const PIXEL_FORMAT: JxlPixelFormat = JxlPixelFormat {
+                    num_channels: mem::size_of::<Pixel24>() as _,
+                    data_type: JxlDataType::JXL_TYPE_UINT8,
+                    endianness: JxlEndianness::JXL_NATIVE_ENDIAN,
+                    align: 0,
+                };
+                if let Some(pixel_format) = pixel_format.as_mut() {
+                    *pixel_format = PIXEL_FORMAT;
+                }
+            }
 
-        impl Default for Compressor {
-            fn default() -> Self {
-                Self {
-                    encoder: AsyncMutex::new(SendEncoder {
-                        inner: jpegxl_rs::encode::JxlEncoderBuilder::default()
-                            .quality(1.0)
-                            .speed(jpegxl_rs::encode::EncoderSpeed::Lightning)
-                            .decoding_speed(4_i64)
-                            .build()
-                            .expect("create encoder"),
-                    }),
+            // SAFETY: null check relevant parameters and return null if any of them are null
+            unsafe extern "C" fn get_color_channel_data_at_extern(
+                opaque: *mut c_void,
+                xpos: usize,
+                ypos: usize,
+                _: usize,
+                _: usize,
+                row_offset: *mut usize,
+            ) -> *const c_void {
+                let Some(this) = (opaque as *mut Self).as_ref() else {
+                    return ptr::null_mut();
+                };
+                let Some(row_offset) = row_offset.as_mut() else {
+                    return ptr::null_mut();
+                };
+                let row_mem_width = this.size.width + this.stride_to_next_row;
+                *row_offset = row_mem_width * mem::size_of::<Pixel24>();
+                this.bytes[(xpos + (ypos * row_mem_width)) * mem::size_of::<Pixel24>()..].as_ref()
+                    as *const _ as _
+            }
+
+            // SAFETY: null check relevant parameters and return early if any of them are null
+            unsafe extern "C" fn get_extra_channel_pixel_format_extern(
+                _: *mut c_void,
+                _: usize,
+                pixel_format: *mut JxlPixelFormat,
+            ) {
+                if let Some(pixel_format) = pixel_format.as_mut() {
+                    *pixel_format = NO_EXTRA_CHANNELS_FORMAT;
+                }
+            }
+
+            // SAFETY: this function is a no-op
+            unsafe extern "C" fn get_extra_channel_data_at_extern(
+                _: *mut c_void,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: *mut usize,
+            ) -> *const c_void {
+                ptr::null()
+            }
+
+            // SAFETY: this function is a no-op
+            unsafe extern "C" fn release_buffer_extern(_: *mut c_void, _: *const c_void) {}
+
+            fn as_jxl(&mut self) -> JxlChunkedFrameInputSource {
+                JxlChunkedFrameInputSource {
+                    opaque: self as *mut _ as _,
+                    get_color_channel_data_at: Some(Self::get_color_channel_data_at_extern),
+                    get_color_channels_pixel_format: Some(
+                        Self::get_color_channels_pixel_format_extern,
+                    ),
+                    get_extra_channel_data_at: Some(Self::get_extra_channel_data_at_extern),
+                    get_extra_channel_pixel_format: Some(
+                        Self::get_extra_channel_pixel_format_extern,
+                    ),
+                    release_buffer: Some(Self::release_buffer_extern),
                 }
             }
         }
 
-        impl Compressor {
-            pub async fn compress(&self, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
-                let width = raw_data.len_of(axis::X) as u32;
-                let height = raw_data.len_of(axis::Y) as u32;
+        #[derive(Default)]
+        struct OutputBuffer {
+            buf: Vec<u8>,
+            position: usize,
+        }
 
-                let mut encoder = self.encoder.lock().await;
-                task::block_in_place(|| {
-                    Ok(do_compress_optimize_contig(raw_data, |bytes| {
-                        encoder.inner.encode::<u8, u8>(bytes, width, height)
-                    })?
-                    .data)
+        impl OutputBuffer {
+            // SAFETY: null check parameters and return null if any of them are null, then call
+            // into the safe version of this function
+            unsafe extern "C" fn get_buffer_extern(
+                opaque: *mut c_void,
+                size: *mut usize,
+            ) -> *mut c_void {
+                let Some(this) = (opaque as *mut Self).as_mut() else {
+                    return ptr::null_mut();
+                };
+                let Some(size) = size.as_mut() else {
+                    return ptr::null_mut();
+                };
+
+                this.get_buffer(size) as *mut _ as _
+            }
+
+            fn get_buffer(&mut self, size: &mut usize) -> &mut [MaybeUninit<u8>] {
+                let requested_size = *size;
+                let finalized_position = self.buf.len();
+                let unfinalized_written_space = self.position - finalized_position;
+                let free_space = self.buf.capacity() - self.position;
+                if free_space < requested_size {
+                    let reserve_amt = unfinalized_written_space + requested_size;
+                    self.buf.reserve_exact(reserve_amt);
+                }
+
+                *size = self.buf.capacity() - self.position;
+                self.buf.spare_capacity_mut()[self.position..].as_mut()
+            }
+
+            // SAFETY: null check parameters and return null if any of them are null, then call
+            // into the safe version of this function
+            unsafe extern "C" fn release_buffer_extern(opaque: *mut c_void, written_bytes: usize) {
+                let Some(this) = (opaque as *mut Self).as_mut() else {
+                    return;
+                };
+                this.release_buffer(written_bytes)
+            }
+
+            fn release_buffer(&mut self, written_bytes: usize) {
+                self.position += written_bytes;
+            }
+
+            // SAFETY: null check parameters and return null if any of them are null, then call
+            // into the safe version of this function
+            unsafe extern "C" fn seek_extern(opaque: *mut c_void, position: u64) {
+                let Some(this) = (opaque as *mut Self).as_mut() else {
+                    return;
+                };
+                this.seek(position as _)
+            }
+
+            fn seek(&mut self, position: usize) {
+                if position >= self.buf.capacity() {
+                    self.buf.reserve_exact(position - self.buf.len());
+                }
+                self.position = position;
+            }
+
+            // SAFETY: null check parameters and return null if any of them are null, then call
+            // into the safe version of this function
+            unsafe extern "C" fn set_finalized_position_extern(
+                opaque: *mut c_void,
+                finalized_position: u64,
+            ) {
+                let Some(this) = (opaque as *mut Self).as_mut() else {
+                    return;
+                };
+                this.set_finalized_position(finalized_position as _)
+            }
+
+            fn set_finalized_position(&mut self, finalized_position: usize) {
+                if finalized_position > self.buf.capacity() {
+                    let reserve_amt = finalized_position - self.buf.len();
+                    self.buf.reserve(reserve_amt);
+                }
+                // SAFETY: we explicitly reserve at least the amount we need just before this call
+                unsafe { self.buf.set_len(finalized_position) }
+            }
+
+            fn as_jxl(&mut self) -> JxlEncoderOutputProcessor {
+                JxlEncoderOutputProcessor {
+                    opaque: self as *mut OutputBuffer as *mut _,
+                    get_buffer: Some(Self::get_buffer_extern),
+                    release_buffer: Some(Self::release_buffer_extern),
+                    seek: Some(Self::seek_extern),
+                    set_finalized_position: Some(Self::set_finalized_position_extern),
+                }
+            }
+        }
+
+        pub struct Compressor {
+            encoder: AsyncMutex<&'static mut JxlEncoder>,
+            par_runner_opaque: AsyncMutex<&'static mut c_void>,
+        }
+        // SAFETY: *mut JxlEncoder can be sent between threads without issue
+        unsafe impl Send for Compressor {}
+        // SAFETY: we only access the *mut JxlEncoder via a mutex to synchronize between threads
+        unsafe impl Sync for Compressor {}
+
+        impl Drop for Compressor {
+            fn drop(&mut self) {
+                // SAFETY:
+                //   - enc is guaranteed to be non-null as it is a reference
+                unsafe { JxlEncoderDestroy(*self.encoder.get_mut()) }
+                // SAFETY:
+                //   - par_runner_opaque is guaranteed to be non-null as it is a reference
+                unsafe { JxlResizableParallelRunnerDestroy(*self.par_runner_opaque.get_mut()) }
+            }
+        }
+
+        impl Compressor {
+            pub fn new() -> Result<Self> {
+                // SAFETY:
+                //   - JxlEncoderCreate can take a null pointer to skip using a custom memory
+                //   manager
+                //   - jxl_call! checks the return value of JxlEncoderCreate and bails if it
+                //   fails
+                let encoder = jxl_call!(JxlEncoderCreate, ptr::null())?;
+
+                // SAFETY:
+                //   - JxlResizableParallelRunnerCreate can take a null pointer to skip using a
+                //   custom memory manager
+                //   - jxl_call! checks the return value of JxlResizableParallelRunnerCreate and
+                //   bails if it fails
+                let par_runner_opaque = jxl_call!(JxlResizableParallelRunnerCreate, ptr::null())?;
+
+                // SAFETY:
+                //   - encoder is guaranteed to be non-null as it is a reference
+                //   - par_runner_opaque is guaranteed to be non-null as it is a reference
+                //   - jxl_call! checks the return value of JxlEncoderSetParallelRunner and bails
+                //   if it fails
+                jxl_call!(
+                    JxlEncoderSetParallelRunner,
+                    encoder,
+                    Some(JxlResizableParallelRunner),
+                    par_runner_opaque
+                )?;
+
+                Ok(Compressor {
+                    encoder: AsyncMutex::new(encoder),
+                    par_runner_opaque: AsyncMutex::new(par_runner_opaque),
+                })
+            }
+
+            pub async fn compress(&self, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
+                fn do_compress(
+                    enc: &mut JxlEncoder,
+                    par_runner_opaque: &mut c_void,
+                    raw_data: ArrayView2<'_, Pixel24>,
+                ) -> Result<Vec<u8>> {
+                    let width = raw_data.len_of(axis::X);
+                    let height = raw_data.len_of(axis::Y);
+                    let col_stride = raw_data.stride_of(axis::X);
+                    let row_stride = raw_data.stride_of(axis::Y);
+                    ensure!(col_stride == 1, "Elements in each column are not-adjacent");
+                    ensure!(row_stride > 0, "Rows are traversed in reverse order");
+                    let stride_to_next_row = row_stride as usize - width;
+
+                    // SAFETY: We calculate the len of the slice as a function of the width,
+                    // height, stride, and size of an element, so the slice is guaranteed to be
+                    // valid
+                    let bytes = unsafe {
+                        let ptr = raw_data.as_ptr() as *const u8;
+                        let len = (width + stride_to_next_row) * height * mem::size_of::<Pixel24>();
+                        slice::from_raw_parts(ptr, len)
+                    };
+
+                    // SAFETY: JxlResizableParallelRunnerSuggestThreads is only marked unsafe at it
+                    // is an external C++ function. Nothing about the function is inherently unsafe
+                    let num_threads = unsafe {
+                        JxlResizableParallelRunnerSuggestThreads(width as _, height as _)
+                    };
+                    // SAFETY:
+                    //   - par_runner_opaque is guaranteed to be non-null as it is a reference
+                    unsafe {
+                        JxlResizableParallelRunnerSetThreads(
+                            par_runner_opaque,
+                            num_threads.max(1) as _,
+                        )
+                    };
+
+                    let mut output_buffer = OutputBuffer::default();
+                    // SAFETY:
+                    //   - enc is guaranteed to be non-null as it is a reference
+                    //   - output_buffer.as_jxl() produces a non-null reference which is guaranteed
+                    //   to exist for the life of the OutputBuffer
+                    //   - jxl_call! checks the return value of JxlEncoderSetOutputProcessor and
+                    //   bails if it fails
+                    jxl_call!(JxlEncoderSetOutputProcessor, enc, output_buffer.as_jxl())?;
+
+                    // SAFETY: we initialize JxlBasicInfo with a call to JxlEncoderInitBasicInfo,
+                    // which does not fail when passed a valid pointer
+                    let mut bi = unsafe {
+                        let mut uninit: MaybeUninit<JxlBasicInfo> = MaybeUninit::uninit();
+                        JxlEncoderInitBasicInfo(uninit.as_mut_ptr());
+                        uninit.assume_init()
+                    };
+
+                    bi.xsize = width as _;
+                    bi.ysize = height as _;
+                    bi.bits_per_sample = parameters::BITS_PER_SAMPLE;
+                    bi.exponent_bits_per_sample = parameters::EXPONENT_BITS_PER_SAMPLE;
+                    bi.uses_original_profile = parameters::USES_ORIGINAL_PROFILE;
+                    // SAFETY:
+                    //   - enc is guaranteed to be non-null as it is a reference
+                    //   - jxl_call! checks the return value of JxlEncoderSetBasicInfo and bails if
+                    //   it fails
+                    jxl_call!(JxlEncoderSetBasicInfo, enc, &bi)?;
+
+                    // SAFETY:
+                    //   - enc is guaranteed to be non-null as it is a reference
+                    //   - JxlEncoderFrameSettingsCreate can take a null source value
+                    //   - jxl_call! checks the return value of JxlEncoderFrameSettingsCreate and
+                    //   bails if it fails
+                    let frame_settings =
+                        jxl_call!(JxlEncoderFrameSettingsCreate, enc, ptr::null())?;
+
+                    // SAFETY:
+                    //   - frame_settings is null-checked above
+                    //   - jxl_call! checks the return value of JxlEncoderFrameSettingsSetOption
+                    //   and bails if it fails
+                    jxl_call!(
+                        JxlEncoderFrameSettingsSetOption,
+                        frame_settings,
+                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_EFFORT,
+                        parameters::ENCODING_EFFORT,
+                    )?;
+                    // SAFETY: See above
+                    jxl_call!(
+                        JxlEncoderFrameSettingsSetOption,
+                        frame_settings,
+                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_DECODING_SPEED,
+                        parameters::DECODING_SPEED,
+                    )?;
+                    // SAFETY: See above
+                    jxl_call!(
+                        JxlEncoderFrameSettingsSetOption,
+                        frame_settings,
+                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_BUFFERING,
+                        parameters::BUFFERING
+                    )?;
+                    // SAFETY: See above
+                    jxl_call!(
+                        JxlEncoderFrameSettingsSetOption,
+                        frame_settings,
+                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_COLOR_TRANSFORM,
+                        parameters::COLOR_TRANSFORM
+                    )?;
+                    // SAFETY: See above
+                    jxl_call!(
+                        JxlEncoderSetFrameDistance,
+                        frame_settings,
+                        parameters::DISTANCE
+                    )?;
+
+                    let mut input_source =
+                        InputSource::new(bytes, Size::new(width, height), stride_to_next_row)?;
+                    // SAFETY:
+                    //   - enc is guaranteed to be non-null as it is a reference
+                    //   - input_source.as_jxl() produces a non-null reference which is guaranteed
+                    //   to exist for the life of the InputSource
+                    //   - jxl_call! checks the return value of JxlEncoderAddChunkedFrame and bails
+                    //   if it fails
+                    jxl_call!(
+                        JxlEncoderAddChunkedFrame,
+                        frame_settings,
+                        1, /* is last frame */
+                        input_source.as_jxl()
+                    )?;
+                    // SAFETY:
+                    //   - enc is guaranteed to be non-null as it is a reference
+                    //   - jxl_call! checks the return value of JxlEncoderReset and bails if it
+                    //   fails
+                    jxl_call!(JxlEncoderFlushInput, enc)?;
+
+                    // SAFETY:
+                    //   - enc is guaranteed to be non-null as it is a reference
+                    unsafe { JxlEncoderReset(enc) };
+                    output_buffer.buf.shrink_to_fit();
+                    Ok(output_buffer.buf)
+                }
+                task::block_in_place(move || {
+                    do_compress(
+                        *self.encoder.blocking_lock(),
+                        *self.par_runner_opaque.blocking_lock(),
+                        raw_data,
+                    )
                 })
             }
         }

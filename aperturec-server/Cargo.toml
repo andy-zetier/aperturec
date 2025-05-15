@@ -24,7 +24,7 @@ flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
 futures = "0.3"
 gethostname = "1.0"
 humantime = "2.1"
-jpegxl-rs = { version = "0.11", features = ["vendored"] }
+jxl-sys = "0.1"
 libc = "0.2"
 paste = "1.0.14"
 pbkdf2 = { version = "0.12", features = ["simple"] }

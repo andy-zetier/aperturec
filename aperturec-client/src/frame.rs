@@ -6,11 +6,12 @@ use anyhow::{anyhow, bail, ensure, Result};
 use flate2::read::DeflateDecoder;
 use ndarray::prelude::*;
 use range_set_blaze::RangeSetBlaze;
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::io::Read;
-use std::mem;
-use std::sync::{LazyLock, Mutex};
+use std::mem::{self, MaybeUninit};
+use std::ptr;
 use tracing::*;
 
 fn decode_raw(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
@@ -24,34 +25,191 @@ fn decode_zlib(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
     Ok(decoded)
 }
 
-struct JxlDecoder<'a, 'b>(jpegxl_rs::decode::JxlDecoder<'a, 'b>);
+pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
+    use aperturec_utils::jxl::*;
+    use jxl_sys::*;
 
-// SAFETY: jpegxl_rs::decode::JxlDecoder is only !Send because it has some raw pointers in it.
-// However, we know that these raw pointers will be created in global memory (`LazyLock`), and only
-// ever accessed from one thread at a time `ResourcePool`. So we can use a new-type here and mark
-// the new-type as Send
-unsafe impl Send for JxlDecoder<'_, '_> {}
+    // SAFETY:
+    //   - JxlDecoderCreate can take a null pointer to skip using a custom memory manager
+    //   - jxl_call! checks the return value of JxlDecoderCreate and bails if it fails
+    let dec = jxl_call!(JxlDecoderCreate, ptr::null())?;
 
-fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
-    static DECODER: LazyLock<Mutex<JxlDecoder>> = LazyLock::new(|| {
-        let par = jpegxl_rs::ThreadsRunner::default();
-        Mutex::new(JxlDecoder(
-            jpegxl_rs::decoder_builder()
-                .parallel_runner(Box::leak(Box::new(par)))
-                .build()
-                .expect("decoder build"),
-        ))
-    });
-    let pixels = DECODER
-        .lock()
-        .expect("JxlDecoder")
-        .0
-        .decode(&encoded_data)?
-        .1;
-    match pixels {
-        jpegxl_rs::decode::Pixels::Uint8(vec) => Ok(vec),
-        _ => bail!("unsupppored pixel format"),
+    // SAFETY:
+    //   - JxlResizableParallelRunnerCreate can take a null pointer to skip using a custom memory
+    //   manager
+    //   - jxl_call! checks the return value of JxlResizableParallelRunnerCreate and bails if it
+    //   fails
+    let par_runner_opaque = jxl_call!(JxlResizableParallelRunnerCreate, ptr::null())?;
+
+    // SAFETY:
+    //   - dec is null-checked above
+    //   - par_runner_opaque is null-checked above
+    jxl_call!(
+        JxlDecoderSetParallelRunner,
+        dec,
+        Some(JxlResizableParallelRunner),
+        par_runner_opaque
+    )?;
+
+    // SAFETY:
+    //   - dec is null-checked above
+    //   - encoded_data is a rust vec, therefore having a valid pointer and length
+    //   - jxl_call! checks the return value of JxlDecoderSetInput and bails if it fails
+    jxl_call!(
+        JxlDecoderSetInput,
+        dec,
+        encoded_data.as_ptr(),
+        encoded_data.len()
+    )?;
+    // SAFETY:
+    //   - dec is null-checked above
+    unsafe { JxlDecoderCloseInput(dec as _) };
+
+    // SAFETY:
+    //   - dec is null-checked above
+    //   - jxl_call! checks the return value of JxlDecoderSubscribeEvents and bails if it fails
+    jxl_call!(
+        JxlDecoderSubscribeEvents,
+        dec,
+        (JxlDecoderStatus::JXL_DEC_BASIC_INFO as i32)
+            | (JxlDecoderStatus::JXL_DEC_FULL_IMAGE as i32),
+    )?;
+
+    let info: OnceCell<JxlBasicInfo> = OnceCell::new();
+    let output_size: OnceCell<usize> = OnceCell::new();
+    let mut output: OnceCell<Vec<u8>> = OnceCell::new();
+    loop {
+        // SAFETY:
+        //   - dec is null-checked above
+        let status = unsafe { JxlDecoderProcessInput(dec) };
+        match status {
+            JxlDecoderStatus::JXL_DEC_SUCCESS => {
+                break;
+            }
+            JxlDecoderStatus::JXL_DEC_ERROR => {
+                bail!("jxl decoder exited with error");
+            }
+            JxlDecoderStatus::JXL_DEC_NEED_MORE_INPUT => {
+                bail!("jxl decoder needed more input but all input provided");
+            }
+            JxlDecoderStatus::JXL_DEC_FULL_IMAGE => {
+                let Some(output) = output.get_mut() else {
+                    bail!("jxl decoder finished without setting output");
+                };
+                let Some(output_size) = output_size.get() else {
+                    bail!("jxl decoder finished without setting output size");
+                };
+                if output.capacity() < *output_size {
+                    bail!("jxl decoder finished with an output size greater than the capacity of the output buffer");
+                }
+                // SAFETY:
+                //   - We check above to ensure that the capacity of the output is at least the
+                //   provided size
+                unsafe { output.set_len(*output_size) };
+            }
+            JxlDecoderStatus::JXL_DEC_BASIC_INFO => {
+                let mut info_uninit: MaybeUninit<JxlBasicInfo> = MaybeUninit::uninit();
+                // SAFETY:
+                //   - dec is null-checked above
+                //   - info_uninit is allocated (uninitialized) on the stack and guaranteed to have
+                //   a valid pointer
+                //   - jxl_call! checks the return value of JxlDecoderGetBasicInfo and bails if it
+                //   fails
+                jxl_call!(JxlDecoderGetBasicInfo, dec, info_uninit.as_mut_ptr())?;
+                // SAFETY:
+                //   - info is initialized by JxlDecoderGetBasicInfo
+                if info.set(unsafe { info_uninit.assume_init() }).is_err() {
+                    bail!("jxl decoder received basic info more than once");
+                }
+                let info = info.get().unwrap();
+                ensure!(
+                    info.bits_per_sample == parameters::BITS_PER_SAMPLE,
+                    "jxl decoder samples are not {} bit",
+                    parameters::BITS_PER_SAMPLE,
+                );
+                ensure!(
+                    info.exponent_bits_per_sample == parameters::EXPONENT_BITS_PER_SAMPLE,
+                    "jxl decoder samples are floating point"
+                );
+                ensure!(info.have_animation == 0, "jxl decoder producing animation");
+                ensure!(
+                    info.num_color_channels == PIXEL_FORMAT.num_channels,
+                    "jxl decoder has {} color channels",
+                    info.num_color_channels
+                );
+                ensure!(
+                    info.num_extra_channels == NO_EXTRA_CHANNELS_FORMAT.num_channels,
+                    "jxl decoder has {} extra channels",
+                    info.num_extra_channels
+                );
+
+                // SAFETY: JxlResizableParallelRunnerSuggestThreads is only marked unsafe at it is
+                // an external C++ function. Nothing about the function is inherently unsafe
+                let num_threads = unsafe {
+                    JxlResizableParallelRunnerSuggestThreads(info.xsize as _, info.ysize as _)
+                };
+                // SAFETY:
+                //   - par_runner_opaque is guaranteed to be non-null as it is a reference
+                unsafe {
+                    JxlResizableParallelRunnerSetThreads(par_runner_opaque, num_threads as _)
+                };
+            }
+            JxlDecoderStatus::JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
+                let mut buffer_size = 0;
+                // SAFETY:
+                //   - dec is null-checked above
+                //   - the other arguments are references and therefore guaranteed non-null
+                //   - jxl_call! checks the return value of JxlDecoderImageOutBufferSize and bails
+                //   if it fails
+                jxl_call!(
+                    JxlDecoderImageOutBufferSize,
+                    dec,
+                    &PIXEL_FORMAT,
+                    &mut buffer_size
+                )?;
+                let Some(info) = info.get() else {
+                    bail!("jxl decoder needs image output buffer before basic info received");
+                };
+                let expected_size = (info.xsize * info.ysize * PIXEL_FORMAT.num_channels) as usize;
+                if buffer_size != expected_size {
+                    bail!(
+                        "jxl decoder output buffer size is invalid - expected {}, got {}",
+                        expected_size,
+                        buffer_size
+                    );
+                }
+                if output_size.set(expected_size).is_err() {
+                    bail!("jxl decoder set output size more than once");
+                }
+                if output.set(Vec::with_capacity(expected_size)).is_err() {
+                    bail!("jxl decoder set output more than once");
+                }
+                let uninit_slice = output.get_mut().unwrap().spare_capacity_mut();
+                // SAFETY:
+                //   - dec is null-checked above
+                //   - uninit slice is initialized with a capacity of expected_size so it is
+                //   guaranteed to exist and be at least expected_size length
+                jxl_call!(
+                    JxlDecoderSetImageOutBuffer,
+                    dec,
+                    &PIXEL_FORMAT,
+                    uninit_slice.as_mut_ptr() as *mut _,
+                    expected_size,
+                )?;
+            }
+            event => bail!("unexpected event from jxl decoder: {:?}", event),
+        }
     }
+
+    // SAFETY:
+    //   - Decoder is done being used and can be destroyed
+    unsafe { JxlDecoderDestroy(dec) };
+
+    // SAFETY:
+    //   - Parallel runner is done being used and can be destroyed
+    unsafe { JxlResizableParallelRunnerDestroy(par_runner_opaque) };
+
+    output.take().ok_or(anyhow!("jxl decoder output never set"))
 }
 
 fn decode(codec: Codec, encoded_data: Vec<u8>) -> Result<Vec<u8>> {
