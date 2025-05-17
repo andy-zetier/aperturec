@@ -22,7 +22,26 @@ use std::time::Duration;
 use tracing::*;
 
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    MapVirtualKeyW,
+    MAPVK_VK_TO_VSC_EX,
+    VIRTUAL_KEY,
+    VK_APPS, // Windows / context menu keys
+    VK_DELETE,
+    VK_DOWN,
+    VK_END,
+    VK_HOME,
+    VK_INSERT,
+    VK_LEFT,
+    VK_LWIN,
+    VK_NEXT, // page-up / page-down
+    VK_PRIOR,
+    VK_RCONTROL,
+    VK_RIGHT,
+    VK_RMENU, // right Ctrl / right Alt
+    VK_RWIN,
+    VK_UP,
+};
 
 static GTK_INIT: LazyLock<()> = LazyLock::new(|| {
     gdk::set_allowed_backends("x11,*");
@@ -200,16 +219,45 @@ impl KeyboardShortcut {
 //
 // Returns the scan code corresponding to the virtual key code.
 #[cfg(target_os = "windows")]
-fn convert_win_virtual_key_to_scan_code(virtual_key: u32) -> anyhow::Result<u32> {
-    let scancode = unsafe { MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC_EX) };
-    if scancode == 0 {
-        // MapVirtualKeyW returns 0 if it fails to convert the virtual key code
+fn convert_win_virtual_key_to_scan_code(virtual_key: u32) -> anyhow::Result<u16> {
+    // SAFETY: calling a pure Win32 API with value parameters only.
+    let raw = unsafe { MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC_EX) };
+    if raw == 0 {
         anyhow::bail!(
             "Failed to convert virtual key code {:#X} to scan code",
             virtual_key
-        )
+        );
     }
-    Ok(scancode)
+
+    // Low byte is the scan-code; MapVirtualKey sets bit-8 for some (not all)
+    // extended keys.  We additionally mark known extended virtual keys
+    // ourselves so that every extended key is encoded as 0xE0XX.
+    let mut sc = (raw & 0x00FF) as u16;
+    let has_ext_bit = (raw & 0x0100) != 0;
+    let is_ext_vk = matches!(
+        VIRTUAL_KEY(virtual_key as u16),
+        VK_LEFT
+            | VK_RIGHT
+            | VK_UP
+            | VK_DOWN
+            | VK_HOME
+            | VK_END
+            | VK_INSERT
+            | VK_DELETE
+            | VK_PRIOR
+            | VK_NEXT
+            | VK_RCONTROL
+            | VK_RMENU
+            | VK_LWIN
+            | VK_RWIN
+            | VK_APPS
+    );
+
+    if has_ext_bit || is_ext_vk {
+        sc |= 0xE000; // apply 0xE0 prefix
+    }
+
+    Ok(sc)
 }
 
 fn gtk_key_to_x11(key: &gdk::EventKey) -> u16 {
@@ -224,7 +272,7 @@ fn gtk_key_to_x11(key: &gdk::EventKey) -> u16 {
         {
             let scancode = convert_win_virtual_key_to_scan_code(keycode as u32)
                 .unwrap_or_else(|err| panic!("{}", err));
-            KeyMapping::Win(scancode as u16)
+            KeyMapping::Win(scancode)
         }
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
