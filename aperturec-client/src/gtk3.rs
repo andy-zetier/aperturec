@@ -43,6 +43,113 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_UP,
 };
 
+#[cfg(target_os = "windows")]
+mod win_key_hook {
+    use super::{convert_win_virtual_key_to_scan_code, warn, EventMessage, KeyEventMessageBuilder};
+    use crossbeam::channel::Sender;
+    use keycode::{KeyMap, KeyMapping};
+    use std::sync::OnceLock;
+    use windows::Win32::{
+        Foundation::{LPARAM, LRESULT, WPARAM},
+        UI::{
+            Input::KeyboardAndMouse::{
+                GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_RWIN, VK_TAB,
+            },
+            WindowsAndMessaging::{
+                CallNextHookEx, SetWindowsHookExW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN,
+                WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
+            },
+        },
+    };
+
+    /*  GLOBALS ------------------------------------------------------------------------------- */
+
+    // Hook handle kept for the life-time of the process so the hook remains active.
+    static mut HOOK: Option<HHOOK> = None;
+
+    // Cross-thread channel used to forward the synthesised key-events back to the GTK thread.
+    // Stored in a OnceLock so it can be read inside the C-ABI hook callback.
+    static EVENT_TX: OnceLock<Sender<EventMessage>> = OnceLock::new();
+
+    /*  PUBLIC API ---------------------------------------------------------------------------- */
+
+    /// Installs a process-wide low-level keyboard hook that swallows the Win keys whenever
+    /// one of this process’ windows is the foreground window.  The swallowed key press /
+    /// release events are re-injected into the application by sending them through the
+    /// existing `EventMessage` channel, guaranteeing that the rest of the input handling
+    /// code continues to work unchanged.
+    #[allow(static_mut_refs)]
+    pub fn install(tx: Sender<EventMessage>) {
+        // Store the sender for use in the callback.
+        let _ = EVENT_TX.set(tx);
+
+        unsafe {
+            if HOOK.is_some() {
+                return;
+            }
+
+            extern "system" fn hook_proc(n_code: i32, w_param: WPARAM, l_param: LPARAM) -> LRESULT {
+                if n_code >= 0 {
+                    // SAFETY: guaranteed by hook contract.
+                    let kb: &KBDLLHOOKSTRUCT = unsafe { &*(l_param.0 as *const KBDLLHOOKSTRUCT) };
+                    let vk = kb.vkCode as u32;
+
+                    // --- determine whether this event must be swallowed -------------
+                    let alt_down = kb.flags.contains(LLKHF_ALTDOWN);
+                    // high-order bit set ⇒ key currently down
+                    let ctrl_down = unsafe { GetAsyncKeyState(VK_CONTROL.0 as i32) } < 0;
+
+                    let swallow = match vk {
+                        k if k == VK_LWIN.0 as u32 || k == VK_RWIN.0 as u32 => true,
+                        k if k == VK_TAB.0 as u32 && alt_down => true, // Alt+Tab / Shift+Alt+Tab
+                        k if k == VK_ESCAPE.0 as u32 && (alt_down || ctrl_down) => true, // Alt+Esc / Ctrl+Esc
+                        _ => false,
+                    };
+
+                    if swallow {
+                        // Is this a press or a release?
+                        let pressed = matches!(w_param.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+
+                        // Translate to X11 keycode (same logic used elsewhere)
+                        if let Ok(scan) = convert_win_virtual_key_to_scan_code(vk) {
+                            if let (Some(sender), Some(code)) = (
+                                EVENT_TX.get(),
+                                KeyMap::try_from(KeyMapping::Win(scan as u16))
+                                    .map(|m| m.xkb)
+                                    .ok(),
+                            ) {
+                                sender
+                                    .send(EventMessage::KeyEventMessage(
+                                        KeyEventMessageBuilder::default()
+                                            .key(code.into())
+                                            .is_pressed(pressed)
+                                            .build()
+                                            .expect("build KeyEventMessage"),
+                                    ))
+                                    .unwrap_or_else(|err| warn!(%err, "win_key_hook failed to tx KeyEventMessage"));
+                            }
+                        }
+                        // prevent local OS reaction
+                        return LRESULT(1);
+                    }
+                }
+                // Not handled – pass on
+                unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
+            }
+
+            let hook = SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(hook_proc),
+                None, // no module handle needed for same-process hook proc
+                0,
+            )
+            .expect("set hook");
+
+            HOOK = Some(hook);
+        }
+    }
+}
+
 static GTK_INIT: LazyLock<()> = LazyLock::new(|| {
     gdk::set_allowed_backends("x11,*");
     gtk::init().expect("Failed to initialize GTK");
@@ -334,6 +441,12 @@ impl GtkUi {
     pub fn run(self) {
         let windows = self.windows;
         let workspace = self.workspace;
+
+        #[cfg(target_os = "windows")]
+        {
+            // Install global low-level keyboard hook now that we have the UI workspace
+            win_key_hook::install(workspace.event_tx.clone());
+        }
 
         self.app
             .connect_activate(glib::clone!(@strong windows => move |_| {
