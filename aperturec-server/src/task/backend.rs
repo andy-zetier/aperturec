@@ -278,8 +278,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                                     continue;
                                 }
                             };
-                            let area = area.to_box2d();
-                            let fb_data = SubframeBuffer { area, pixels };
+                            let fb_data = SubframeBuffer { origin: area.origin, pixels };
                             if let Err(e) = self.state.damage_tx.send(fb_data) {
                                 break Err(e.into());
                             }

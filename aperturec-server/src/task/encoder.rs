@@ -410,9 +410,27 @@ mod compression {
                     let height = raw_data.len_of(axis::Y);
                     let col_stride = raw_data.stride_of(axis::X);
                     let row_stride = raw_data.stride_of(axis::Y);
-                    ensure!(col_stride == 1, "Elements in each column are not-adjacent");
-                    ensure!(row_stride > 0, "Rows are traversed in reverse order");
-                    let stride_to_next_row = row_stride as usize - width;
+                    if width > 1 {
+                        ensure!(
+                            col_stride == 1,
+                            "Elements in each column are not-adjacent, stride is {}",
+                            col_stride
+                        );
+                    } else {
+                        ensure!(width == 1, "Width <= 0");
+                    }
+
+                    let stride_to_next_row = if height > 1 {
+                        ensure!(
+                            row_stride > 0,
+                            "Rows are traversed in reverse order, stride is {}",
+                            row_stride
+                        );
+                        row_stride as usize - width
+                    } else {
+                        ensure!(height == 1, "Height <= 0");
+                        0
+                    };
 
                     // SAFETY: We calculate the len of the slice as a function of the width,
                     // height, stride, and size of an element, so the slice is guaranteed to be
@@ -627,10 +645,10 @@ impl Transitionable<Running> for Task<Created> {
                             .filter_map(|buffer| {
                                 self.state
                                     .area
-                                    .intersection(&buffer.area)
+                                    .intersection(&buffer.area().to_box2d())
                                     .map(|intersection| (buffer, intersection))
                             })
-                        .collect::<Vec<_>>();
+                            .collect::<Vec<_>>();
 
                         if relevant.is_empty() {
                             self.state
@@ -655,7 +673,7 @@ impl Transitionable<Running> for Task<Created> {
                                 encodings.push(async {
                                     let buffer_relative_area = intersection
                                         .to_i64()
-                                        .translate(-buffer.area.min.to_vector().to_i64())
+                                        .translate(-buffer.origin.to_vector().to_i64())
                                         .to_usize();
                                     let enc_relative_area = intersection
                                         .to_i64()
@@ -683,41 +701,61 @@ impl Transitionable<Running> for Task<Created> {
                             }
 
                             let mut sequence = 0;
-                            while let Some(Ok((data, enc_relative_area))) = encodings.next().await {
-                                let frag = mm::FrameFragment {
-                                    frame: frame.id as u64,
-                                    encoder: self.id as u32,
-                                    display_config: frame.display_config as u32,
-                                    display: frame.display as u32,
-                                    sequence: sequence as u32,
-                                    terminal: sequence == relevant.len() - 1,
-                                    codec: self.state.compression_scheme.as_codec().into(),
-                                    location: Some(AcLocation::new(
-                                            enc_relative_area.min.x as u64,
-                                            enc_relative_area.min.y as u64,
-                                    )),
-                                    dimension: Some(AcDimension::new(
-                                            enc_relative_area.width() as u64,
-                                            enc_relative_area.height() as u64,
-                                    )),
-                                    data,
-                                };
+                            while let Some(res) = encodings.next().await {
+                                let terminal = sequence == relevant.len() - 1;
+                                match res {
+                                    Ok((data, enc_relative_area)) => {
+                                        let frag = mm::FrameFragment {
+                                            frame: frame.id as u64,
+                                            encoder: self.id as u32,
+                                            display_config: frame.display_config as u32,
+                                            display: frame.display as u32,
+                                            sequence: sequence as u32,
+                                            terminal,
+                                            codec: self.state.compression_scheme.as_codec().into(),
+                                            location: Some(AcLocation::new(
+                                                enc_relative_area.min.x as u64,
+                                                enc_relative_area.min.y as u64,
+                                            )),
+                                            dimension: Some(AcDimension::new(
+                                                enc_relative_area.width() as u64,
+                                                enc_relative_area.height() as u64,
+                                            )),
+                                            data,
+                                        };
 
-                                self.state
-                                    .mm_tx
-                                    .send(mm_s2c::Message::Fragment(frag))
-                                    .await?;
+                                        self.state
+                                            .mm_tx
+                                            .send(mm_s2c::Message::Fragment(frag))
+                                            .await?;
 
-                                trace!(
-                                    display=%frame.display,
-                                    dc=%frame.display_config,
-                                    frame=%frame.id,
-                                    encoder=%self.id,
-                                    sequence,
-                                    "Dispatched frame fragment"
-                            );
+                                        trace!(
+                                            display=%frame.display,
+                                            dc=%frame.display_config,
+                                            frame=%frame.id,
+                                            encoder=%self.id,
+                                            %terminal,
+                                            sequence,
+                                            total_fragments=?relevant.len(),
+                                            "Dispatched frame fragment"
+                                        );
 
-                                sequence += 1;
+                                        sequence += 1;
+                                    },
+                                    Err(error) => {
+                                        warn!(
+                                            display=%frame.display,
+                                            dc=%frame.display_config,
+                                            frame=%frame.id,
+                                            encoder=%self.id,
+                                            %terminal,
+                                            sequence,
+                                            total_fragments=?relevant.len(),
+                                            %error,
+                                            "failed encoding"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }

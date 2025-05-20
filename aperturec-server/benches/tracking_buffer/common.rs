@@ -102,7 +102,10 @@ pub fn generate_updates(curr: &Pixel24Map, num_areas: usize) -> Vec<SubframeBuff
                 }
             });
 
-            SubframeBuffer { area, pixels: new }
+            SubframeBuffer {
+                origin: area.min,
+                pixels: new,
+            }
         })
         .collect()
 }

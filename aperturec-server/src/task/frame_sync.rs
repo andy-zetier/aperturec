@@ -13,13 +13,19 @@ use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinSet;
+use tokio::task::{self, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 pub struct SubframeBuffer<M: PixelMap> {
-    pub area: Box2D,
+    pub origin: Point,
     pub pixels: M,
+}
+
+impl<M: PixelMap> SubframeBuffer<M> {
+    pub fn area(&self) -> Rect {
+        Rect::new(self.origin, self.pixels.size())
+    }
 }
 
 #[derive(Debug)]
@@ -276,11 +282,7 @@ where
                                 permits_revoked = false;
                             }
 
-                            let frame = {
-                                let frame =
-                                    tb.lock().expect("tracking buffer poisoned").cut_frame();
-                                frame
-                            };
+                            let frame = tb.lock().expect("tracking buffer poisoned").cut_frame();
 
                             if let Some(frame) = frame {
                                 let frame = Arc::new(frame);
@@ -406,15 +408,11 @@ where
         }
     }
 
-    fn display_area(&self) -> Box2D {
-        self.display.area.to_box2d()
-    }
-
     fn resize(&mut self, display: Display, display_config: usize) {
         self.curr_frame_id = 0;
         self.display_config = display_config;
         self.display = display;
-        self.data = Array2::from_elem(self.display_area().as_shape(), Pixel24::default());
+        self.data = Array2::from_elem(self.display.area.as_shape(), Pixel24::default());
         self.clear();
 
         // Notify damage listeners that the Display has been changed
@@ -428,44 +426,44 @@ where
             return;
         }
 
-        let intersection = match self.display_area().intersection(&framebuffer_data.area) {
-            Some(intersection) => intersection,
-            None => return,
+        let Some(intersection) = self.display.area.intersection(&framebuffer_data.area()) else {
+            return;
         };
 
         TrackingBufferUpdates::inc();
 
         let fb_relative_area = intersection
             .to_i64()
-            .translate(-framebuffer_data.area.min.to_vector().to_i64())
+            .translate(-framebuffer_data.origin.to_vector().to_i64())
             .to_usize();
 
         // Shift intersection to be relative to this tracking buffer
-        let intersection = intersection
+        let tb_relative_area = intersection
             .to_i64()
-            .translate(-self.display.area.min().to_vector().to_i64())
+            .translate(-self.display.area.origin.to_vector().to_i64())
             .to_usize();
 
         let pixmap = framebuffer_data.pixels.as_ndarray();
         let new = pixmap.slice(&fb_relative_area.as_slice());
-        tokio::task::block_in_place(|| match self.damage {
+
+        task::block_in_place(|| match self.damage {
             Damage::Full => {
-                new.assign_to(self.data.slice_mut(intersection.as_slice()));
+                new.assign_to(self.data.slice_mut(tb_relative_area.as_slice()));
                 TrackingBufferDamageRatio::observe(1.);
             }
             _ => {
-                let curr = self.data.slice(intersection.as_slice());
+                let curr = self.data.slice(tb_relative_area.as_slice());
                 let cover_areas = diff_rectangle_cover(curr, new);
 
                 let mut total_area = 0;
                 for b in &cover_areas {
-                    let tb_relative_rect = b.translate(intersection.min.to_vector());
+                    let dst_area = b.translate(tb_relative_area.origin.to_vector());
 
                     new.slice(b.as_slice())
-                        .assign_to(self.data.slice_mut(tb_relative_rect.as_slice()));
+                        .assign_to(self.data.slice_mut(dst_area.as_slice()));
 
-                    total_area += b.area();
-                    self.mark_stale(tb_relative_rect);
+                    total_area += dst_area.area();
+                    self.mark_stale(dst_area);
                 }
                 TrackingBufferDamageRatio::observe(
                     total_area as f64 / intersection.area() as f64 * 100.,
@@ -475,7 +473,7 @@ where
     }
 
     fn mark_stale(&mut self, stale: Box2D) {
-        if stale.area() == self.display_area().area() {
+        if stale == self.display.area.to_box2d() {
             self.damage = Damage::Full;
         } else {
             match self.damage {
@@ -495,49 +493,53 @@ where
     pub fn cut_frame(&mut self) -> Option<Frame> {
         let buffers = match self.damage {
             Damage::None => return None,
-            Damage::Partial(ref boxes) => boxes
-                .iter()
-                .map(|b| {
-                    // SAFETY: We initialize the Array2 in the call to `build_init`, so
-                    // `assume_init` is safe to call
-                    let pixels = unsafe {
-                        Array2::build_uninit(b.as_shape(), |dst| {
-                            self.data.slice(b.as_slice()).assign_to(dst)
-                        })
-                        .assume_init()
-                    };
+            Damage::Partial(ref boxes) => {
+                boxes
+                    .iter()
+                    .map(|b| {
+                        // SAFETY: We initialize the Array2 in the call to `build_init`, so
+                        // `assume_init` is safe to call
+                        let pixels = unsafe {
+                            Array2::build_uninit(b.as_shape(), |dst| {
+                                self.data.slice(b.as_slice()).assign_to(dst)
+                            })
+                            .assume_init()
+                        };
 
-                    SubframeBuffer { area: *b, pixels }
-                })
-                .collect(),
+                        SubframeBuffer {
+                            origin: b.min,
+                            pixels,
+                        }
+                    })
+                    .collect()
+            }
             Damage::Full => {
                 // SAFETY: We initialize the Array2 in the call to `build_init`, so
                 // `assume_init` is safe to call
-                let size = self.display_area().size();
                 let pixels = unsafe {
-                    Array2::build_uninit(size.as_shape(), |dst| self.data.assign_to(dst))
-                        .assume_init()
+                    Array2::build_uninit(self.display.area.size.as_shape(), |dst| {
+                        self.data.assign_to(dst)
+                    })
+                    .assume_init()
                 };
                 vec![SubframeBuffer {
-                    area: size.into(),
+                    origin: Point::zero(),
                     pixels,
                 }]
             }
         };
 
         self.clear();
-        let id = self.curr_frame_id;
+        let frame_id = self.curr_frame_id;
         self.curr_frame_id += 1;
-
-        let display = self.display_id;
 
         FramesCut::inc();
         TrackingBufferDisjointAreas::inc_by(buffers.len() as f64);
 
         Some(Frame {
-            id,
+            id: frame_id,
             buffers,
-            display,
+            display: self.display_id,
             display_config: self.display_config,
         })
     }

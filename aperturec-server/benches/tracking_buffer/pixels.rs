@@ -87,7 +87,7 @@ fn tracking_buffer_pixels(c: &mut Criterion<UndamagedPixelsCaptured>) {
 
                                 let mut tb = TrackingBuffer::new(0, to_display(dim), 0);
                                 tb.update(&SubframeBuffer {
-                                    area: Rect::new(Point::new(0, 0), dim).to_box2d(),
+                                    origin: Point::zero(),
                                     pixels: curr.clone(),
                                 });
                                 let _ = tb.cut_frame();
@@ -98,12 +98,12 @@ fn tracking_buffer_pixels(c: &mut Criterion<UndamagedPixelsCaptured>) {
                                     let pixels_captured = frame
                                         .buffers
                                         .iter()
-                                        .map(|buf| buf.area.area())
+                                        .map(|buf| buf.area().area())
                                         .sum::<usize>();
 
                                     for buffer in frame.buffers {
                                         new.as_ndarray_mut()
-                                            .slice_mut(buffer.area.as_slice())
+                                            .slice_mut(buffer.area().as_slice())
                                             .assign(&buffer.pixels.as_ndarray());
                                     }
                                     let pixels_damaged =
