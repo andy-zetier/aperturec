@@ -25,10 +25,10 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::*;
-use xcb::damage::{self, Damage};
-use xcb::x::{self, Drawable, GetImage, ImageFormat, ScreenBuf, Window};
-use xcb::{randr, xfixes, xtest, BaseEvent, Connection, Extension, Xid, XidNew};
-use xcb::{CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply};
+use xcb::{
+    composite, damage, randr, x, xfixes, xtest, BaseEvent, CookieWithReplyChecked, Request,
+    RequestWithReply, RequestWithoutReply, Xid, XidNew,
+};
 
 const CHILD_STARTUP_WAIT_TIME_MS: Duration = Duration::from_millis(1000);
 
@@ -57,7 +57,7 @@ pub struct X {
     max_display_count: usize,
     max_height: usize,
     max_width: usize,
-    root_drawable: Drawable,
+    root_window: x::Window,
     root_process: Option<Child>,
     xvfb_process: Child,
 }
@@ -216,9 +216,9 @@ impl Backend for X {
     async fn capture_area(&self, area: Rect) -> Result<Self::PixelMap> {
         let get_image_reply = self
             .connection
-            .checked_request_with_reply(GetImage {
-                format: ImageFormat::ZPixmap,
-                drawable: self.root_drawable,
+            .checked_request_with_reply(x::GetImage {
+                format: x::ImageFormat::ZPixmap,
+                drawable: x::Drawable::Window(self.root_window),
                 x: area.origin.x as i16,
                 y: area.origin.y as i16,
                 width: area.size.width as u16,
@@ -343,17 +343,17 @@ impl Backend for X {
 
         trace!("Creating new XConnection");
         let connection = XConnection::new(&*display_name)?;
+        trace!("Querying for composite extension version");
+        X::query_composite_version(&connection).await?;
         trace!("Querying for damage extension version");
         X::query_damage_version(&connection).await?;
         trace!("Querying for xfixes extension version");
         X::query_xfixes_version(&connection).await?;
         trace!("Querying for randr extension version");
         X::query_randr_version(&connection).await?;
-        trace!("Creating root objects");
-        let (root_damage, root_window) = X::create_root_objects(&connection);
-        let root_drawable = Drawable::Window(root_window);
+        let root_window = connection.preferred_screen.root();
         trace!("Setting up damage monitor");
-        X::setup_damage_monitor(&connection, &root_damage, &root_drawable).await?;
+        X::setup_damage_monitor(&connection, &root_window).await?;
         trace!("Setting up xtest extension");
         X::setup_xtest_extension(&connection).await?;
         trace!("Setting up xfixes monitor");
@@ -374,7 +374,7 @@ impl Backend for X {
             max_display_count,
             max_height,
             max_width,
-            root_drawable,
+            root_window,
             root_process,
             xvfb_process,
         };
@@ -411,7 +411,7 @@ impl Backend for X {
                     r#type: event_type_num,
                     detail: key as u8,
                     time: x::CURRENT_TIME,
-                    root: self.root_window()?,
+                    root: self.root_window,
                     root_x: 0,
                     root_y: 0,
                     deviceid: 0,
@@ -439,7 +439,7 @@ impl Backend for X {
                         r#type: event_type_num,
                         detail: u8_for_button(&button) + 1,
                         time: x::CURRENT_TIME,
-                        root: self.root_window()?,
+                        root: self.root_window,
                         root_x: location.x_position as i16,
                         root_y: location.y_position as i16,
                         deviceid: 0,
@@ -456,7 +456,7 @@ impl Backend for X {
                     // (https://www.x.org/releases/X11R7.7/doc/xextproto/xtest.html#Requests)
                     detail: 0,
                     time: x::CURRENT_TIME,
-                    root: self.root_window()?,
+                    root: self.root_window,
                     root_x: location.x_position as i16,
                     root_y: location.y_position as i16,
                     deviceid: 0,
@@ -505,7 +505,7 @@ impl Backend for X {
         let reply = self
             .connection
             .checked_request_with_reply(x::QueryPointer {
-                window: self.root_window()?,
+                window: self.root_window,
             })
             .await?;
 
@@ -540,7 +540,7 @@ impl Backend for X {
                         r#type: x::KeyPressEvent::NUMBER as u8,
                         detail: kc,
                         time: x::CURRENT_TIME,
-                        root: self.root_window()?,
+                        root: self.root_window,
                         root_x: 0,
                         root_y: 0,
                         deviceid: 0,
@@ -551,7 +551,7 @@ impl Backend for X {
                         r#type: 3_u8,
                         detail: kc,
                         time: x::CURRENT_TIME,
-                        root: self.root_window()?,
+                        root: self.root_window,
                         root_x: 0,
                         root_y: 0,
                         deviceid: 0,
@@ -571,7 +571,7 @@ impl Backend for X {
             "Final KeyButMask: {:?}",
             self.connection
                 .checked_request_with_reply(x::QueryPointer {
-                    window: self.root_window()?,
+                    window: self.root_window,
                 })
                 .await?
                 .mask()
@@ -675,16 +675,34 @@ impl X {
     async fn screen_resources(&self) -> Result<randr::GetScreenResourcesCurrentReply> {
         self.connection
             .checked_request_with_reply(randr::GetScreenResourcesCurrent {
-                window: self.root_window()?,
+                window: self.root_window,
             })
             .await
     }
 
-    fn root_window(&self) -> Result<x::Window> {
-        match self.root_drawable {
-            Drawable::Window(window) => Ok(window),
-            _ => bail!("non-window root drawable"),
+    async fn query_composite_version(connection: &XConnection) -> Result<()> {
+        trace!("querying composite version");
+        let reply = connection
+            .checked_request_with_reply(composite::QueryVersion {
+                client_major_version: composite::MAJOR_VERSION,
+                client_minor_version: composite::MINOR_VERSION,
+            })
+            .await?;
+
+        trace!("received reply");
+        if reply.major_version() != composite::MAJOR_VERSION
+            || reply.minor_version() != composite::MINOR_VERSION
+        {
+            bail!(
+                "X Server Damage {}.{} != X Client Damage {}.{}",
+                reply.major_version(),
+                reply.minor_version(),
+                composite::MAJOR_VERSION,
+                composite::MINOR_VERSION
+            );
         }
+
+        Ok(())
     }
 
     async fn query_damage_version(connection: &XConnection) -> Result<()> {
@@ -760,21 +778,18 @@ impl X {
         Ok(())
     }
 
-    fn create_root_objects(connection: &XConnection) -> (Damage, Window) {
-        let root_damage = connection.inner.generate_id();
-        let root_window = connection.preferred_screen.root();
-        (root_damage, root_window)
-    }
-
-    async fn setup_damage_monitor(
-        connection: &XConnection,
-        damage: &Damage,
-        drawable: &Drawable,
-    ) -> Result<()> {
+    async fn setup_damage_monitor(connection: &XConnection, root_window: &x::Window) -> Result<()> {
+        connection
+            .checked_void_request(composite::RedirectSubwindows {
+                window: *root_window,
+                update: composite::Redirect::Automatic,
+            })
+            .await?;
+        let damage = connection.inner.generate_id();
         connection
             .checked_void_request(damage::Create {
-                damage: *damage,
-                drawable: *drawable,
+                damage,
+                drawable: x::Drawable::Window(*root_window),
                 level: damage::ReportLevel::RawRectangles,
             })
             .await
@@ -807,7 +822,7 @@ impl X {
         Ok(())
     }
 
-    async fn setup_xfixes_monitor(connection: &XConnection, window: &Window) -> Result<()> {
+    async fn setup_xfixes_monitor(connection: &XConnection, window: &x::Window) -> Result<()> {
         connection
             .checked_void_request(xfixes::SelectCursorInput {
                 window: *window,
@@ -818,7 +833,7 @@ impl X {
 
     async fn setup_displays(
         connection: &XConnection,
-        window: &Window,
+        window: &x::Window,
     ) -> Result<(BTreeMap<usize, XDisplay>, u32)> {
         let screen_resources = connection
             .checked_request_with_reply(randr::GetScreenResources { window: *window })
@@ -856,12 +871,12 @@ impl X {
         resize_if: Ordering,
     ) -> Result<()> {
         let requested = displays.clone().into_iter().derive_extent()?;
-        let window = self.root_window()?;
+        let window = self.root_window;
 
         let current = self
             .connection
             .checked_request_with_reply(x::GetGeometry {
-                drawable: self.root_drawable,
+                drawable: x::Drawable::Window(self.root_window),
             })
             .await?;
         let current = Size::new(current.width() as _, current.height() as _);
@@ -1027,7 +1042,7 @@ impl X {
                 //
                 self.connection
                     .checked_request_with_reply(randr::CreateMode {
-                        window: self.root_window()?,
+                        window: self.root_window,
                         name: name.as_bytes(),
                         mode_info: randr::ModeInfo {
                             id: 0,
@@ -1140,8 +1155,8 @@ impl XEventStreamMux {
 }
 
 struct XConnection {
-    inner: Arc<Connection>,
-    preferred_screen: ScreenBuf,
+    inner: Arc<xcb::Connection>,
+    preferred_screen: x::ScreenBuf,
     min_keycode: x::Keycode,
     max_keycode: x::Keycode,
     event_stream_mux: XEventStreamMux,
@@ -1212,9 +1227,15 @@ impl XConnection {
     fn new<'s>(name: impl Into<Option<&'s str>>) -> Result<Self> {
         let name = name.into();
         trace!("Connecting to display {:?}", name);
-        let (conn, preferred_screen_index) = Connection::connect_with_extensions(
+        let (conn, preferred_screen_index) = xcb::Connection::connect_with_extensions(
             name,
-            &[Extension::Damage, Extension::Test, Extension::XFixes],
+            &[
+                xcb::Extension::Composite,
+                xcb::Extension::Damage,
+                xcb::Extension::RandR,
+                xcb::Extension::Test,
+                xcb::Extension::XFixes,
+            ],
             &[],
         )?;
         trace!("Created X connection");

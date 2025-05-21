@@ -43,7 +43,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 trait-variant = "0.1"
 which = "7.0"
-xcb = { version = "1.5.0", features = ["damage", "randr", "xtest", "xfixes" ] }
+xcb = { version = "1.5.0", features = ["composite", "damage", "randr", "xtest", "xfixes" ] }
 regex = "1.11.1"
 
 [target.'cfg(target_os = "linux")'.dependencies.aperturec-metrics]
