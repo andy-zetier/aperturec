@@ -459,7 +459,27 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
                 }
             }
             root_process_es_res = backend.wait_root_process() => {
-                return_recover!(self, "Root process exited with status: {}", root_process_es_res.display());
+                match root_process_es_res {
+                    // Clean exit – treat as a request for graceful shutdown
+                    Ok(es) if es.success() => {
+                        debug!("Root process exited cleanly (status {}) – shutting server down",
+                               es.display());
+                        return Err(Recovered {
+                            stateful: transition!(self, SessionTerminated::<_>),
+                            error: ServerStopped.into(),
+                        });
+                    }
+                    // Abnormal exit
+                    Ok(es) => {
+                        return_recover!(self,
+                            "Root process exited with status: {}", es.display());
+                    }
+                    // Waiting on the process itself failed
+                    Err(e) => {
+                        return_recover!(self,
+                            "Failed waiting on root process: {}", e);
+                    }
+                }
             }
             _ = self.cancellation_token.cancelled() => {
                 return Err(Recovered {
@@ -954,14 +974,33 @@ impl<B: Backend> TryTransitionable<SessionInactive<B>, SessionUnresumable>
 
         match (self.state.backend, self.cancellation_token.is_cancelled()) {
             (Some(mut backend), false) => {
-                if let Some(exit_status) = backend.wait_root_process().now_or_never() {
-                    Err(Recovered {
-                        stateful: session_unresumable!(),
-                        error: anyhow!(
-                            "Root process exited with status: {}",
-                            exit_status.display()
-                        ),
-                    })
+                if let Some(exit_status_result) = backend.wait_root_process().now_or_never() {
+                    match exit_status_result {
+                        Ok(exit_status) => {
+                            if exit_status.success() {
+                                // clean exit – treat as graceful shutdown
+                                debug!("Root process exited cleanly (status {}) – shutting server down",
+                                       exit_status.display());
+                                Err(Recovered {
+                                    stateful: session_unresumable!(),
+                                    error: ServerStopped.into(),
+                                })
+                            } else {
+                                // abnormal exit – still an error
+                                Err(Recovered {
+                                    stateful: session_unresumable!(),
+                                    error: anyhow!(
+                                        "Root process exited with status: {}",
+                                        exit_status.display()
+                                    ),
+                                })
+                            }
+                        }
+                        Err(e) => Err(Recovered {
+                            stateful: session_unresumable!(),
+                            error: anyhow!("Failed to wait on root process: {}", e),
+                        }),
+                    }
                 } else {
                     Ok(Server {
                         config: self.config,

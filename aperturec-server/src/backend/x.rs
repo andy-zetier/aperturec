@@ -187,6 +187,7 @@ impl Backend for X {
 
     async fn wait_root_process(&mut self) -> Result<ExitStatus> {
         static WARN_ONCE: OnceLock<()> = OnceLock::new();
+        static INFO_ONCE: OnceLock<()> = OnceLock::new();
         let root_proc_fut: Pin<Box<dyn Future<Output = _> + Send + Sync>> =
             if let Some(child) = self.root_process.as_mut() {
                 Box::pin(child.wait())
@@ -203,7 +204,13 @@ impl Backend for X {
             },
             root_es_res = root_proc_fut => {
                 let root_es = root_es_res?;
-                WARN_ONCE.get_or_init(|| warn!(exit_status=%root_es.display(), "Root process exiting"));
+                if root_es.success() {
+                    INFO_ONCE.get_or_init(|| {
+                        info!(exit_status = %root_es.display(), "Root process exited cleanly");
+                    });
+                } else {
+                    WARN_ONCE.get_or_init(|| warn!(exit_status = %root_es.display(), "Root process exiting"));
+                }
                 Ok(root_es)
             }
         }

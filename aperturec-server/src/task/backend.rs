@@ -156,7 +156,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                         match exit_status_res {
                             Ok(exit_status) => {
                                 if exit_status.success() {
-                                    info!("root process exited successfully");
+                                    debug!("root process exited successfully");
                                     break Ok(());
                                 } else {
                                     break Err(anyhow!("root process exited with exit status: {}", exit_status));
