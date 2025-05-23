@@ -367,7 +367,10 @@ impl Backend for X {
         X::setup_xfixes_monitor(&connection, &root_window).await?;
 
         let root_process = match root_process_cmd {
-            None => None,
+            None => {
+                println!("{}", &display_name);
+                None
+            }
             Some(cmd) => Some(do_exec_command(&display_name, cmd).await?),
         };
 
