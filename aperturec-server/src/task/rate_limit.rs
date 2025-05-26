@@ -66,15 +66,18 @@ pub struct Configuration {
 
 impl Configuration {
     pub fn new(server_mbps_max: Option<usize>, client_mbps_max: usize) -> Self {
-        let mbps_max = match server_mbps_max {
-            Some(server_mbps_max) => {
-                if client_mbps_max == 0 {
-                    Some(server_mbps_max)
-                } else {
-                    Some(client_mbps_max)
-                }
-            }
-            _ => None,
+        let mbps_max = match (server_mbps_max, client_mbps_max) {
+            // Server capped, client “unlimited”  -> use server cap
+            (Some(server_max), 0) => Some(server_max),
+
+            // Both capped                       -> use the lower (stricter) cap
+            (Some(server_max), client_max) => Some(std::cmp::min(server_max, client_max)),
+
+            // No server cap, client “unlimited” -> no cap
+            (None, 0) => None,
+
+            // No server cap, client capped      -> use client cap
+            (None, client_max) => Some(client_max),
         };
 
         Self { mbps_max }
