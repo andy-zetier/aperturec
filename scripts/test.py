@@ -182,7 +182,7 @@ def start_server(
         "--tls-save-directory={}".format(tls_dir),
         "--auth-token-file={}".format(auth_token_path),
         "--metrics-csv={}".format(server_metrics_path),
-        "--screen-size=1920x1080",
+        "--screen-config=1920x1080",
         "--log-file-directory={}".format(server_logs_dir),
         "glxgears -fullscreen"
     ]
