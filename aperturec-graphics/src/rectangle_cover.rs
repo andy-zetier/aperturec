@@ -13,22 +13,20 @@ fn sampled_diff_image(
     b: impl PixelMap + Sync,
     sample_grid_size: usize,
 ) -> GrayImage {
-    GrayImage::from_par_fn(
-        (a.as_ndarray().len_of(axis::X) / sample_grid_size + 1) as u32,
-        (a.as_ndarray().len_of(axis::Y) / sample_grid_size + 1) as u32,
-        |x, y| {
-            let (min_x, min_y) = (x as usize * sample_grid_size, y as usize * sample_grid_size);
-            let max_x = min(min_x + sample_grid_size, a.as_ndarray().len_of(axis::X));
-            let max_y = min(min_y + sample_grid_size, a.as_ndarray().len_of(axis::Y));
-            if b.as_ndarray().slice(s![min_y..max_y, min_x..max_x])
-                == a.as_ndarray().slice(s![min_y..max_y, min_x..max_x])
-            {
-                Luma([0_u8])
-            } else {
-                Luma([u8::MAX])
-            }
-        },
-    )
+    let tiles_x = (a.as_ndarray().len_of(axis::X) + sample_grid_size - 1) / sample_grid_size;
+    let tiles_y = (a.as_ndarray().len_of(axis::Y) + sample_grid_size - 1) / sample_grid_size;
+    GrayImage::from_par_fn(tiles_x as u32, tiles_y as u32, |x, y| {
+        let (min_x, min_y) = (x as usize * sample_grid_size, y as usize * sample_grid_size);
+        let max_x = min(min_x + sample_grid_size, a.as_ndarray().len_of(axis::X));
+        let max_y = min(min_y + sample_grid_size, a.as_ndarray().len_of(axis::Y));
+        if b.as_ndarray().slice(s![min_y..max_y, min_x..max_x])
+            == a.as_ndarray().slice(s![min_y..max_y, min_x..max_x])
+        {
+            Luma([0_u8])
+        } else {
+            Luma([u8::MAX])
+        }
+    })
 }
 
 fn region_bounds(labeled_regions: ArrayView2<u32>) -> BTreeMap<u32, Box2D> {
