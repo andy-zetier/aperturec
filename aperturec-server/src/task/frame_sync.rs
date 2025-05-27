@@ -506,10 +506,8 @@ where
                             .assume_init()
                         };
 
-                        SubframeBuffer {
-                            origin: b.min,
-                            pixels,
-                        }
+                        let origin = self.display.area.origin + b.min.to_vector();
+                        SubframeBuffer { origin, pixels }
                     })
                     .collect()
             }
@@ -523,7 +521,7 @@ where
                     .assume_init()
                 };
                 vec![SubframeBuffer {
-                    origin: Point::zero(),
+                    origin: self.display.area.origin,
                     pixels,
                 }]
             }
