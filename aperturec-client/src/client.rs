@@ -1,7 +1,7 @@
 use crate::frame::*;
 use crate::gtk3::{self, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
 
-use aperturec_channel::{self as channel, Receiver as _, Sender as _, Unified};
+use aperturec_channel::{self as channel, Flushable, Receiver as _, Sender as _, Unified};
 use aperturec_graphics::{
     display::{self, Display},
     euclid_collections::*,
@@ -42,7 +42,7 @@ use tracing::*;
 //
 // Internal ITC channel messaging
 //
-#[derive(Builder, Clone, Copy, Default)]
+#[derive(Builder, Clone, Copy, Default, Debug)]
 pub struct MouseButtonEventMessage {
     button: u32,
     is_pressed: bool,
@@ -75,7 +75,7 @@ impl MouseButtonEventMessage {
     }
 }
 
-#[derive(Builder, Clone, Copy, Default)]
+#[derive(Builder, Clone, Copy, Default, Debug)]
 pub struct PointerEventMessage {
     pos: Point,
 }
@@ -94,7 +94,7 @@ impl PointerEventMessage {
     }
 }
 
-#[derive(Builder, Clone, Copy, Default)]
+#[derive(Builder, Clone, Copy, Default, Debug)]
 pub struct KeyEventMessage {
     key: u32,
     is_pressed: bool,
@@ -133,56 +133,13 @@ impl DisplayEventMessage {
     }
 }
 
-#[derive(Builder, Clone, Default)]
-pub struct GoodbyeMessage {
-    reason: String,
-}
-
-impl GoodbyeMessage {
-    const NETWORK_ERROR: &'static str = "Network Error";
-    const TERMINATING: &'static str = "Terminating";
-
-    pub fn to_client_goodbye(&self, client_id: u64) -> ClientGoodbye {
-        match self.reason.as_str() {
-            GoodbyeMessage::NETWORK_ERROR => ClientGoodbyeBuilder::default()
-                .client_id(client_id)
-                .reason(ClientGoodbyeReason::NetworkError)
-                .build()
-                .expect("Build ClientGoodbye"),
-            GoodbyeMessage::TERMINATING => ClientGoodbyeBuilder::default()
-                .client_id(client_id)
-                .reason(ClientGoodbyeReason::Terminating)
-                .build()
-                .expect("Build ClientGoodbye"),
-            _ => ClientGoodbyeBuilder::default()
-                .client_id(client_id)
-                .reason(ClientGoodbyeReason::UserRequested)
-                .build()
-                .expect("Build ClientGoodbye"),
-        }
-    }
-
-    pub fn new(reason: String) -> Self {
-        GoodbyeMessageBuilder::default()
-            .reason(reason)
-            .build()
-            .expect("Build GoodbyeMessage")
-    }
-
-    pub fn new_network_error() -> Self {
-        Self::new(Self::NETWORK_ERROR.to_string())
-    }
-
-    pub fn new_terminating() -> Self {
-        Self::new(Self::TERMINATING.to_string())
-    }
-}
-
+#[derive(Debug)]
 pub enum EventMessage {
     MouseButtonEventMessage(MouseButtonEventMessage),
     PointerEventMessage(PointerEventMessage),
     KeyEventMessage(KeyEventMessage),
     DisplayEventMessage(DisplayEventMessage),
+    UiClosed,
 }
 
 #[derive(Debug)]
@@ -237,10 +194,31 @@ pub struct CursorData {
     pub y_hot: i32,
 }
 
-pub enum ControlMessage {
-    UiClosed(GoodbyeMessage),
-    EventChannelDied(GoodbyeMessage),
+#[derive(Debug)]
+enum QuitReason {
+    UiExited,
+    EventChannelDied,
     SigintReceived,
+}
+
+impl QuitReason {
+    fn to_client_goodbye(&self, client_id: u64) -> ClientGoodbye {
+        let gb_reason = match self {
+            QuitReason::UiExited => ClientGoodbyeReason::UserRequested,
+            QuitReason::EventChannelDied => ClientGoodbyeReason::NetworkError,
+            QuitReason::SigintReceived => ClientGoodbyeReason::Terminating,
+        };
+
+        ClientGoodbyeBuilder::default()
+            .client_id(client_id)
+            .reason(gb_reason)
+            .build()
+            .expect("Build ClientGoodbye")
+    }
+}
+
+enum ControlMessage {
+    Quit(QuitReason),
 }
 
 fn generate_tunnel_requests(
@@ -450,17 +428,19 @@ impl Client {
         this.monitor_geometry = Some(gtk3::get_monitors_geometry()?);
         debug!(monitor_geometry=?this.monitor_geometry);
 
+        let (notify_control_tx, notify_control_rx) = unbounded();
+
         let (cc, ec, mc, tc) = this.setup_unified_channel()?;
         this.setup_control_channel(
             cc,
             itc.ui_tx.clone(),
-            itc.notify_control_tx.clone(),
-            itc.notify_control_rx,
+            notify_control_tx.clone(),
+            notify_control_rx,
         )?;
         this.setup_event_channel(
             ec,
             itc.notify_event_rx,
-            itc.notify_control_tx,
+            notify_control_tx,
             itc.notify_media_tx,
             itc.ui_tx.clone(),
         )?;
@@ -1082,13 +1062,15 @@ impl Client {
                         }
                     }
                     Err(err) => {
-                        error!(
-                            "Failed to receive with error: {}. Server may already be gone",
-                            err
-                        );
-                        control_rx_tx
-                            .send(Err(err))
-                            .unwrap_or_else(|e| warn!("failed to forward error to Tx half: {}", e));
+                        if !should_stop.load(Ordering::Relaxed) {
+                            error!(
+                                "Failed to receive with error: {}. Server may already be gone",
+                                err
+                            );
+                            control_rx_tx.send(Err(err)).unwrap_or_else(|e| {
+                                warn!("failed to forward error to Tx half: {}", e)
+                            });
+                        }
                         break;
                     }
                 }
@@ -1100,16 +1082,22 @@ impl Client {
         let should_stop = self.should_stop.clone();
         thread::spawn(move || {
             while let Ok(cm_c2s) = control_tx_rx.recv() {
+                debug!(?cm_c2s);
                 if should_stop.load(Ordering::Relaxed) {
                     break;
                 }
                 let is_client_gb = matches!(cm_c2s, cm_c2s::Message::ClientGoodbye(_));
+                if is_client_gb {
+                    should_stop.store(true, Ordering::Relaxed);
+                }
                 if let Err(err) = client_cc_write.send(cm_c2s) {
                     error!("Failed to send: {}", err);
                     break;
                 }
 
                 if is_client_gb {
+                    debug!("client goodbye sent, exiting CC Tx");
+                    let _ = client_cc_write.flush();
                     break;
                 }
             }
@@ -1124,7 +1112,7 @@ impl Client {
         ctrlc::set_handler(move || {
             info!("Received Ctrl-C, exiting");
             notify_control_tx
-                .send(ControlMessage::SigintReceived)
+                .send(ControlMessage::Quit(QuitReason::SigintReceived))
                 .expect("Failed to notify control channel of SIGINT");
             should_stop.store(true, Ordering::Relaxed);
         })
@@ -1181,38 +1169,30 @@ impl Client {
                                             ClientGoodbyeReason::Terminating.into(),
                                             ).into());
                                 trace!("Sent ClientGoodbye: Terminating");
-                                error!("Fatal error reading control message: {:?}", other);
+                                if !should_stop.load(Ordering::Relaxed) {
+                                    error!("Fatal error reading control message: {:?}", other);
+                                }
                                 break;
                             }
                         },
                         Err(err) => {
-                            error!("Failed to recv from RX ITC channel: {}", err);
+                            if !should_stop.load(Ordering::Relaxed) {
+                                error!("Failed to recv from RX ITC channel: {}", err);
+                            }
                             break;
                         }
                     },
                     recv(notify_control_rx) -> msg => match msg {
-                        Ok(ControlMessage::UiClosed(gm)) => {
-                            control_tx_tx.send(gm.to_client_goodbye(client_id).into())
-                                .unwrap_or_else(|e| error!("Failed to send client goodbye to control channel: {}", e));
-                            trace!("Sent ClientGoodbye: User Requested");
+                        Ok(ControlMessage::Quit(quit_reason)) => {
+                            debug!("Received quit message");
+                            let _ = ui_tx
+                                .send(UiMessage::Quit(format!("{:?}", quit_reason)));
+                            control_tx_tx
+                                .send(quit_reason.to_client_goodbye(client_id).into())
+                                .unwrap_or_else(|error| warn!(%error, "Failed to send client goodbye to control channel"));
+
                             break;
-                        },
-                        Ok(ControlMessage::EventChannelDied(gm)) => {
-                            ui_tx.send(UiMessage::Quit("Event Channel Died".to_string()))
-                                .unwrap_or_else(|e| error!("Failed to send QuitMessage to UI: {}", e));
-                            control_tx_tx.send(gm.to_client_goodbye(client_id).into())
-                                .unwrap_or_else(|e| error!("Failed to send client goodbye to control channel: {}", e));
-                            trace!("Sent ClientGoodbye: Network Error");
-                            break;
-                        },
-                        Ok(ControlMessage::SigintReceived) => {
-                            ui_tx.send(UiMessage::Quit("SIGINT".to_string()))
-                                .unwrap_or_else(|e| error!("Failed to send QuitMessage to UI: {}", e));
-                            control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into())
-                                .unwrap_or_else(|e| error!("Failed to send client goodbye to control channel: {}", e));
-                            trace!("Sent ClientGoodbye: SIGINT");
-                            break;
-                        },
+                        }
                         Err(err) => {
                             error!("Failed to recv from ITC channel: {}", err);
                             break;
@@ -1263,7 +1243,15 @@ impl Client {
         thread::spawn(move || {
             debug!("Event channel Tx started");
             for event_msg in notify_event_rx.iter() {
+                debug!(?event_msg);
                 let msg = match event_msg {
+                    EventMessage::UiClosed => {
+                        if let Err(error) = ec_tx.flush() {
+                            warn!(%error, "Failed flushing event channel");
+                        }
+                        let _ = notify_control_tx.send(ControlMessage::Quit(QuitReason::UiExited));
+                        break;
+                    }
                     EventMessage::MouseButtonEventMessage(mbem) => {
                         em_c2s::Message::from(mbem.to_pointer_event())
                     }
@@ -1282,16 +1270,15 @@ impl Client {
                 }
 
                 if let Err(err) = ec_tx.send(msg) {
-                    let _ = notify_control_tx.send(ControlMessage::EventChannelDied(
-                        GoodbyeMessage::new_network_error(),
-                    ));
+                    notify_control_tx
+                        .send(ControlMessage::Quit(QuitReason::EventChannelDied))
+                        .unwrap_or_else(|error| warn!(%error, "failed to send quit message to control channel thread"));
                     error!("Failed to send Event message: {}", err);
                     break;
                 }
             } // for event_rx.iter()
 
             debug!("Event channel exiting");
-            should_stop.store(true, Ordering::Relaxed);
         }); // thread::spawn
 
         Ok(())

@@ -138,6 +138,10 @@ impl Transitionable<Running> for Task<Created> {
                         }
                     }
                     _ = rx_ct.cancelled() => {
+                        while let Some(Ok(msg)) = ec_rx.receive().now_or_never() {
+
+                            let _ = self.state.event_tx.send(msg.try_into()?).await;
+                        }
                         break Ok(());
                     }
                 }

@@ -1,7 +1,7 @@
 use crate::client::{
-    ControlMessage, CursorData, DisplayEventMessage, DisplayMode, EventMessage,
-    GoodbyeMessageBuilder, KeyEventMessageBuilder, MonitorGeometry, MonitorsGeometry,
-    MouseButtonEventMessageBuilder, PointerEventMessageBuilder, UiMessage,
+    CursorData, DisplayEventMessage, DisplayMode, EventMessage, KeyEventMessageBuilder,
+    MonitorGeometry, MonitorsGeometry, MouseButtonEventMessageBuilder, PointerEventMessageBuilder,
+    UiMessage,
 };
 use crate::frame::Draw;
 use crate::gtk3::image::Image;
@@ -161,8 +161,6 @@ pub const DEFAULT_RESOLUTION: Size = Size::new(800, 600);
 
 pub struct ClientSideItcChannels {
     pub ui_tx: glib::Sender<UiMessage>,
-    pub notify_control_rx: Receiver<ControlMessage>,
-    pub notify_control_tx: Sender<ControlMessage>,
     pub notify_event_rx: Receiver<EventMessage>,
     pub notify_event_tx: Sender<EventMessage>,
     pub notify_media_rx: Receiver<DisplayConfiguration>,
@@ -171,7 +169,6 @@ pub struct ClientSideItcChannels {
 
 pub struct GtkSideItcChannels {
     ui_rx: glib::Receiver<UiMessage>,
-    notify_control_tx: Sender<ControlMessage>,
     notify_event_tx: Sender<EventMessage>,
 }
 
@@ -190,15 +187,12 @@ impl ItcChannels {
     pub fn new() -> Self {
         let (ui_tx, ui_rx) = glib::MainContext::channel(glib::Priority::default());
 
-        let (notify_control_tx, notify_control_rx) = unbounded();
         let (notify_event_tx, notify_event_rx) = unbounded();
         let (notify_media_tx, notify_media_rx) = unbounded();
 
         ItcChannels {
             client_half: ClientSideItcChannels {
                 ui_tx,
-                notify_control_rx,
-                notify_control_tx: notify_control_tx.clone(),
                 notify_event_rx,
                 notify_event_tx: notify_event_tx.clone(),
                 notify_media_rx,
@@ -206,7 +200,6 @@ impl ItcChannels {
             },
             gtk_half: GtkSideItcChannels {
                 ui_rx,
-                notify_control_tx,
                 notify_event_tx,
             },
         }
@@ -302,9 +295,9 @@ impl KeyboardShortcut {
                     multi_monitor: true,
                 })
             }
-        } else if key_event.keyval() == gdk::keys::constants::F12
-            && state.contains(gdk::ModifierType::SHIFT_MASK)
-        {
+        } else if key_event.keyval() == gdk::keys::constants::F12 {
+            // Some DEs will switch TTYs with Ctrl-Alt-F12. These DEs may allow this key-combo to
+            // reach the client (without TTY switching) by using Shift (e.g. Ctrl-Alt-Shift-F12)
             Some(Self::Disconnect)
         } else {
             None
@@ -571,7 +564,6 @@ impl GtkUi {
 
 struct UiWorkspace {
     event_tx: Sender<EventMessage>,
-    control_tx: Sender<ControlMessage>,
     monitors_geometry: RefCell<MonitorsGeometry>,
     keyboard_shortcut_tx: glib::Sender<KeyboardShortcut>,
     last_mouse_pos: Cell<Point>,
@@ -590,7 +582,6 @@ impl UiWorkspace {
         debug!(?initial_monitors_geometry);
         Ok(UiWorkspace {
             event_tx: itc.notify_event_tx.clone(),
-            control_tx: itc.notify_control_tx.clone(),
             keyboard_shortcut_tx,
             monitors_geometry: initial_monitors_geometry.into(),
             last_mouse_pos: Point::zero().into(),
@@ -609,11 +600,8 @@ mod signal_handlers {
         trace!(value=?key.keyval(), state=?key.state(), "GTK KeyPressEvent");
 
         if let Some(shortcut) = KeyboardShortcut::from_event(key) {
-            workspace
-                .keyboard_shortcut_tx
-                .send(shortcut)
-                .unwrap_or_else(|error| warn!(%error, "GTK failed to tx KeyboardShortcut"));
             while let Some(x11key) = workspace.held_keys.borrow_mut().pop_first() {
+                debug!(?x11key, "releasing");
                 workspace
                     .event_tx
                     .send(EventMessage::KeyEventMessage(
@@ -625,6 +613,10 @@ mod signal_handlers {
                     ))
                     .unwrap_or_else(|err| warn!("GTK failed to tx KeyEventMessage: {}", err));
             }
+            workspace
+                .keyboard_shortcut_tx
+                .send(shortcut)
+                .unwrap_or_else(|error| warn!(%error, "GTK failed to tx KeyboardShortcut"));
         } else {
             let x11key = gtk_key_to_x11(key);
             workspace.held_keys.borrow_mut().insert(x11key);
@@ -892,13 +884,8 @@ mod signal_handlers {
 
     pub fn delete(app: &gtk::Application, workspace: &UiWorkspace) {
         workspace
-            .control_tx
-            .send(ControlMessage::UiClosed(
-                GoodbyeMessageBuilder::default()
-                    .reason(String::from("UI closed"))
-                    .build()
-                    .expect("GTK failed to build GoodbyeMessage"),
-            ))
+            .event_tx
+            .send(EventMessage::UiClosed)
             .unwrap_or_else(|error| {
                 if !workspace.shutdown_started.get() {
                     warn!(%error, "GTK failed to send GoodbyeMessage");
