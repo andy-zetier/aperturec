@@ -18,6 +18,7 @@ use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -25,9 +26,11 @@ use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::*;
+use xcb::damage::{self};
+use xcb::x::{self};
 use xcb::{
-    composite, damage, randr, x, xfixes, xtest, BaseEvent, CookieWithReplyChecked, Request,
-    RequestWithReply, RequestWithoutReply, Xid, XidNew,
+    composite, randr, xfixes, xtest, BaseEvent, CookieWithReplyChecked, Request, RequestWithReply,
+    RequestWithoutReply, Xid, XidNew,
 };
 
 const CHILD_STARTUP_WAIT_TIME_MS: Duration = Duration::from_millis(1000);
@@ -1132,28 +1135,30 @@ struct XEventStreamMux {
 
 impl XEventStreamMux {
     fn new(conn: Arc<xcb::Connection>) -> XEventStreamMux {
-        let conn = conn.clone();
-        let txs: Arc<Mutex<_>> = Arc::default();
-        let tx_task_txs = txs.clone();
+        let txs: Arc<Mutex<Vec<_>>> = Arc::default();
+        let txs_clone = txs.clone();
 
-        XEventStreamMux {
-            txs,
-            _task: tokio::task::spawn(async move {
-                loop {
-                    let event = loop {
-                        if let Some(event) = conn.poll_for_event()? {
-                            break event;
-                        }
-                        time::sleep(Duration::from_micros(1)).await;
-                    };
+        let _task = tokio::spawn(async move {
+            let afd = AsyncFd::new(conn.clone())?;
+
+            loop {
+                // first drain any events already queued
+                while let Some(ev) = conn.poll_for_event()? {
                     BackendEvent::inc();
-                    let arcd = Arc::new(XEvent(event));
-
-                    let mut txs = tx_task_txs.lock().expect("lock X mux txs");
-                    txs.retain(|tx| tx.send(arcd.clone()).is_ok());
+                    let arc_ev = Arc::new(XEvent(ev));
+                    txs_clone
+                        .lock()
+                        .expect("lock X mux txs")
+                        .retain(|tx: &mpsc::UnboundedSender<_>| tx.send(arc_ev.clone()).is_ok());
                 }
-            }),
-        }
+
+                // wait until the X socket becomes readable
+                let mut guard = afd.readable().await?;
+                guard.clear_ready();
+            }
+        });
+
+        XEventStreamMux { txs, _task }
     }
 
     fn get_stream(&self) -> impl Stream<Item = Arc<XEvent>> + Send + Sync + Unpin {
