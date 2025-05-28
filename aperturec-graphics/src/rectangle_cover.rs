@@ -104,8 +104,11 @@ pub fn diff_rectangle_cover(
     let size = a.size();
 
     let diff_image = sampled_diff_image(a, b, SAMPLE_GRID_SIZE);
-    if diff_image.dimensions() == (1, 1) {
-        return if diff_image.get_pixel(0, 0) == &Luma([0_u8]) {
+    let (tiles_x, tiles_y) = diff_image.dimensions();
+    if tiles_x == 1 || tiles_y == 1 {
+        // True if every sampled tile is identical
+        let identical = diff_image.pixels().all(|&p| p == Luma([0_u8]));
+        return if identical {
             BoxSet::default()
         } else {
             BoxSet::with_initial_box(Box2D::from_size(size))
@@ -246,5 +249,35 @@ mod test {
                 Box2D::new(Point::new(384, 384), Point::new(512, 512))
             ]
         );
+    }
+
+    #[test]
+    fn thin_equal_image() {
+        let size = Size::new(50, 300); // only one tile wide
+        let img = Array2::from_elem(size.as_shape(), Pixel24::default());
+        let diff = diff_rectangle_cover(img.view(), img.view());
+        assert!(
+            diff.is_empty(),
+            "Identical thin image should yield no diff rectangles"
+        );
+    }
+
+    #[test]
+    fn thin_different_image() {
+        let size = Size::new(50, 300); // only one tile wide
+        let orig = Array2::from_elem(size.as_shape(), Pixel24::default());
+        let mut new = orig.clone();
+        new[(0, 0)] = Pixel24 {
+            red: 1,
+            green: 0,
+            blue: 0,
+        };
+        let diff = diff_rectangle_cover(orig.view(), new.view());
+        assert_eq!(
+            diff.len(),
+            1,
+            "Any difference in a thin image should occupy the single decoder"
+        );
+        assert_eq!(*diff.into_iter().next().unwrap(), Box2D::from_size(size));
     }
 }
