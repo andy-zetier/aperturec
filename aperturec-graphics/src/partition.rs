@@ -22,31 +22,36 @@ pub fn partition_displays(
     displays: &[Display],
     max_decoder_count: usize,
 ) -> Result<Vec<Vec<Box2D>>> {
-    let enabled_display_count = displays.iter().filter(|d| d.is_enabled).count();
-
-    if enabled_display_count > max_decoder_count {
-        return Err(Error::MoreDisplaysThanDecoders {
-            display_count: enabled_display_count,
-            max_decoders: max_decoder_count,
-        });
-    }
-    if enabled_display_count == 0 {
+    let enabled = displays.iter().filter(|d| d.is_enabled).count();
+    if enabled == 0 {
         return Err(Error::NoEnabledDisplays);
     }
     if max_decoder_count == 0 {
         return Err(Error::MaxDecoderCountZero);
     }
+    if enabled > max_decoder_count {
+        return Err(Error::MoreDisplaysThanDecoders {
+            display_count: enabled,
+            max_decoders: max_decoder_count,
+        });
+    }
 
-    let decoders_per_display =
-        NonZeroUsize::new(max_decoder_count / enabled_display_count).expect("0 decoders");
-
+    let base = max_decoder_count / enabled;
+    let mut rem = max_decoder_count % enabled;
     Ok(displays
         .iter()
-        .map(|display| {
-            if display.is_enabled {
-                partition(display.size(), decoders_per_display)
+        .map(|d| {
+            if !d.is_enabled {
+                Vec::new()
             } else {
-                vec![]
+                let extra = if rem > 0 {
+                    rem -= 1;
+                    1
+                } else {
+                    0
+                };
+                let n = NonZeroUsize::new(base + extra).unwrap();
+                partition(d.size(), n)
             }
         })
         .collect())
@@ -125,6 +130,26 @@ pub fn partition(resolution: Size, max_partitions: NonZeroUsize) -> Vec<Box2D> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn all_decoders_used() {
+        let max_decoders = 32;
+        let size = Size::new(1920, 1080);
+
+        for display_cnt in 1..=max_decoders {
+            let displays = Display::linear_displays(display_cnt, size);
+
+            for decoder_cnt in display_cnt..=max_decoders {
+                let partitions =
+                    partition_displays(&displays, decoder_cnt).expect("partition failed");
+                let used: usize = partitions.iter().map(|v| v.len()).sum();
+                assert_eq!(
+                    used, decoder_cnt,
+                    "expected all {decoder_cnt} decoders to be used with {display_cnt} displays"
+                );
+            }
+        }
+    }
 
     #[test]
     fn partitioning() {
