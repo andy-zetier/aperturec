@@ -1,20 +1,20 @@
-ARG IMAGE_BASE=ubuntu
+ARG IMAGE_UPSTREAM=docker.io/library/ubuntu:22.04
 ARG OS_VARIANT=debian
 ARG ARCHITECTURE=$BUILDPLATFORM
-ARG UPSTREAM_REGISTRY=docker.io
 
-FROM --platform=${ARCHITECTURE} ${UPSTREAM_REGISTRY}/${IMAGE_BASE} as base-image-debian
+FROM --platform=${ARCHITECTURE} ${IMAGE_UPSTREAM} as base-image-debian
 ENV APT_UPDATE="apt update"
 ENV APT_INSTALL="apt install -y --no-install-recommends --no-install-suggests"
 ENV APT_CLEAN="rm -rf /var/lib/apt/lists/*"
 ENV DEBIAN_FRONTEND=noninteractive
 RUN $APT_UPDATE && $APT_INSTALL clang curl build-essential cmake pkg-config libssl-dev ca-certificates git protobuf-compiler libprotobuf-dev xvfb && $APT_CLEAN
 
-FROM --platform=${ARCHITECTURE} ${UPSTREAM_REGISTRY}/${IMAGE_BASE} as base-image-fedora
+FROM --platform=${ARCHITECTURE} ${IMAGE_UPSTREAM} as base-image-fedora
 ENV DNF_INSTALL="dnf install --setopt=install_weak_deps=False -y"
 ENV DNF_CLEAN="dnf clean all"
 WORKDIR /root
-RUN $DNF_INSTALL -y clang gcc openssl-devel cmake git protobuf-compiler protobuf-devel xorg-x11-server-Xvfb && $DNF_CLEAN
+RUN dnf config-manager --set-enabled crb || true
+RUN $DNF_INSTALL -y 'clang-18.*' gcc openssl-devel cmake git protobuf-compiler protobuf-devel xorg-x11-server-Xvfb && $DNF_CLEAN
 
 FROM --platform=${ARCHITECTURE} base-image-${OS_VARIANT} as base-rust-image
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c rustfmt

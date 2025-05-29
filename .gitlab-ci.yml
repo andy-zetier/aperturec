@@ -16,15 +16,18 @@ stages:
 .crates:server-dependencies: "aperturec-server"
 .crates:client-dependencies: "aperturec-client"
 
-.images:debian:
-  - ubuntu:22.04
-  - ubuntu:24.04
-.images:fedora:
-  - fedora:40
-.images:all:
-  - ubuntu:22.04
-  - ubuntu:24.04
-  - fedora:40
+.ubuntu-22: &ubuntu-22
+  IMAGE_UPSTREAM: docker.io/library/ubuntu:22.04
+  IMAGE_NAME: ubuntu-22
+.ubuntu-24: &ubuntu-24
+  IMAGE_UPSTREAM: docker.io/library/ubuntu:24.04
+  IMAGE_NAME: ubuntu-24
+.fedora-40: &fedora-40
+  IMAGE_UPSTREAM: docker.io/library/fedora:40
+  IMAGE_NAME: fedora-40
+.centos-stream9: &centos-stream9
+  IMAGE_UPSTREAM: quay.io/centos/centos:stream9
+  IMAGE_NAME: centos-stream9
 
 .runner-arch:independent:
   tags:
@@ -76,25 +79,33 @@ create-images:build:
       --ignore-path /proc
       --use-new-run
       --context "$CI_PROJECT_DIR/ci/images/"
-      --build-arg IMAGE_BASE
+      --build-arg IMAGE_UPSTREAM
       --build-arg OS_VARIANT
       --build-arg ARCHITECTURE
       --target $IMAGE_TARGET
       --skip-unused-stages
-      --destination "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$ARCHITECTURE-$IMAGE_BASE"
+      --destination "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$ARCHITECTURE-$IMAGE_NAME"
       --registry-certificate "$CI_REGISTRY=$CI_SERVER_TLS_CA_FILE"
   parallel:
     matrix:
-      - OS_VARIANT: debian
-        IMAGE_BASE: !reference [.images:debian]
+      - <<: *ubuntu-22
+        OS_VARIANT: debian
         ARCHITECTURE: !reference [.architectures:all]
         IMAGE_TARGET: !reference [.targets:all]
-      - OS_VARIANT: fedora
-        IMAGE_BASE: !reference [.images:fedora]
+      - <<: *ubuntu-24
+        OS_VARIANT: debian
         ARCHITECTURE: !reference [.architectures:all]
         IMAGE_TARGET: !reference [.targets:all]
-      - OS_VARIANT: fedora
-        IMAGE_BASE: fedora:40
+      - <<: *fedora-40
+        OS_VARIANT: fedora
+        ARCHITECTURE: !reference [.architectures:all]
+        IMAGE_TARGET: !reference [.targets:all]
+      - <<: *centos-stream9
+        OS_VARIANT: fedora
+        ARCHITECTURE: !reference [.architectures:all]
+        IMAGE_TARGET: !reference [.targets:all]
+      - <<: *fedora-40
+        OS_VARIANT: fedora
         ARCHITECTURE: amd64
         IMAGE_TARGET: client-image-windows
 
@@ -117,19 +128,24 @@ create-images:deploy-manifest:
       push
       from-args
       --platforms $PLATFORMS
-      --template "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-ARCH-$IMAGE_BASE"
-      --target "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_BASE"
+      --template "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-ARCH-$IMAGE_NAME:latest"
+      --target "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_NAME:latest"
   parallel:
     matrix:
-      - OS_VARIANT: debian
-        IMAGE_BASE: !reference [.images:debian]
+      - <<: *ubuntu-22
+        OS_VARIANT: debian
         IMAGE_TARGET: !reference [.targets:all]
-      - OS_VARIANT: fedora
-        IMAGE_BASE: !reference [.images:fedora]
+      - <<: *ubuntu-24
+        OS_VARIANT: debian
         IMAGE_TARGET: !reference [.targets:all]
-      - OS_VARIANT: fedora
-        IMAGE_BASE: fedora:40
-        ARCHITECTURE: amd64
+      - <<: *fedora-40
+        OS_VARIANT: fedora
+        IMAGE_TARGET: !reference [.targets:all]
+      - <<: *centos-stream9
+        OS_VARIANT: fedora
+        IMAGE_TARGET: !reference [.targets:all]
+      - <<: *fedora-40
+        OS_VARIANT: fedora
         IMAGE_TARGET: client-image-windows
         PLATFORMS: linux/amd64
   needs:
@@ -138,10 +154,9 @@ create-images:deploy-manifest:
 .custom-image:
   interruptible: true
   variables:
-    OS_VARIANT: debian
-    IMAGE_BASE: ubuntu:22.04
     IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
-    IMAGE: "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_BASE"
+    IMAGE_NAME: ubuntu-22
+    IMAGE: "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_NAME:latest"
   image: $IMAGE
   rules:
     - if: $CI_COMMIT_BRANCH
@@ -193,32 +208,80 @@ cargo:check-build-test:
     - cargo build $CARGO_ARGS --release
     - |-
       if [[ -f target/release/$CRATES ]]; then
-        mv target/release/$CRATES target/release/$CRATES-$IMAGE_BASE-$ARCHITECTURE
+        mv target/release/$CRATES target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE
       fi
     - git diff-index --quiet HEAD
   parallel:
     matrix:
-      - CRATES: !reference [.crates:no-extra-dependencies]
-        IMAGE_BASE: !reference [.images:all]
+      - <<: *ubuntu-22
+        CRATES: !reference [.crates:no-extra-dependencies]
         IMAGE_TARGET: rust-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: !reference [.crates:fips-dependencies]
-        IMAGE_BASE: !reference [.images:all]
+      - <<: *ubuntu-24
+        CRATES: !reference [.crates:no-extra-dependencies]
+        IMAGE_TARGET: rust-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *fedora-40
+        CRATES: !reference [.crates:no-extra-dependencies]
+        IMAGE_TARGET: rust-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *centos-stream9
+        CRATES: !reference [.crates:no-extra-dependencies]
+        IMAGE_TARGET: rust-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *ubuntu-22
+        CRATES: !reference [.crates:fips-dependencies]
         IMAGE_TARGET: fips-capable-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: aperturec-server
-        IMAGE_BASE: !reference [.images:all]
+      - <<: *ubuntu-24
+        CRATES: !reference [.crates:fips-dependencies]
+        IMAGE_TARGET: fips-capable-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *fedora-40
+        CRATES: !reference [.crates:fips-dependencies]
+        IMAGE_TARGET: fips-capable-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *centos-stream9
+        CRATES: !reference [.crates:fips-dependencies]
+        IMAGE_TARGET: fips-capable-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *ubuntu-22
+        CRATES: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: aperturec-client
-        IMAGE_BASE: !reference [.images:all]
+      - <<: *ubuntu-24
+        CRATES: aperturec-server
+        IMAGE_TARGET: server-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *fedora-40
+        CRATES: aperturec-server
+        IMAGE_TARGET: server-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *centos-stream9
+        CRATES: aperturec-server
+        IMAGE_TARGET: server-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *ubuntu-22
+        CRATES: aperturec-client
+        IMAGE_TARGET: client-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *ubuntu-24
+        CRATES: aperturec-client
+        IMAGE_TARGET: client-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *fedora-40
+        CRATES: aperturec-client
+        IMAGE_TARGET: client-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *centos-stream9
+        CRATES: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
   needs:
     - job: create-images:deploy-manifest
       optional: true
   artifacts:
-    paths: [target/release/$CRATES-$IMAGE_BASE-$ARCHITECTURE]
+    paths: [target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE]
 
 cargo:check-build-windows-client:
   stage: check-build-test
@@ -235,8 +298,8 @@ cargo:check-build-windows-client:
     - mv target/x86_64-pc-windows-gnu/release/$CRATES.exe .
     - git diff-index --quiet HEAD
   variables:
+    <<: *fedora-40
     CRATES: aperturec-client
-    IMAGE_BASE: fedora:40
     IMAGE_TARGET: client-image-windows
     ARCHITECTURE: amd64
   needs:
@@ -274,8 +337,8 @@ package:windows-client:
   script:
     - $CI_PROJECT_DIR/ci/scripts/create-windows-package.sh
   variables:
+    <<: *fedora-40
     CRATES: aperturec-client
-    IMAGE_BASE: fedora:40
     IMAGE_TARGET: client-image-windows
     ARCHITECTURE: amd64
   needs:
@@ -289,7 +352,7 @@ package:create-deb:
     - .cargo
     - .runner-arch:dependent
   script:
-    - mv target/release/$CRATES-$IMAGE_BASE-$ARCHITECTURE target/release/$CRATES
+    - mv target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE target/release/$CRATES
     - cargo deb $CARGO_ARGS -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID" --no-build -- --release
   artifacts:
     paths: [target/*/*/$CRATES_*_*.deb]
@@ -297,22 +360,38 @@ package:create-deb:
     - job: cargo:check-build-test
       parallel:
         matrix:
-          - CRATES: aperturec-server
-            IMAGE_BASE: !reference [.images:debian]
+          - <<: *ubuntu-22
+            CRATES: aperturec-server
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
-          - CRATES: aperturec-client
-            IMAGE_BASE: !reference [.images:debian]
+          - <<: *ubuntu-24
+            CRATES: aperturec-server
+            IMAGE_TARGET: server-image
+            ARCHIECTURE: !reference [.architectures:all]
+          - <<: *ubuntu-22
+            CRATES: aperturec-client
+            IMAGE_TARGET: client-image
+            ARCHIECTURE: !reference [.architectures:all]
+          - <<: *ubuntu-24
+            CRATES: aperturec-client
             IMAGE_TARGET: client-image
             ARCHIECTURE: !reference [.architectures:all]
   parallel:
     matrix:
-      - CRATES: aperturec-server
-        IMAGE_BASE: !reference [.images:debian]
+      - <<: *ubuntu-22
+        CRATES: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: aperturec-client
-        IMAGE_BASE: !reference [.images:debian]
+      - <<: *ubuntu-24
+        CRATES: aperturec-server
+        IMAGE_TARGET: server-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *ubuntu-22
+        CRATES: aperturec-client
+        IMAGE_TARGET: client-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *ubuntu-24
+        CRATES: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
 
@@ -322,7 +401,7 @@ package:create-rpm:
     - .cargo
     - .runner-arch:dependent
   script:
-    - mv target/release/$CRATES-$IMAGE_BASE-$ARCHITECTURE target/release/$CRATES
+    - mv target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE target/release/$CRATES
     - ID=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
     - VERSION_ID=$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
     - mkdir -p target/$ID/$VERSION_ID
@@ -333,22 +412,38 @@ package:create-rpm:
     - job: cargo:check-build-test
       parallel:
         matrix:
-          - CRATES: aperturec-server
-            IMAGE_BASE: !reference [.images:fedora]
+          - <<: *fedora-40
+            CRATES: aperturec-server
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
-          - CRATES: aperturec-client
-            IMAGE_BASE: !reference [.images:fedora]
+          - <<: *centos-stream9
+            CRATES: aperturec-server
+            IMAGE_TARGET: server-image
+            ARCHIECTURE: !reference [.architectures:all]
+          - <<: *fedora-40
+            CRATES: aperturec-client
+            IMAGE_TARGET: client-image
+            ARCHIECTURE: !reference [.architectures:all]
+          - <<: *centos-stream9
+            CRATES: aperturec-client
             IMAGE_TARGET: client-image
             ARCHIECTURE: !reference [.architectures:all]
   parallel:
     matrix:
-      - CRATES: aperturec-server
-        IMAGE_BASE: !reference [.images:fedora]
+      - <<: *fedora-40
+        CRATES: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - CRATES: aperturec-client
-        IMAGE_BASE: !reference [.images:fedora]
+      - <<: *centos-stream9
+        CRATES: aperturec-server
+        IMAGE_TARGET: server-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *fedora-40
+        CRATES: aperturec-client
+        IMAGE_TARGET: client-image
+        ARCHITECTURE: !reference [.architectures:all]
+      - <<: *centos-stream9
+        CRATES: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
 
