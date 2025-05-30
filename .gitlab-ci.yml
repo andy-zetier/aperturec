@@ -402,10 +402,9 @@ package:create-rpm:
     - .runner-arch:dependent
   script:
     - mv target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE target/release/$CRATES
-    - ID=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
     - VERSION_ID=$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
-    - mkdir -p target/$ID/$VERSION_ID
-    - cargo generate-rpm $CARGO_ARGS -o ./target/$ID/$VERSION_ID/ -s "release=$CI_PIPELINE_IID"
+    - mkdir -p target/$PKG_CLOUD_ID/$VERSION_ID
+    - cargo generate-rpm $CARGO_ARGS -o ./target/$PKG_CLOUD_ID/$VERSION_ID/ -s "release=$CI_PIPELINE_IID"
   artifacts:
     paths: [target/*/*/$CRATES*.rpm]
   needs:
@@ -434,18 +433,22 @@ package:create-rpm:
         CRATES: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
+        PKG_CLOUD_ID: fedora
       - <<: *centos-stream9
         CRATES: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
+        PKG_CLOUD_ID: el
       - <<: *fedora-40
         CRATES: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
+        PKG_CLOUD_ID: fedora
       - <<: *centos-stream9
         CRATES: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
+        PKG_CLOUD_ID: el
 
 package:push:
   stage: package
