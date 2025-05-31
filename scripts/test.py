@@ -333,18 +333,21 @@ def start_client(
 # Main Test Function
 ###############################################################################
 
-def run_test_for_branch(branch, test_dir, duration, skip_clone=False):
+def run_test_for_branch(branch, test_dir, duration, skip_clone=False, clone_source=None):
     branch_dir = os.path.join(test_dir, branch)
     os.makedirs(branch_dir, exist_ok=True)
 
     if not skip_clone:
-        print(f"\n=== Testing branch '{branch}' in '{branch_dir}' ===")
-        clone_cmd = [
-            "git", "clone", "-b", branch,
-            "git@gitlab.zetier.com:aperturec/aperturec.git",
-            branch_dir
-        ]
-        print("Cloning repository:")
+        if clone_source:
+            print(f"\n=== Cloning local repo for branch '{branch}' into '{branch_dir}' ===")
+            clone_cmd = ["git", "clone", "-b", branch, clone_source, branch_dir]
+        else:
+            print(f"\n=== Cloning remote repo for branch '{branch}' into '{branch_dir}' ===")
+            clone_cmd = [
+                "git", "clone", "-b", branch,
+                "git@gitlab.zetier.com:aperturec/aperturec.git",
+                branch_dir
+            ]
         print(" ".join(clone_cmd))
         ret = subprocess.run(clone_cmd)
         if ret.returncode != 0:
@@ -352,7 +355,7 @@ def run_test_for_branch(branch, test_dir, duration, skip_clone=False):
             return
         code_dir = branch_dir
     else:
-        print(f"\n=== Using local repo for branch '{branch}' ===")
+        print(f"\n=== Using local repo in-place for branch '{branch}' ===")
         script_dir = os.path.dirname(os.path.abspath(__file__))
         code_dir = os.path.abspath(os.path.join(script_dir, ".."))
 
@@ -585,6 +588,11 @@ def main():
         action="store_true",
         help="Use the local repository containing this script instead of cloning new branches."
     )
+    parser.add_argument(
+        "--clone-local",
+        action="store_true",
+        help="Clone from the local repository containing this script instead of the remote."
+    )
     args = parser.parse_args()
 
     # Determine which branches to test.
@@ -606,13 +614,26 @@ def main():
     else:
         branches = args.branches
 
+    # If requested, point clone_source at our local repo path; else None → use remote
+    if args.clone_local:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        clone_source = os.path.abspath(os.path.join(script_dir, ".."))
+    else:
+        clone_source = None
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     test_id = f"test_{timestamp}"
     test_root = os.path.abspath(os.path.join("aperturec_tests", test_id))
     os.makedirs(test_root, exist_ok=True)
 
     for branch in branches:
-        run_test_for_branch(branch, test_root, args.duration, skip_clone=args.use_local_repo)
+        run_test_for_branch(
+            branch,
+            test_root,
+            args.duration,
+            skip_clone=args.use_local_repo,
+            clone_source=clone_source,
+        )
 
     generate_comparison_graphs(test_root)
 
