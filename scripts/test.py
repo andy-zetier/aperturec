@@ -30,6 +30,7 @@ import csv
 from glob import glob
 import datetime
 from datetime import datetime
+import statistics
 
 ###############################################################################
 # Utility Functions
@@ -563,6 +564,79 @@ plot """)
 
     print(f"Generated comparison graphs in {graphs_dir}")
 
+def print_top_changed_stats(test_root, branches, metric_sources=('client','server'), top_n=5):
+    """
+    For each source (client/server), read the combined CSV in each branch,
+    compute the mean of each metric column (excluding timestamp), then
+    calculate across-branch stddev and print the top_n highest-variance metrics.
+    """
+    for src in metric_sources:
+        # load all CSVs into dict: metric -> [mean_for_branch_i,...]
+        metrics_data = {}  # metric_name -> list of means
+        for branch in branches:
+            csv_path = os.path.join(test_root, branch, f"{src}_metrics.csv")
+            if not os.path.exists(csv_path):
+                continue
+            with open(csv_path, newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                sums = {}
+                counts = {}
+                for row in reader:
+                    for k,v in row.items():
+                        if k == 'timestamp_rfc3339' or v in (None, '', '--------'):
+                            continue
+                        try:
+                            val = float(v)
+                        except:
+                            continue
+                        sums.setdefault(k, 0.0)
+                        counts.setdefault(k, 0)
+                        sums[k] += val
+                        counts[k] += 1
+                # compute mean for this branch
+                for metric, total in sums.items():
+                    mean = total / counts[metric]
+                    metrics_data.setdefault(metric, []).append(mean)
+        # compute coefficient of variation for each metric (sd/mean)
+        cvs = []
+        for metric, values in metrics_data.items():
+            if len(values) < 2:
+                continue
+            mean = sum(values) / len(values)
+            if mean == 0:
+                continue
+            sd = statistics.stdev(values)
+            cv = sd / mean
+            cvs.append((cv, metric, mean, sd, values))
+        # sort by CV descending
+        cvs.sort(reverse=True, key=lambda x: x[0])
+        print(f"\nTop {top_n} relatively-changing metrics for {src}:")
+        # Build table: Metric | CV% | Mean | StdDev | <branch1> | <branch2> | ...
+        headers = ["Metric", "CV%", "Mean", "StdDev"] + branches
+        rows = []
+        for cv, metric, mean, sd, vals in cvs[:top_n]:
+            row = [
+                metric,
+                f"{cv*100:.1f}%",
+                f"{mean:.2f}",
+                f"{sd:.2f}",
+            ] + [f"{v:.2f}" for v in vals]
+            rows.append(row)
+        # Compute column widths for aligned table
+        col_widths = []
+        for col_idx, h in enumerate(headers):
+            max_data = max((len(r[col_idx]) for r in rows), default=0)
+            col_widths.append(max(len(h), max_data))
+        # Print header
+        hdr = "  ".join(headers[i].ljust(col_widths[i]) for i in range(len(headers)))
+        sep = "  ".join("-" * col_widths[i]           for i in range(len(headers)))
+        print(hdr)
+        print(sep)
+        # Print each data row
+        for r in rows:
+            line = "  ".join(r[i].ljust(col_widths[i]) for i in range(len(headers)))
+            print(line)
+
 ###############################################################################
 # Main
 ###############################################################################
@@ -636,6 +710,9 @@ def main():
         )
 
     generate_comparison_graphs(test_root)
+
+    if len(branches) > 1:
+        print_top_changed_stats(test_root, branches)
 
     print("All requested branches tested.")
 
