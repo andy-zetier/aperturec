@@ -587,13 +587,31 @@ def main():
     )
     args = parser.parse_args()
 
-    # Root folder to hold all test runs
+    # Determine which branches to test.
+    # If using the local repo, ignore --branches and auto-detect the checked-out branch.
+    if args.use_local_repo:
+        # local repo root is one level up from this script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        repo_dir = os.path.abspath(os.path.join(script_dir, ".."))
+        try:
+            current_branch = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=repo_dir,
+                universal_newlines=True,
+            ).strip()
+        except subprocess.CalledProcessError:
+            raise RuntimeError("Failed to detect current git branch in local repo")
+        print(f"Detected local branch: {current_branch}")
+        branches = [current_branch]
+    else:
+        branches = args.branches
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     test_id = f"test_{timestamp}"
     test_root = os.path.abspath(os.path.join("aperturec_tests", test_id))
     os.makedirs(test_root, exist_ok=True)
 
-    for branch in args.branches:
+    for branch in branches:
         run_test_for_branch(branch, test_root, args.duration, skip_clone=args.use_local_repo)
 
     generate_comparison_graphs(test_root)
