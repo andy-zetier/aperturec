@@ -186,6 +186,7 @@ mod backend_trait {
             N: Into<Option<usize>> + Send + Sync;
         async fn notify_event(&mut self, event: Event) -> Result<()>;
         async fn set_lock_state(&self, lock_state: LockState) -> Result<()>;
+        async fn clear_focus(&self) -> Result<()>;
         async fn set_displays(
             &mut self,
             requested_displays: Vec<Display>,

@@ -392,6 +392,11 @@ impl<B: Backend> AsyncTryTransitionable<SessionInactive<B>, BackendInitialized<B
                 self
             )
             .peekable();
+
+            if let Err(e) = self.state.backend.clear_focus().await {
+                warn!(%e, "failed to clear X focus");
+            }
+
             Ok(Server {
                 state: SessionInactive {
                     backend: self.state.backend,
@@ -933,15 +938,21 @@ where
         }
 
         debug!("Terminating");
+        let backend_out = match backend_result.expect("backend result still none") {
+            Ok(be) => {
+                if let Err(e) = be.clear_focus().await {
+                    warn!(%e, "failed to clear X focus");
+                }
+                Some(be)
+            }
+            Err(error) => {
+                error!(%error, "Backend unrecoverable");
+                None
+            }
+        };
         Server {
             state: SessionTerminated {
-                backend: match backend_result.expect("backend result still none") {
-                    Ok(be) => Some(be),
-                    Err(error) => {
-                        error!(%error, "Backend unrecoverable");
-                        None
-                    }
-                },
+                backend: backend_out,
                 session_stream: self.state.session_stream,
             },
             config: self.config,

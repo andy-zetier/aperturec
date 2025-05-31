@@ -671,6 +671,16 @@ impl Backend for X {
             })
         }
     }
+
+    async fn clear_focus(&self) -> Result<()> {
+        self.connection
+            .checked_void_request(x::SetInputFocus {
+                revert_to: x::InputFocus::None,
+                focus: x::Window::none(),
+                time: x::CURRENT_TIME,
+            })
+            .await
+    }
 }
 
 enum SetDisplaySuccess {
