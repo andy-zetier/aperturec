@@ -95,11 +95,10 @@ impl<V> EuclidMap<V> {
     }
 
     pub fn remove_at_point(&mut self, point: Point) -> Option<(Rect, V)> {
-        let pos = self
-            .entries
-            .iter()
-            .position(|entry| entry.key.contains(point));
-        pos.map(|pos| self.entries.remove(pos).into())
+        self.entries
+            .extract_if(.., |entry| entry.key.contains(point))
+            .map(Into::into)
+            .next()
     }
 
     pub fn remove_at_origin(&mut self) -> Option<(Rect, V)> {
@@ -108,18 +107,10 @@ impl<V> EuclidMap<V> {
 
     pub fn remove_all_overlaps<R: Into<Rect>>(&mut self, key: R) -> Vec<(Rect, V)> {
         let key = key.into();
-        let mut i = 0;
-        let mut existing = vec![];
-
-        while i < self.entries.len() {
-            if self.entries[i].key.intersects(&key) {
-                existing.push(self.entries.swap_remove(i).into());
-            } else {
-                i += 1;
-            }
-        }
-
-        existing
+        self.entries
+            .extract_if(.., |entry: &mut Entry<V>| entry.key.intersects(&key))
+            .map(Into::into)
+            .collect()
     }
 
     pub fn pop(&mut self) -> Option<(Rect, V)> {
