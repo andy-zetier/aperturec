@@ -6,7 +6,7 @@ mod metrics;
 pub mod macros;
 
 pub use measurement::Measurement;
-pub use metrics::{register, stop, update, MetricsInitializer};
+pub use metrics::{MetricsInitializer, register, stop, update};
 
 ///
 /// Defines a metric to be tracked

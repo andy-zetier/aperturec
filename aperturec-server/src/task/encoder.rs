@@ -6,8 +6,8 @@ use aperturec_protocol::common::{Dimension as AcDimension, Location as AcLocatio
 use aperturec_protocol::media::{self as mm, server_to_client as mm_s2c};
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, bail, ensure, Result};
-use flate2::{write::DeflateEncoder, Compression};
+use anyhow::{Result, anyhow, bail, ensure};
+use flate2::{Compression, write::DeflateEncoder};
 use futures::{prelude::*, stream::FuturesUnordered};
 use ndarray::prelude::*;
 use std::ffi::c_void;
@@ -16,7 +16,7 @@ use std::mem::{self, MaybeUninit};
 use std::ptr;
 use std::slice;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex as AsyncMutex};
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tokio::task::{self, JoinHandle};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -173,14 +173,16 @@ mod compression {
                 _: *mut c_void,
                 pixel_format: *mut JxlPixelFormat,
             ) {
-                const PIXEL_FORMAT: JxlPixelFormat = JxlPixelFormat {
-                    num_channels: mem::size_of::<Pixel24>() as _,
-                    data_type: JxlDataType::JXL_TYPE_UINT8,
-                    endianness: JxlEndianness::JXL_NATIVE_ENDIAN,
-                    align: 0,
-                };
-                if let Some(pixel_format) = pixel_format.as_mut() {
-                    *pixel_format = PIXEL_FORMAT;
+                unsafe {
+                    const PIXEL_FORMAT: JxlPixelFormat = JxlPixelFormat {
+                        num_channels: mem::size_of::<Pixel24>() as _,
+                        data_type: JxlDataType::JXL_TYPE_UINT8,
+                        endianness: JxlEndianness::JXL_NATIVE_ENDIAN,
+                        align: 0,
+                    };
+                    if let Some(pixel_format) = pixel_format.as_mut() {
+                        *pixel_format = PIXEL_FORMAT;
+                    }
                 }
             }
 
@@ -193,16 +195,18 @@ mod compression {
                 _: usize,
                 row_offset: *mut usize,
             ) -> *const c_void {
-                let Some(this) = (opaque as *mut Self).as_ref() else {
-                    return ptr::null_mut();
-                };
-                let Some(row_offset) = row_offset.as_mut() else {
-                    return ptr::null_mut();
-                };
-                let row_mem_width = this.size.width + this.stride_to_next_row;
-                *row_offset = row_mem_width * mem::size_of::<Pixel24>();
-                this.bytes[(xpos + (ypos * row_mem_width)) * mem::size_of::<Pixel24>()..].as_ref()
-                    as *const _ as _
+                unsafe {
+                    let Some(this) = (opaque as *mut Self).as_ref() else {
+                        return ptr::null_mut();
+                    };
+                    let Some(row_offset) = row_offset.as_mut() else {
+                        return ptr::null_mut();
+                    };
+                    let row_mem_width = this.size.width + this.stride_to_next_row;
+                    *row_offset = row_mem_width * mem::size_of::<Pixel24>();
+                    this.bytes[(xpos + (ypos * row_mem_width)) * mem::size_of::<Pixel24>()..]
+                        .as_ref() as *const _ as _
+                }
             }
 
             // SAFETY: null check relevant parameters and return early if any of them are null
@@ -211,8 +215,10 @@ mod compression {
                 _: usize,
                 pixel_format: *mut JxlPixelFormat,
             ) {
-                if let Some(pixel_format) = pixel_format.as_mut() {
-                    *pixel_format = NO_EXTRA_CHANNELS_FORMAT;
+                unsafe {
+                    if let Some(pixel_format) = pixel_format.as_mut() {
+                        *pixel_format = NO_EXTRA_CHANNELS_FORMAT;
+                    }
                 }
             }
 
@@ -261,14 +267,16 @@ mod compression {
                 opaque: *mut c_void,
                 size: *mut usize,
             ) -> *mut c_void {
-                let Some(this) = (opaque as *mut Self).as_mut() else {
-                    return ptr::null_mut();
-                };
-                let Some(size) = size.as_mut() else {
-                    return ptr::null_mut();
-                };
+                unsafe {
+                    let Some(this) = (opaque as *mut Self).as_mut() else {
+                        return ptr::null_mut();
+                    };
+                    let Some(size) = size.as_mut() else {
+                        return ptr::null_mut();
+                    };
 
-                this.get_buffer(size) as *mut _ as _
+                    this.get_buffer(size) as *mut _ as _
+                }
             }
 
             fn get_buffer(&mut self, size: &mut usize) -> &mut [MaybeUninit<u8>] {
@@ -288,10 +296,12 @@ mod compression {
             // SAFETY: null check parameters and return null if any of them are null, then call
             // into the safe version of this function
             unsafe extern "C" fn release_buffer_extern(opaque: *mut c_void, written_bytes: usize) {
-                let Some(this) = (opaque as *mut Self).as_mut() else {
-                    return;
-                };
-                this.release_buffer(written_bytes)
+                unsafe {
+                    let Some(this) = (opaque as *mut Self).as_mut() else {
+                        return;
+                    };
+                    this.release_buffer(written_bytes)
+                }
             }
 
             fn release_buffer(&mut self, written_bytes: usize) {
@@ -301,10 +311,12 @@ mod compression {
             // SAFETY: null check parameters and return null if any of them are null, then call
             // into the safe version of this function
             unsafe extern "C" fn seek_extern(opaque: *mut c_void, position: u64) {
-                let Some(this) = (opaque as *mut Self).as_mut() else {
-                    return;
-                };
-                this.seek(position as _)
+                unsafe {
+                    let Some(this) = (opaque as *mut Self).as_mut() else {
+                        return;
+                    };
+                    this.seek(position as _)
+                }
             }
 
             fn seek(&mut self, position: usize) {
@@ -320,10 +332,12 @@ mod compression {
                 opaque: *mut c_void,
                 finalized_position: u64,
             ) {
-                let Some(this) = (opaque as *mut Self).as_mut() else {
-                    return;
-                };
-                this.set_finalized_position(finalized_position as _)
+                unsafe {
+                    let Some(this) = (opaque as *mut Self).as_mut() else {
+                        return;
+                    };
+                    this.set_finalized_position(finalized_position as _)
+                }
             }
 
             fn set_finalized_position(&mut self, finalized_position: usize) {

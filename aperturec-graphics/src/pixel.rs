@@ -1,7 +1,7 @@
 use crate::axis;
 use crate::geometry::*;
 
-use ndarray::{prelude::*, AssignElem, Data, DataMut};
+use ndarray::{AssignElem, Data, DataMut, prelude::*};
 
 #[derive(PartialEq, Debug, Default, Clone, Copy)]
 pub struct Pixel24 {

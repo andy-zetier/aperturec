@@ -1,11 +1,11 @@
 use aperturec_channel::gate::*;
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, Result};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use anyhow::{Result, anyhow};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, Semaphore, TryAcquireError};
+use tokio::sync::{Semaphore, TryAcquireError, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;

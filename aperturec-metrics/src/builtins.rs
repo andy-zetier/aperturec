@@ -6,11 +6,11 @@
 //! via the [`with_builtin()`](crate::MetricsInitializer::with_builtin) method.
 //!
 
-use crate::metrics::{register, update};
 use crate::IntrinsicMetric;
 use crate::Measurement;
 use crate::Metric;
 use crate::MetricUpdate;
+use crate::metrics::{register, update};
 
 #[cfg(target_os = "linux")]
 use procfs::{Current, CurrentSI};

@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use image::{GrayImage, Luma};
-use imageproc::region_labelling::{connected_components, Connectivity};
+use imageproc::region_labelling::{Connectivity, connected_components};
 use ndarray::prelude::*;
 use nshare::*;
 use rayon::prelude::*;
@@ -55,7 +55,7 @@ fn region_bounds(labeled_regions: ArrayView2<u32>) -> BTreeMap<u32, Box2D> {
         regions
             .into_iter()
             .enumerate()
-            .filter(|(_, &region)| region != 0)
+            .filter(|&(_, &region)| region != 0)
             .fold(BTreeMap::default(), |mut curr_bounds, (idx, &region)| {
                 curr_bounds
                     .entry(region)

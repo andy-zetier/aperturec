@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use secrecy::SecretString;
 use std::path::PathBuf;
 use std::{fs, io};

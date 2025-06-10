@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
-use syn::{parse_macro_input, DeriveInput, Meta, MetaList};
+use quote::{ToTokens, quote};
+use syn::{DeriveInput, Meta, MetaList, parse_macro_input};
 
 #[proc_macro_derive(State)]
 pub fn state(input: TokenStream) -> TokenStream {

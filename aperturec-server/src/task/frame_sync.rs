@@ -6,9 +6,9 @@ use crate::metrics::{
 use aperturec_graphics::{display::*, prelude::*, rectangle_cover::diff_rectangle_cover};
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, bail, ensure, Result};
-use futures::{self, future, TryFutureExt};
-use ndarray::{prelude::*, AssignElem};
+use anyhow::{Result, anyhow, bail, ensure};
+use futures::{self, TryFutureExt, future};
+use ndarray::{AssignElem, prelude::*};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;

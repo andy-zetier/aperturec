@@ -1,7 +1,7 @@
 //! QUIC client & server
 
 #[cfg(target_os = "linux")]
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 #[cfg(target_os = "linux")]
 use aperturec_utils::versioning;
 
@@ -135,7 +135,7 @@ pub mod test {
             let (mut cc, mut ec, mut mc, mut tc) = session.split();
 
             assert_eq!(cc.receive_with_len().expect("server cc receive"), s_msgs.0);
-            cc.send(s_msgs.1 .0).expect("server cc send");
+            cc.send(s_msgs.1.0).expect("server cc send");
             assert_eq!(ec.receive_with_len().expect("server ec receive"), s_msgs.2);
             mc.send(s_msgs.3).expect("server mc send");
             tc.send(s_msgs.4.clone()).expect("server tc send");
@@ -153,9 +153,9 @@ pub mod test {
                 .expect("client connect");
             let (mut cc, mut ec, mut mc, mut tc) = session.split();
 
-            cc.send(c_msgs.0 .0).expect("client cc send");
+            cc.send(c_msgs.0.0).expect("client cc send");
             assert_eq!(cc.receive_with_len().expect("client cc receive"), c_msgs.1);
-            ec.send(c_msgs.2 .0).expect("client ec send");
+            ec.send(c_msgs.2.0).expect("client ec send");
             assert_eq!(mc.receive().expect("client mc receive"), c_msgs.3);
             assert_eq!(tc.receive().expect("client tc receive"), c_msgs.4);
             tc.send(c_msgs.4).expect("client tc send");
@@ -181,7 +181,7 @@ pub mod test {
                 cc.receive_with_len().await.expect("server cc receive"),
                 s_msgs.0
             );
-            cc.send(s_msgs.1 .0).await.expect("server cc send");
+            cc.send(s_msgs.1.0).await.expect("server cc send");
             assert_eq!(
                 ec.receive_with_len().await.expect("server ec receive"),
                 s_msgs.2
@@ -204,12 +204,12 @@ pub mod test {
                 .expect("client connect");
             let (mut cc, mut ec, mut mc, mut tc) = session.split();
 
-            cc.send(c_msgs.0 .0).await.expect("client cc send");
+            cc.send(c_msgs.0.0).await.expect("client cc send");
             assert_eq!(
                 cc.receive_with_len().await.expect("client cc receive"),
                 c_msgs.1
             );
-            ec.send(c_msgs.2 .0).await.expect("client ec send");
+            ec.send(c_msgs.2.0).await.expect("client ec send");
             assert_eq!(mc.receive().await.expect("client mc receive"), c_msgs.3);
             assert_eq!(tc.receive().await.expect("client tc receive"), c_msgs.4);
             tc.send(c_msgs.4).await.expect("client tc send");
@@ -241,9 +241,9 @@ pub mod test {
                 .expect("client connect");
             let (mut cc, mut ec, mut mc, mut tc) = session.split();
 
-            cc.send(c_msgs.0 .0).expect("client cc send");
+            cc.send(c_msgs.0.0).expect("client cc send");
             assert_eq!(cc.receive_with_len().expect("client cc receive"), c_msgs.1);
-            ec.send(c_msgs.2 .0).expect("client ec send");
+            ec.send(c_msgs.2.0).expect("client ec send");
             assert_eq!(mc.receive().expect("client mc receive"), c_msgs.3);
             assert_eq!(tc.receive().expect("client tc receive"), c_msgs.4);
             tc.send(c_msgs.4).expect("client tc send");
@@ -259,7 +259,7 @@ pub mod test {
                 cc.receive_with_len().await.expect("server cc receive"),
                 s_msgs.0
             );
-            cc.send(s_msgs.1 .0).await.expect("server cc send");
+            cc.send(s_msgs.1.0).await.expect("server cc send");
             assert_eq!(
                 ec.receive_with_len().await.expect("server ec receive"),
                 s_msgs.2
@@ -290,7 +290,7 @@ pub mod test {
             let (mut cc, mut ec, mut mc, mut tc) = session.split();
 
             assert_eq!(cc.receive_with_len().expect("server cc receive"), s_msgs.0);
-            cc.send(s_msgs.1 .0).expect("server cc send");
+            cc.send(s_msgs.1.0).expect("server cc send");
             assert_eq!(ec.receive_with_len().expect("server ec receive"), s_msgs.2);
             mc.send(s_msgs.3).expect("server mc send");
             tc.send(s_msgs.4.clone()).expect("server tc send");
@@ -309,12 +309,12 @@ pub mod test {
                 .expect("client connect");
             let (mut cc, mut ec, mut mc, mut tc) = session.split();
 
-            cc.send(c_msgs.0 .0).await.expect("client cc send");
+            cc.send(c_msgs.0.0).await.expect("client cc send");
             assert_eq!(
                 cc.receive_with_len().await.expect("client cc receive"),
                 c_msgs.1
             );
-            ec.send(c_msgs.2 .0).await.expect("client ec send");
+            ec.send(c_msgs.2.0).await.expect("client ec send");
             assert_eq!(mc.receive().await.expect("client mc receive"), c_msgs.3);
             assert_eq!(tc.receive().await.expect("client tc receive"), c_msgs.4);
             tc.send(c_msgs.4).await.expect("client tc send");

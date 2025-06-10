@@ -1,8 +1,8 @@
 use aperturec_graphics::{display::*, prelude::*};
 use aperturec_protocol::common::Codec;
-use aperturec_protocol::media::{server_to_client as mm_s2c, EmptyFrameTerminal, FrameFragment};
+use aperturec_protocol::media::{EmptyFrameTerminal, FrameFragment, server_to_client as mm_s2c};
 
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{Result, anyhow, bail, ensure};
 use flate2::read::DeflateDecoder;
 use ndarray::prelude::*;
 use range_set_blaze::RangeSetBlaze;
@@ -100,7 +100,9 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
                     bail!("jxl decoder finished without setting output size");
                 };
                 if output.capacity() < *output_size {
-                    bail!("jxl decoder finished with an output size greater than the capacity of the output buffer");
+                    bail!(
+                        "jxl decoder finished with an output size greater than the capacity of the output buffer"
+                    );
                 }
                 // SAFETY:
                 //   - We check above to ensure that the capacity of the output is at least the
@@ -606,8 +608,7 @@ impl DisplayFramer {
     fn report_empty_frame_terminal(&mut self, term: EmptyFrameTerminal) -> Result<()> {
         trace!(
             "Received empty frame terminal frame/decoder {}/{}",
-            term.frame,
-            term.encoder
+            term.frame, term.encoder
         );
         let decoder = term.encoder as usize;
         ensure!(

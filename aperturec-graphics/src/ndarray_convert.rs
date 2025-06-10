@@ -1,4 +1,4 @@
-pub use ndarray::{prelude::*, SliceArg};
+pub use ndarray::{SliceArg, prelude::*};
 
 pub trait AsNdarrayShape {
     fn as_shape(&self) -> impl ShapeBuilder<Dim = Ix2>;

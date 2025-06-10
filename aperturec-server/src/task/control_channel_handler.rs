@@ -5,7 +5,7 @@ use aperturec_protocol::control::client_to_server as cm_c2s;
 use aperturec_protocol::control::server_to_client as cm_s2c;
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use futures::{future, prelude::*};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};

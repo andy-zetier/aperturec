@@ -2,13 +2,13 @@ use aperturec_channel::*;
 use aperturec_protocol::tunnel::*;
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{Error, Result, anyhow, bail};
 use futures::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::io::AsyncWriteExt;
-use tokio::net::{lookup_host, TcpListener, TcpSocket};
+use tokio::net::{TcpListener, TcpSocket, lookup_host};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_stream::wrappers::TcpListenerStream;

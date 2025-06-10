@@ -6,9 +6,9 @@ use crate::quic::provider;
 use crate::session;
 #[cfg(any(test, debug_assertions))]
 use crate::tls;
-use crate::util::{new_async_rt, Syncify};
+use crate::util::{Syncify, new_async_rt};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 #[cfg(any(test, debug_assertions))]
 use std::env;
 use std::net::{IpAddr, SocketAddr};
@@ -19,7 +19,7 @@ use tokio::runtime::Runtime as TokioRuntime;
 use rustls::KeyLogFile;
 #[allow(deprecated)]
 use s2n_quic::provider::tls::rustls::{
-    rustls, rustls::ServerConfig as TlsConfig, Server as TlsProvider,
+    Server as TlsProvider, rustls, rustls::ServerConfig as TlsConfig,
 };
 #[cfg(any(test, debug_assertions))]
 use tracing::*;

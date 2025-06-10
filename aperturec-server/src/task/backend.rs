@@ -9,10 +9,10 @@ use aperturec_protocol::common::*;
 use aperturec_protocol::event::{self as em, server_to_client as em_s2c};
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, ensure, Result};
-use futures::{stream, StreamExt};
-use std::collections::hash_map::DefaultHasher;
+use anyhow::{Result, anyhow, ensure};
+use futures::{StreamExt, stream};
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;

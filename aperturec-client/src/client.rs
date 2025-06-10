@@ -9,31 +9,31 @@ use aperturec_graphics::{
 };
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
-    self as cm, client_to_server as cm_c2s, server_to_client as cm_s2c, Architecture, Bitness,
-    ClientGoodbye, ClientGoodbyeBuilder, ClientGoodbyeReason, ClientInfo, ClientInfoBuilder,
-    ClientInit, ClientInitBuilder, Endianness, Os,
+    self as cm, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder, ClientGoodbyeReason,
+    ClientInfo, ClientInfoBuilder, ClientInit, ClientInitBuilder, Endianness, Os,
+    client_to_server as cm_c2s, server_to_client as cm_s2c,
 };
 use aperturec_protocol::event::{
-    self, button, client_to_server as em_c2s, server_to_client as em_s2c, Button,
-    ButtonStateBuilder, DisplayEvent, KeyEvent, MappedButton, PointerEvent, PointerEventBuilder,
+    self, Button, ButtonStateBuilder, DisplayEvent, KeyEvent, MappedButton, PointerEvent,
+    PointerEventBuilder, button, client_to_server as em_c2s, server_to_client as em_s2c,
 };
 use aperturec_protocol::tunnel;
 use aperturec_utils::log::*;
 
-use anyhow::{anyhow, bail, Error, Result};
-use crossbeam::channel::{bounded, select, unbounded, Receiver, RecvTimeoutError, Sender};
+use anyhow::{Error, Result, anyhow, bail};
+use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, bounded, select, unbounded};
 use derive_builder::Builder;
 use gtk::glib;
 use openssl::x509::X509;
-use secrecy::{zeroize::Zeroize, ExposeSecret, SecretString};
+use secrecy::{ExposeSecret, SecretString, zeroize::Zeroize};
 use std::collections::BTreeMap;
 use std::env::consts;
-use std::io::{prelude::*, ErrorKind};
+use std::io::{ErrorKind, prelude::*};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::num::NonZeroUsize;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::{assert, thread};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
@@ -52,11 +52,13 @@ pub struct MouseButtonEventMessage {
 impl MouseButtonEventMessage {
     pub fn to_pointer_event(&self) -> PointerEvent {
         PointerEventBuilder::default()
-            .button_states(vec![ButtonStateBuilder::default()
-                .button(MouseButtonEventMessage::button_from_code(self.button))
-                .is_depressed(self.is_pressed)
-                .build()
-                .expect("Failed to build ButtonState")])
+            .button_states(vec![
+                ButtonStateBuilder::default()
+                    .button(MouseButtonEventMessage::button_from_code(self.button))
+                    .is_depressed(self.is_pressed)
+                    .build()
+                    .expect("Failed to build ButtonState"),
+            ])
             .location(Location {
                 x_position: self.pos.x as u64,
                 y_position: self.pos.y as u64,
@@ -679,234 +681,235 @@ impl Client {
             bail!("failed receiving tunnel message");
         });
 
-        thread::spawn::<_, Result<()>>(move || loop {
-            select! {
-                recv(opens_from_server_rx) -> open_from_server_res => trace_span!("open-from-server").in_scope(|| {
-                    let (tid, sid) = open_from_server_res?;
-                    trace!(tid, sid);
-                    let desc = match server_bound_tunnels.get(&tid) {
-                        Some(desc) => desc,
-                        None => {
+        thread::spawn::<_, Result<()>>(move || {
+            loop {
+                select! {
+                    recv(opens_from_server_rx) -> open_from_server_res => trace_span!("open-from-server").in_scope(|| {
+                        let (tid, sid) = open_from_server_res?;
+                        trace!(tid, sid);
+                        let desc = if let Some(desc) = server_bound_tunnels.get(&tid) {
+                            desc
+                        } else {
                             warn!(tid, sid, "open tcp for non-server-bound tunnel");
                             closes_to_server_tx.send((tid, sid))?;
                             return Ok(());
-                        }
-                    };
-                    if desc.side() == tunnel::Side::Client {
-                        warn!(tid, sid, "open tcp for client-bound tunnel");
-                        closes_to_server_tx.send((tid, sid))?;
-                        return Ok(());
-                    }
-                    if tunnels.contains_key(&(tid, sid)) {
-                        warn!(tid, sid, "open for existing tunnel/stream");
-                        closes_to_server_tx.send((tid, sid))?;
-                        return Ok(());
-                    }
-
-                    let (forward_addr, forward_port) = (desc.forward_address.clone(), desc.forward_port as u16);
-                    let new_tcp_streams_tx = new_tcp_streams_tx.clone();
-
-                    let closes_to_server_tx = closes_to_server_tx.clone();
-                    thread::spawn::<_, Result<()>>(move || {
-                        let mut stream = (forward_addr.as_str(), forward_port)
-                            .to_socket_addrs()
-                            .unwrap_or(Vec::default().into_iter())
-                            .map(TcpStream::connect)
-                            .filter_map(Result::ok);
-
-                        if let Some(stream) = stream.next() {
-                            new_tcp_streams_tx.send((tid, sid, stream))?;
-                        } else {
+                        };
+                        if desc.side() == tunnel::Side::Client {
+                            warn!(tid, sid, "open tcp for client-bound tunnel");
                             closes_to_server_tx.send((tid, sid))?;
-                        }
-
-                        Ok(())
-                    });
-
-                    tunnels.insert((tid, sid), TunnelState::Opening { queued: vec![], should_terminate: Arc::new(AtomicBool::new(false)) });
-                    Ok::<_, Error>(())
-                })?,
-                recv(new_tcp_streams_rx) -> new_tcp_stream_res => trace_span!("new-tcp-stream").in_scope(|| {
-                    let (tid, sid, tcp_stream) = new_tcp_stream_res?;
-                    trace!(tid, sid, ?tcp_stream);
-
-                    let (queued, should_terminate) = match tunnels.remove(&(tid, sid)) {
-                        Some(TunnelState::Opening { queued, should_terminate }) => (queued, should_terminate),
-                        Some(TunnelState::Opened { should_terminate, .. }) => {
-                            warn!("already open, ignoring");
-                            should_terminate.store(true, Ordering::Relaxed);
                             return Ok(());
                         }
-                        Some(TunnelState::HalfClosed) => {
-                            warn!("half closed");
+                        if tunnels.contains_key(&(tid, sid)) {
+                            warn!(tid, sid, "open for existing tunnel/stream");
+                            closes_to_server_tx.send((tid, sid))?;
                             return Ok(());
                         }
-                        Some(TunnelState::FullyClosed) => {
-                            warn!("fully closed");
-                            return Ok(());
-                        }
-                        None => {
-                            if client_bound_tunnels.contains_key(&tid) {
-                                let msg = tunnel::MessageBuilder::default()
-                                    .tunnel_id(tid)
-                                    .stream_id(sid)
-                                    .message(tunnel::OpenTcpStream::new())
-                                    .build()
-                                    .expect("build tunnel message");
-                                tc_tx.send(msg)?;
-                                (vec![], Arc::new(AtomicBool::new(false)))
-                            } else {
-                                warn!("non-existent");
+
+                        let (forward_addr, forward_port) = (desc.forward_address.clone(), desc.forward_port as u16);
+                        let new_tcp_streams_tx = new_tcp_streams_tx.clone();
+
+                        let closes_to_server_tx = closes_to_server_tx.clone();
+                        thread::spawn::<_, Result<()>>(move || {
+                            let mut stream = (forward_addr.as_str(), forward_port)
+                                .to_socket_addrs()
+                                .unwrap_or(Vec::default().into_iter())
+                                .map(TcpStream::connect)
+                                .filter_map(Result::ok);
+
+                            match stream.next() { Some(stream) => {
+                                new_tcp_streams_tx.send((tid, sid, stream))?;
+                            } _ => {
+                                closes_to_server_tx.send((tid, sid))?;
+                            }}
+
+                            Ok(())
+                        });
+
+                        tunnels.insert((tid, sid), TunnelState::Opening { queued: vec![], should_terminate: Arc::new(AtomicBool::new(false)) });
+                        Ok::<_, Error>(())
+                    })?,
+                    recv(new_tcp_streams_rx) -> new_tcp_stream_res => trace_span!("new-tcp-stream").in_scope(|| {
+                        let (tid, sid, tcp_stream) = new_tcp_stream_res?;
+                        trace!(tid, sid, ?tcp_stream);
+
+                        let (queued, should_terminate) = match tunnels.remove(&(tid, sid)) {
+                            Some(TunnelState::Opening { queued, should_terminate }) => (queued, should_terminate),
+                            Some(TunnelState::Opened { should_terminate, .. }) => {
+                                warn!("already open, ignoring");
+                                should_terminate.store(true, Ordering::Relaxed);
                                 return Ok(());
                             }
-                        }
-                    };
-
-                    const IO_TIMEOUT: Duration = Duration::from_millis(1);
-                    tcp_stream.set_nonblocking(false)?;
-                    tcp_stream.set_read_timeout(IO_TIMEOUT.into())?;
-                    let mut rh = tcp_stream.try_clone()?;
-                    let mut wh = tcp_stream;
-                    let (to_tx, to_tx_rx) = bounded::<Vec<u8>>(1);
-
-                    let stream_res_tx_wh = stream_res_tx.clone();
-                    let should_terminate_wh = should_terminate.clone();
-                    thread::spawn(move || {
-                        let _s = trace_span!("tunnel-stream-write-thread", tid, sid).entered();
-                        if let Err(e) = wh.write_all(&queued) {
-                            stream_res_tx_wh.send((tid, sid, Err::<(), _>(e.into()))).expect("stream_res_tx_wh");
-                            return;
-                        }
-                        let res = loop {
-                            if should_terminate_wh.load(Ordering::Relaxed) {
-                                break Ok(());
+                            Some(TunnelState::HalfClosed) => {
+                                warn!("half closed");
+                                return Ok(());
                             }
-                            let data = match to_tx_rx.recv_timeout(IO_TIMEOUT) {
-                                Ok(data) => data,
-                                Err(RecvTimeoutError::Timeout) => continue,
-                                Err(RecvTimeoutError::Disconnected) => break Err(anyhow!("disconnected")),
-                            };
-                            if let Err(e) = wh.write_all(&data) {
-                                break Err(e.into());
+                            Some(TunnelState::FullyClosed) => {
+                                warn!("fully closed");
+                                return Ok(());
                             }
-                        };
-                        stream_res_tx_wh.send((tid, sid, res)).expect("stream_res_tx_wh");
-                        trace!(tid, sid, "terminating write half");
-                    });
-
-                    let stream_res_tx_rh = stream_res_tx.clone();
-                    let data_to_server_tx = data_to_server_tx.clone();
-                    let should_terminate_rh = should_terminate.clone();
-                    thread::spawn(move || {
-                        let _s = trace_span!("tunnel-stream-read-thread", tid, sid).entered();
-                        let res: Result<_> = loop {
-                            if should_terminate_rh.load(Ordering::Relaxed) {
-                                break Ok(());
-                            }
-                            let mut data = vec![0_u8; 0x1000];
-                            let nbytes = match rh.read(&mut data) {
-                                Ok(nbytes_read) => nbytes_read,
-                                Err(ref e) if e.kind() == ErrorKind::WouldBlock => continue,
-                                Err(e) => break Err(e.into()),
-                            };
-                            if nbytes == 0 {
-                                break Ok(());
-                            } else {
-                                data.truncate(nbytes);
-                                if let Err(e) = data_to_server_tx.send((tid, sid, data)) {
-                                    break Err(e.into());
+                            None => {
+                                if client_bound_tunnels.contains_key(&tid) {
+                                    let msg = tunnel::MessageBuilder::default()
+                                        .tunnel_id(tid)
+                                        .stream_id(sid)
+                                        .message(tunnel::OpenTcpStream::new())
+                                        .build()
+                                        .expect("build tunnel message");
+                                    tc_tx.send(msg)?;
+                                    (vec![], Arc::new(AtomicBool::new(false)))
+                                } else {
+                                    warn!("non-existent");
+                                    return Ok(());
                                 }
                             }
                         };
-                        stream_res_tx_rh.send((tid, sid, res)).expect("stream_res_tx_rh");
-                        trace!(tid, sid, "terminating read half");
-                    });
 
-                    tunnels.insert((tid, sid), TunnelState::Opened { to_tx, should_terminate });
-                    Ok::<_, Error>(())
-                })?,
-                recv(stream_res_rx) -> stream_res => trace_span!("stream-thread-terminated").in_scope(|| {
-                    let (tid, sid, res) = stream_res?;
-                    trace!(tid, sid, ?res);
-                    match tunnels.remove(&(tid, sid)) {
-                        Some(TunnelState::Opening { queued, .. }) => warn!(?queued, "closing opening tunnel"),
-                        Some(TunnelState::Opened { should_terminate, .. }) => {
-                            trace!("closing first half");
-                            should_terminate.store(true, Ordering::Relaxed);
-                            tunnels.insert((tid, sid), TunnelState::HalfClosed);
-                        },
-                        Some(TunnelState::HalfClosed) => {
-                            trace!("closing second half");
-                            tunnels.insert((tid, sid), TunnelState::FullyClosed);
-                        },
-                        Some(TunnelState::FullyClosed) => {
-                            closes_to_server_tx.send((tid, sid))?;
+                        const IO_TIMEOUT: Duration = Duration::from_millis(1);
+                        tcp_stream.set_nonblocking(false)?;
+                        tcp_stream.set_read_timeout(IO_TIMEOUT.into())?;
+                        let mut rh = tcp_stream.try_clone()?;
+                        let mut wh = tcp_stream;
+                        let (to_tx, to_tx_rx) = bounded::<Vec<u8>>(1);
+
+                        let stream_res_tx_wh = stream_res_tx.clone();
+                        let should_terminate_wh = should_terminate.clone();
+                        thread::spawn(move || {
+                            let _s = trace_span!("tunnel-stream-write-thread", tid, sid).entered();
+                            if let Err(e) = wh.write_all(&queued) {
+                                stream_res_tx_wh.send((tid, sid, Err::<(), _>(e.into()))).expect("stream_res_tx_wh");
+                                return;
+                            }
+                            let res = loop {
+                                if should_terminate_wh.load(Ordering::Relaxed) {
+                                    break Ok(());
+                                }
+                                let data = match to_tx_rx.recv_timeout(IO_TIMEOUT) {
+                                    Ok(data) => data,
+                                    Err(RecvTimeoutError::Timeout) => continue,
+                                    Err(RecvTimeoutError::Disconnected) => break Err(anyhow!("disconnected")),
+                                };
+                                if let Err(e) = wh.write_all(&data) {
+                                    break Err(e.into());
+                                }
+                            };
+                            stream_res_tx_wh.send((tid, sid, res)).expect("stream_res_tx_wh");
+                            trace!(tid, sid, "terminating write half");
+                        });
+
+                        let stream_res_tx_rh = stream_res_tx.clone();
+                        let data_to_server_tx = data_to_server_tx.clone();
+                        let should_terminate_rh = should_terminate.clone();
+                        thread::spawn(move || {
+                            let _s = trace_span!("tunnel-stream-read-thread", tid, sid).entered();
+                            let res: Result<_> = loop {
+                                if should_terminate_rh.load(Ordering::Relaxed) {
+                                    break Ok(());
+                                }
+                                let mut data = vec![0_u8; 0x1000];
+                                let nbytes = match rh.read(&mut data) {
+                                    Ok(nbytes_read) => nbytes_read,
+                                    Err(ref e) if e.kind() == ErrorKind::WouldBlock => continue,
+                                    Err(e) => break Err(e.into()),
+                                };
+                                if nbytes == 0 {
+                                    break Ok(());
+                                } else {
+                                    data.truncate(nbytes);
+                                    if let Err(e) = data_to_server_tx.send((tid, sid, data)) {
+                                        break Err(e.into());
+                                    }
+                                }
+                            };
+                            stream_res_tx_rh.send((tid, sid, res)).expect("stream_res_tx_rh");
+                            trace!(tid, sid, "terminating read half");
+                        });
+
+                        tunnels.insert((tid, sid), TunnelState::Opened { to_tx, should_terminate });
+                        Ok::<_, Error>(())
+                    })?,
+                    recv(stream_res_rx) -> stream_res => trace_span!("stream-thread-terminated").in_scope(|| {
+                        let (tid, sid, res) = stream_res?;
+                        trace!(tid, sid, ?res);
+                        match tunnels.remove(&(tid, sid)) {
+                            Some(TunnelState::Opening { queued, .. }) => warn!(?queued, "closing opening tunnel"),
+                            Some(TunnelState::Opened { should_terminate, .. }) => {
+                                trace!("closing first half");
+                                should_terminate.store(true, Ordering::Relaxed);
+                                tunnels.insert((tid, sid), TunnelState::HalfClosed);
+                            },
+                            Some(TunnelState::HalfClosed) => {
+                                trace!("closing second half");
+                                tunnels.insert((tid, sid), TunnelState::FullyClosed);
+                            },
+                            Some(TunnelState::FullyClosed) => {
+                                closes_to_server_tx.send((tid, sid))?;
+                            }
+                            None => warn!("non-existent"),
                         }
-                        None => warn!("non-existent"),
-                    }
-                    Ok::<_, Error>(())
-                })?,
-                recv(data_to_server_rx) -> data_to_server_res => trace_span!("data-to-server").in_scope(|| {
-                    let (tid, sid, data) = data_to_server_res?;
-                    trace!(tid, sid, ?data);
-                    let msg = tunnel::MessageBuilder::default()
-                        .tunnel_id(tid)
-                        .stream_id(sid)
-                        .message(tunnel::TcpData::new(data))
-                        .build()
-                        .expect("build tunnel message");
-                    tc_tx.send(msg)?;
-                    Ok::<_, Error>(())
-                })?,
-                recv(data_from_server_rx) -> data_from_server_res => trace_span!("data-from-server").in_scope(|| {
-                    let (tid, sid, data) = data_from_server_res?;
-                    trace!(tid, sid, ?data);
-                    match tunnels.get_mut(&(tid, sid)) {
-                        Some(TunnelState::Opened { to_tx, .. }) => {
-                            trace!("opened");
-                            to_tx.send(data)?;
-                        },
-                        Some(TunnelState::Opening { queued, .. }) => {
-                            trace!("opening");
-                            queued.extend(data);
-                        },
-                        Some(TunnelState::HalfClosed) => warn!("half closed"),
-                        Some(TunnelState::FullyClosed) => warn!("fully closed"),
-                        None => warn!(tid, sid, "non-existent tunnel/stream"),
-                    }
-                    Ok::<_, Error>(())
-                })?,
-                recv(closes_to_server_rx) -> close_to_server_res => trace_span!("close-to-server").in_scope(|| {
-                    let (tid, sid) = close_to_server_res?;
-                    trace!(tid, sid);
-                    let msg = tunnel::MessageBuilder::default()
-                        .tunnel_id(tid)
-                        .stream_id(sid)
-                        .message(tunnel::CloseTcpStream::new())
-                        .build()
-                        .expect("build tunnel message");
-                    tc_tx.send(msg)?;
-                    Ok::<_, Error>(())
-                })?,
-                recv(closes_from_server_rx) -> close_from_server_res => trace_span!("close-from-server").in_scope(|| {
-                    let (tid, sid) = close_from_server_res?;
-                    trace!(tid, sid);
-                    match tunnels.remove(&(tid, sid)) {
-                        Some(TunnelState::Opening { should_terminate, .. }) |
-                        Some(TunnelState::Opened { should_terminate, .. }) => {
-                            should_terminate.store(true, Ordering::Relaxed);
-                            trace!(tid, sid, "marking half closed");
-                            tunnels.insert((tid, sid), TunnelState::HalfClosed);
-                        },
-                        Some(TunnelState::HalfClosed) => {
-                            trace!(tid, sid, "marking fully closed");
-                            tunnels.insert((tid, sid), TunnelState::FullyClosed);
-                        },
-                        Some(TunnelState::FullyClosed) => (),
-                        None => warn!(tid, sid, "Close from server for tunnel/stream which does not exist"),
-                    }
-                    Ok::<_, Error>(())
-                })?,
+                        Ok::<_, Error>(())
+                    })?,
+                    recv(data_to_server_rx) -> data_to_server_res => trace_span!("data-to-server").in_scope(|| {
+                        let (tid, sid, data) = data_to_server_res?;
+                        trace!(tid, sid, ?data);
+                        let msg = tunnel::MessageBuilder::default()
+                            .tunnel_id(tid)
+                            .stream_id(sid)
+                            .message(tunnel::TcpData::new(data))
+                            .build()
+                            .expect("build tunnel message");
+                        tc_tx.send(msg)?;
+                        Ok::<_, Error>(())
+                    })?,
+                    recv(data_from_server_rx) -> data_from_server_res => trace_span!("data-from-server").in_scope(|| {
+                        let (tid, sid, data) = data_from_server_res?;
+                        trace!(tid, sid, ?data);
+                        match tunnels.get_mut(&(tid, sid)) {
+                            Some(TunnelState::Opened { to_tx, .. }) => {
+                                trace!("opened");
+                                to_tx.send(data)?;
+                            },
+                            Some(TunnelState::Opening { queued, .. }) => {
+                                trace!("opening");
+                                queued.extend(data);
+                            },
+                            Some(TunnelState::HalfClosed) => warn!("half closed"),
+                            Some(TunnelState::FullyClosed) => warn!("fully closed"),
+                            None => warn!(tid, sid, "non-existent tunnel/stream"),
+                        }
+                        Ok::<_, Error>(())
+                    })?,
+                    recv(closes_to_server_rx) -> close_to_server_res => trace_span!("close-to-server").in_scope(|| {
+                        let (tid, sid) = close_to_server_res?;
+                        trace!(tid, sid);
+                        let msg = tunnel::MessageBuilder::default()
+                            .tunnel_id(tid)
+                            .stream_id(sid)
+                            .message(tunnel::CloseTcpStream::new())
+                            .build()
+                            .expect("build tunnel message");
+                        tc_tx.send(msg)?;
+                        Ok::<_, Error>(())
+                    })?,
+                    recv(closes_from_server_rx) -> close_from_server_res => trace_span!("close-from-server").in_scope(|| {
+                        let (tid, sid) = close_from_server_res?;
+                        trace!(tid, sid);
+                        match tunnels.remove(&(tid, sid)) {
+                            Some(TunnelState::Opening { should_terminate, .. }) |
+                            Some(TunnelState::Opened { should_terminate, .. }) => {
+                                should_terminate.store(true, Ordering::Relaxed);
+                                trace!(tid, sid, "marking half closed");
+                                tunnels.insert((tid, sid), TunnelState::HalfClosed);
+                            },
+                            Some(TunnelState::HalfClosed) => {
+                                trace!(tid, sid, "marking fully closed");
+                                tunnels.insert((tid, sid), TunnelState::FullyClosed);
+                            },
+                            Some(TunnelState::FullyClosed) => (),
+                            None => warn!(tid, sid, "Close from server for tunnel/stream which does not exist"),
+                        }
+                        Ok::<_, Error>(())
+                    })?,
+                }
             }
         });
 
@@ -1411,27 +1414,31 @@ mod test {
                     .display_configuration(
                         DisplayConfigurationBuilder::default()
                             .id(0_u64)
-                            .display_decoder_infos(vec![DisplayDecoderInfoBuilder::default()
-                                .display(
-                                    DisplayInfoBuilder::default()
-                                        .area(
-                                            RectangleBuilder::default()
-                                                .location(Location::new(0, 0))
-                                                .dimension(Dimension::new(800_u64, 600_u64))
-                                                .build()
-                                                .expect("Rectangle build"),
-                                        )
-                                        .is_enabled(true)
-                                        .build()
-                                        .expect("DisplayInfo build"),
-                                )
-                                .decoder_areas(vec![RectangleBuilder::default()
-                                    .location(Location::new(0, 0))
-                                    .dimension(Dimension::new(800_u64, 600_u64))
+                            .display_decoder_infos(vec![
+                                DisplayDecoderInfoBuilder::default()
+                                    .display(
+                                        DisplayInfoBuilder::default()
+                                            .area(
+                                                RectangleBuilder::default()
+                                                    .location(Location::new(0, 0))
+                                                    .dimension(Dimension::new(800_u64, 600_u64))
+                                                    .build()
+                                                    .expect("Rectangle build"),
+                                            )
+                                            .is_enabled(true)
+                                            .build()
+                                            .expect("DisplayInfo build"),
+                                    )
+                                    .decoder_areas(vec![
+                                        RectangleBuilder::default()
+                                            .location(Location::new(0, 0))
+                                            .dimension(Dimension::new(800_u64, 600_u64))
+                                            .build()
+                                            .expect("Rectangle build"),
+                                    ])
                                     .build()
-                                    .expect("Rectangle build")])
-                                .build()
-                                .expect("DisplayDecoderInfo build")])
+                                    .expect("DisplayDecoderInfo build"),
+                            ])
                             .build()
                             .expect("DisplayConfiguration build"),
                     )

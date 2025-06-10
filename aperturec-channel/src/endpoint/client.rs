@@ -2,10 +2,10 @@
 use aperturec_protocol as protocol;
 
 use crate::quic::provider;
-use crate::util::{new_async_rt, SyncifyLazy};
+use crate::util::{SyncifyLazy, new_async_rt};
 use crate::*;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 #[cfg(any(test, debug_assertions))]
 use std::env;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -17,7 +17,7 @@ use tracing::*;
 use rustls::KeyLogFile;
 #[allow(deprecated)]
 use s2n_quic::provider::tls::rustls::{
-    rustls, rustls::client::ClientConfig as TlsConfig, Client as TlsProvider,
+    Client as TlsProvider, rustls, rustls::client::ClientConfig as TlsConfig,
 };
 
 /// A synchronous client endpoint

@@ -1,7 +1,7 @@
 use aperturec_graphics::{display::*, prelude::*};
 use aperturec_server::task::frame_sync::*;
 
-use ndarray::{prelude::*, Zip};
+use ndarray::{Zip, prelude::*};
 use rand::{distributions::*, prelude::*};
 use std::ops::RangeInclusive;
 

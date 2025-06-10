@@ -5,7 +5,7 @@ use crate::{Metric, MetricUpdate};
 use anyhow::Result;
 use std::any;
 use std::collections::BTreeMap;
-use std::sync::{mpsc, Mutex, Once, OnceLock};
+use std::sync::{Mutex, Once, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::*;

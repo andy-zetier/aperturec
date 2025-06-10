@@ -2,9 +2,9 @@ use crate::{log, paths};
 
 use anyhow::Result;
 use file_rotate::{
+    ContentLimit, FileRotate,
     compression::Compression,
     suffix::{AppendTimestamp, FileLimit},
-    ContentLimit, FileRotate,
 };
 use std::fs;
 use std::io;
@@ -62,7 +62,7 @@ pub struct LogArgGroup {
     log_file_directive: String,
 }
 
-fn create_filter<S>(verbosity: u8, directive: &str) -> Result<impl Filter<S>>
+fn create_filter<S>(verbosity: u8, directive: &str) -> Result<impl Filter<S> + use<S>>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -89,7 +89,7 @@ fn create_stderr_layer<S>(
     verbosity: u8,
     directive: &str,
     color: bool,
-) -> Result<(impl Layer<S>, WorkerGuard)>
+) -> Result<(impl Layer<S> + use<S>, WorkerGuard)>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -113,7 +113,7 @@ where
 }
 
 #[cfg(target_os = "linux")]
-fn create_journald_layer<S>(verbosity: u8, directive: &str) -> Result<impl Layer<S>>
+fn create_journald_layer<S>(verbosity: u8, directive: &str) -> Result<impl Layer<S> + use<S>>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -126,7 +126,7 @@ fn create_file_layer<S>(
     verbosity: u8,
     directive: &str,
     file_directory: &Path,
-) -> Result<(impl Layer<S>, WorkerGuard)>
+) -> Result<(impl Layer<S> + use<S>, WorkerGuard)>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -164,7 +164,7 @@ pub struct Guard {
 }
 
 impl LogArgGroup {
-    pub fn as_tracing_layer<S>(&self) -> Result<(impl Layer<S> + Send + Sync, Guard)>
+    pub fn as_tracing_layer<S>(&self) -> Result<(impl Layer<S> + Send + Sync + use<S>, Guard)>
     where
         S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
     {

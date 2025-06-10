@@ -5,7 +5,7 @@ use aperturec_graphics::prelude::*;
 use aperturec_server::task::frame_sync::*;
 
 use criterion::{measurement::*, *};
-use ndarray::{prelude::*, Zip};
+use ndarray::{Zip, prelude::*};
 use rand::random;
 
 struct UndamagedPixelsCaptured;
@@ -108,11 +108,7 @@ fn tracking_buffer_pixels(c: &mut Criterion<UndamagedPixelsCaptured>) {
                                     }
                                     let pixels_damaged =
                                         Zip::from(&new).and(&curr).fold(0, |acc, n, c| {
-                                            if n != c {
-                                                acc + 1
-                                            } else {
-                                                acc
-                                            }
+                                            if n != c { acc + 1 } else { acc }
                                         });
                                     undamaged_pixels_captured += pixels_captured - pixels_damaged;
                                 }

@@ -288,7 +288,7 @@ async fn main() -> Result<()> {
                         Ok(())
                     } else {
                         Err(error)
-                    }
+                    };
                 }
             }
         }

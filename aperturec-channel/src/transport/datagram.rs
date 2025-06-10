@@ -1,5 +1,5 @@
 //! Byte-oriented, reliable, out-of-order transport
-use crate::transport::{macros::*, AsyncReceive, AsyncTransmit};
+use crate::transport::{AsyncReceive, AsyncTransmit, macros::*};
 use crate::util::Syncify;
 
 use anyhow::{Error, Result};

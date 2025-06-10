@@ -41,9 +41,7 @@
 /// ```
 #[macro_export]
 macro_rules! try_recover {
-    ($try_expr:expr, $recoverable:expr) => {{
-        try_recover!($try_expr, $recoverable, _)
-    }};
+    ($try_expr:expr, $recoverable:expr) => {{ try_recover!($try_expr, $recoverable, _) }};
     ($try_expr:expr, $recoverable:expr, $new_state:ty) => {{
         match $try_expr {
             Ok(ok) => ok,
@@ -59,9 +57,7 @@ macro_rules! try_recover {
 /// `async` block.
 #[macro_export]
 macro_rules! try_recover_async {
-    ($try_expr:expr, $recoverable:expr) => {{
-        try_recover_async!($try_expr, $recoverable, _)
-    }};
+    ($try_expr:expr, $recoverable:expr) => {{ try_recover_async!($try_expr, $recoverable, _) }};
     ($try_expr:expr, $recoverable:expr, $new_state:ty) => {{
         match $try_expr.await {
             Ok(ok) => ok,
@@ -184,9 +180,7 @@ macro_rules! return_recover_async {
 /// ```
 #[macro_export]
 macro_rules! try_transition_continue {
-    ($stateful:expr, $original_binding:ident) => {{
-        try_transition_continue!($stateful, $original_binding, |_| {})
-    }};
+    ($stateful:expr, $original_binding:ident) => {{ try_transition_continue!($stateful, $original_binding, |_| {}) }};
     ($stateful:expr, $original_binding:ident, $error_handling:expr) => {{
         match <_ as TryTransitionable<_, _>>::try_transition($stateful) {
             Ok(ok) => ok,
@@ -203,9 +197,7 @@ macro_rules! try_transition_continue {
 /// instantiated within an `async` block.
 #[macro_export]
 macro_rules! try_transition_continue_async {
-    ($stateful:expr, $original_binding:ident) => {{
-        try_transition_continue_async!($stateful, $original_binding, |_| async {})
-    }};
+    ($stateful:expr, $original_binding:ident) => {{ try_transition_continue_async!($stateful, $original_binding, |_| async {}) }};
     ($stateful:expr, $original_binding:ident, $error_handling:expr) => {{
         match <_ as AsyncTryTransitionable<_, _>>::try_transition($stateful).await {
             Ok(ok) => ok,
@@ -223,12 +215,8 @@ macro_rules! try_transition_continue_async {
 /// machine if the inner transition fails
 #[macro_export]
 macro_rules! try_transition_inner_recover {
-    ($inner:expr, $recover_constructor:expr) => {{
-        try_transition_inner_recover!($inner, _, _, $recover_constructor)
-    }};
-    ($inner:expr, $inner_recovered_state:ty, $recover_constructor:expr) => {{
-        try_transition_inner_recover!($inner, _, $inner_recovered_state, $recover_constructor)
-    }};
+    ($inner:expr, $recover_constructor:expr) => {{ try_transition_inner_recover!($inner, _, _, $recover_constructor) }};
+    ($inner:expr, $inner_recovered_state:ty, $recover_constructor:expr) => {{ try_transition_inner_recover!($inner, _, $inner_recovered_state, $recover_constructor) }};
     ($inner:expr, $inner_target_state: ty, $inner_recovered_state:ty, $recover_constructor:expr) => {{
         match <_ as TryTransitionable<$inner_target_state, $inner_recovered_state>>::try_transition(
             $inner,
@@ -280,24 +268,16 @@ macro_rules! try_transition_inner_recover_async {
 /// for a [`Stateful`](crate::Stateful).
 #[macro_export]
 macro_rules! transition {
-    ($stateful:expr) => {{
-        transition!($stateful, _)
-    }};
-    ($stateful:expr, $state:ty) => {{
-        <_ as Transitionable<$state>>::transition($stateful)
-    }};
+    ($stateful:expr) => {{ transition!($stateful, _) }};
+    ($stateful:expr, $state:ty) => {{ <_ as Transitionable<$state>>::transition($stateful) }};
 }
 
 /// Async variant of [`transition`](crate::transition). This must be instantiated within an `async`
 /// block.
 #[macro_export]
 macro_rules! transition_async {
-    ($stateful:expr) => {{
-        transition_async!($stateful, _)
-    }};
-    ($stateful:expr, $state:ty) => {{
-        <_ as AsyncTransitionable<$state>>::transition($stateful).await
-    }};
+    ($stateful:expr) => {{ transition_async!($stateful, _) }};
+    ($stateful:expr, $state:ty) => {{ <_ as AsyncTransitionable<$state>>::transition($stateful).await }};
 }
 
 /// Explicitly try to transition a [`TryTransitionable`](crate::TryTransitionable)
@@ -306,28 +286,16 @@ macro_rules! transition_async {
 /// [`Stateful`](crate::Stateful).
 #[macro_export]
 macro_rules! try_transition {
-    ($stateful:expr) => {{
-        try_transition!($stateful, _)
-    }};
-    ($stateful:expr, $next_state:ty) => {{
-        try_transition!($stateful, $next_state, _)
-    }};
-    ($stateful:expr, $next_state:ty, $recovery_state:ty) => {{
-        <_ as TryTransitionable<$next_state, $recovery_state>>::try_transition($stateful)
-    }};
+    ($stateful:expr) => {{ try_transition!($stateful, _) }};
+    ($stateful:expr, $next_state:ty) => {{ try_transition!($stateful, $next_state, _) }};
+    ($stateful:expr, $next_state:ty, $recovery_state:ty) => {{ <_ as TryTransitionable<$next_state, $recovery_state>>::try_transition($stateful) }};
 }
 
 /// Async variant of [`try_transition`](crate::try_transition). This must be instantiated within an
 /// `async` block.
 #[macro_export]
 macro_rules! try_transition_async {
-    ($stateful:expr) => {{
-        try_transition_async!($stateful, _)
-    }};
-    ($stateful:expr, $next_state:ty) => {{
-        try_transition_async!($stateful, $next_state, _)
-    }};
-    ($stateful:expr, $next_state:ty, $recovery_state:ty) => {{
-        <_ as AsyncTryTransitionable<$next_state, $recovery_state>>::try_transition($stateful).await
-    }};
+    ($stateful:expr) => {{ try_transition_async!($stateful, _) }};
+    ($stateful:expr, $next_state:ty) => {{ try_transition_async!($stateful, $next_state, _) }};
+    ($stateful:expr, $next_state:ty, $recovery_state:ty) => {{ <_ as AsyncTryTransitionable<$next_state, $recovery_state>>::try_transition($stateful).await }};
 }

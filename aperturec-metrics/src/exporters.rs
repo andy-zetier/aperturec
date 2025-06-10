@@ -7,7 +7,7 @@
 //!
 use crate::Measurement;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{SecondsFormat, Utc};
 use prometheus::{Encoder, Gauge, Opts, TextEncoder};
 use std::collections::HashMap;

@@ -2,7 +2,7 @@ use aperturec_client::{client, gtk3};
 use aperturec_graphics::prelude::*;
 use aperturec_utils::{args, warn_early};
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{Result, anyhow, ensure};
 use clap::Parser;
 use gethostname::gethostname;
 use openssl::x509::X509;
@@ -166,7 +166,9 @@ fn main() -> Result<()> {
     let args = match env::var("AC_URI") {
         Ok(uri) => {
             if env::args().count() > 1 {
-                warn_early!("CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments.");
+                warn_early!(
+                    "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
+                );
             }
             args_from_uri(&uri)?
         }

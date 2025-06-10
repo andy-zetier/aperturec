@@ -14,7 +14,7 @@ use aperturec_protocol::common::*;
 use aperturec_protocol::control as cm;
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use derive_builder::Builder;
 use derive_more::Debug;
 use futures::prelude::*;
@@ -28,7 +28,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::pin::{pin, Pin};
+use std::pin::{Pin, pin};
 use std::sync::LazyLock;
 use std::time::Duration;
 use tokio::process::Command;
@@ -240,7 +240,9 @@ fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material>
                             info!("existing TLS material is valid, not regenerating");
                             return Ok(tls_material);
                         } else {
-                            warn!("existing TLS material is present but is invalid for provided external addresses");
+                            warn!(
+                                "existing TLS material is present but is invalid for provided external addresses"
+                            );
                         }
                     }
                     Err(e) => {
@@ -990,8 +992,10 @@ impl<B: Backend> TryTransitionable<SessionInactive<B>, SessionUnresumable>
                         Ok(exit_status) => {
                             if exit_status.success() {
                                 // clean exit – treat as graceful shutdown
-                                debug!("Root process exited cleanly (status {}) – shutting server down",
-                                       exit_status.display());
+                                debug!(
+                                    "Root process exited cleanly (status {}) – shutting server down",
+                                    exit_status.display()
+                                );
                                 Err(Recovered {
                                     stateful: session_unresumable!(),
                                     error: ServerStopped.into(),
@@ -1075,12 +1079,12 @@ mod test {
     use crate::backend::X;
 
     use aperturec_channel::{
-        tls, AsyncClientControl, AsyncClientEvent, AsyncClientMedia, AsyncClientTunnel,
-        AsyncReceiver, Unified,
+        AsyncClientControl, AsyncClientEvent, AsyncClientMedia, AsyncClientTunnel, AsyncReceiver,
+        Unified, tls,
     };
     use aperturec_protocol::control::{client_to_server as cm_c2s, server_to_client as cm_s2c, *};
 
-    use rand::{distributions::Alphanumeric, Rng};
+    use rand::{Rng, distributions::Alphanumeric};
     use test_log::test;
 
     fn client_init_msg(auth_token: SecretString) -> cm_c2s::Message {

@@ -1,7 +1,7 @@
 use crate::backend::Event;
 use crate::server;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use aperturec_channel::{self as channel, AsyncFlushable, AsyncReceiver, AsyncSender};
 use aperturec_protocol::event::{client_to_server as em_c2s, server_to_client as em_s2c};
 use aperturec_state_machine::*;

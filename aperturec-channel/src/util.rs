@@ -88,7 +88,7 @@ mod test {
 
     #[test]
     fn syncify_io() {
-        use rand::{distributions::Standard, Rng};
+        use rand::{Rng, distributions::Standard};
 
         let rt = new_async_rt().expect("rt");
 

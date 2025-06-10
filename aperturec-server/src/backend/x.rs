@@ -5,9 +5,9 @@ use crate::process_utils::{self, DisplayableExitStatus};
 use aperturec_graphics::{display::*, geometry::*, prelude::*};
 use aperturec_protocol::event as em;
 
-use anyhow::{anyhow, bail, Result};
-use futures::{future, stream, Future, Stream, StreamExt, TryFutureExt};
-use ndarray::{prelude::*, AssignElem};
+use anyhow::{Result, anyhow, bail};
+use futures::{Future, Stream, StreamExt, TryFutureExt, future, stream};
+use ndarray::{AssignElem, prelude::*};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::env;
@@ -29,8 +29,8 @@ use tracing::*;
 use xcb::damage::{self};
 use xcb::x::{self};
 use xcb::{
-    composite, randr, xfixes, xtest, BaseEvent, CookieWithReplyChecked, Request, RequestWithReply,
-    RequestWithoutReply, Xid, XidNew,
+    BaseEvent, CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply, Xid, XidNew,
+    composite, randr, xfixes, xtest,
 };
 
 const CHILD_STARTUP_WAIT_TIME_MS: Duration = Duration::from_millis(1000);
@@ -1171,7 +1171,7 @@ impl XEventStreamMux {
         XEventStreamMux { txs, _task }
     }
 
-    fn get_stream(&self) -> impl Stream<Item = Arc<XEvent>> + Send + Sync + Unpin {
+    fn get_stream(&self) -> impl Stream<Item = Arc<XEvent>> + Send + Sync + Unpin + use<> {
         let mut txs = self.txs.lock().expect("lock X mux txs");
         let (tx, rx) = mpsc::unbounded_channel();
         txs.push(tx);
@@ -1199,7 +1199,7 @@ impl Debug for XConnection {
 }
 
 impl XConnection {
-    fn event_stream(&self) -> impl Stream<Item = Arc<XEvent>> + Send + Sync + Unpin {
+    fn event_stream(&self) -> impl Stream<Item = Arc<XEvent>> + Send + Sync + Unpin + use<> {
         self.event_stream_mux.get_stream()
     }
 

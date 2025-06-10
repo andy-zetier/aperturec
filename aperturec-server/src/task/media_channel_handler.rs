@@ -4,7 +4,7 @@ use aperturec_channel::{self as channel, AsyncSender, AsyncServerMedia};
 use aperturec_protocol::media::server_to_client as mm_s2c;
 use aperturec_state_machine::*;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;

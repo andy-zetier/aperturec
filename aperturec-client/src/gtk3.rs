@@ -8,8 +8,8 @@ use crate::gtk3::image::Image;
 
 use aperturec_graphics::{display::*, euclid_collections::*, prelude::*};
 
-use anyhow::{anyhow, bail, Result};
-use crossbeam::channel::{unbounded, Receiver, Sender};
+use anyhow::{Result, anyhow, bail};
+use crossbeam::channel::{Receiver, Sender, unbounded};
 use gtk::{cairo, gdk, gdk_pixbuf, gio, glib, prelude::*};
 use keycode::{KeyMap, KeyMapping, KeyMappingId};
 use ndarray::prelude::*;
@@ -23,8 +23,8 @@ use tracing::*;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW,
     MAPVK_VK_TO_VSC_EX,
+    MapVirtualKeyW,
     VIRTUAL_KEY,
     VK_APPS, // Windows / context menu keys
     VK_DELETE,
@@ -45,7 +45,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 #[cfg(target_os = "windows")]
 mod win_key_hook {
-    use super::{convert_win_virtual_key_to_scan_code, warn, EventMessage, KeyEventMessageBuilder};
+    use super::{EventMessage, KeyEventMessageBuilder, convert_win_virtual_key_to_scan_code, warn};
     use crossbeam::channel::Sender;
     use keycode::{KeyMap, KeyMapping};
     use std::sync::OnceLock;
@@ -56,7 +56,7 @@ mod win_key_hook {
                 GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_RWIN, VK_TAB,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, SetWindowsHookExW, HHOOK, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN,
+                CallNextHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, SetWindowsHookExW,
                 WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
             },
         },
@@ -733,8 +733,7 @@ mod signal_handlers {
         let mouse_pos = workspace.last_mouse_pos.get();
         trace!(
             "GTK ButtonPressEvent: {:?} @ {:?} (scroll)",
-            buttons,
-            mouse_pos
+            buttons, mouse_pos
         );
 
         for button in &buttons {
@@ -1329,7 +1328,9 @@ impl WindowMode {
                     Ok(WindowMode::Single { fullscreen: false })
                 }
                 WindowMode::Multi => {
-                    warn!("Server provided single-monitor display configuration in multi-monitor mode");
+                    warn!(
+                        "Server provided single-monitor display configuration in multi-monitor mode"
+                    );
                     info!("Reverting to single-monitor mode");
                     Ok(WindowMode::Single { fullscreen: true })
                 }
@@ -1339,7 +1340,9 @@ impl WindowMode {
                 bail!("Server provided multi-monitor display configuration in single-window mode");
             }
             if !monitors_geometry.matches(display_config) {
-                bail!("Server provided multi-monitor initial display configuration which does not match monitors geometry on client");
+                bail!(
+                    "Server provided multi-monitor initial display configuration which does not match monitors geometry on client"
+                );
             }
             Ok(WindowMode::Multi)
         }

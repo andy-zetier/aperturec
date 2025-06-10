@@ -5,12 +5,12 @@ use aperturec_protocol::control::{self as cm, client_to_server as cm_c2s};
 use anyhow::Result;
 use futures::{prelude::*, stream::BoxStream};
 use pbkdf2::{
-    password_hash::{PasswordHasher, PasswordVerifier, SaltString},
     Pbkdf2,
+    password_hash::{PasswordHasher, PasswordVerifier, SaltString},
 };
-use secrecy::{zeroize::Zeroize, ExposeSecret, SecretString};
+use secrecy::{ExposeSecret, SecretString, zeroize::Zeroize};
 use std::net::SocketAddr;
-use std::pin::{pin, Pin};
+use std::pin::{Pin, pin};
 use std::sync::LazyLock;
 use std::task::{Context, Poll};
 use tracing::*;

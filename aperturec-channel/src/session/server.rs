@@ -4,7 +4,7 @@ use crate::transport::{datagram, stream};
 use crate::util::Syncify;
 use crate::*;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;

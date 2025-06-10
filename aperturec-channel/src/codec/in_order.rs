@@ -313,12 +313,12 @@ type DuplexSendHalf<T, ApiSm, WireSm> =
     SenderSimplex<<T as transport::Splitable>::TransmitHalf, ApiSm, WireSm>;
 
 impl<
-        T: transport::Receive + transport::Transmit + transport::Splitable,
-        ApiRm,
-        ApiSm,
-        WireRm,
-        WireSm,
-    > Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
+    T: transport::Receive + transport::Transmit + transport::Splitable,
+    ApiRm,
+    ApiSm,
+    WireRm,
+    WireSm,
+> Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
 {
     pub fn split(
         self,

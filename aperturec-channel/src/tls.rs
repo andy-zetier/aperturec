@@ -5,7 +5,7 @@ use openssl::ec::{EcGroup, EcKey};
 use openssl::nid::Nid;
 use openssl::pkey::{PKey, Private};
 use openssl::x509::extension::SubjectAlternativeName;
-use openssl::x509::{X509NameBuilder, X509};
+use openssl::x509::{X509, X509NameBuilder};
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fs;
@@ -13,9 +13,9 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::sync::Arc;
 
+use rustls::Error;
 use rustls::client::danger::*;
 use rustls::pki_types::*;
-use rustls::Error;
 #[allow(deprecated)]
 use s2n_quic::provider::tls::rustls::rustls;
 

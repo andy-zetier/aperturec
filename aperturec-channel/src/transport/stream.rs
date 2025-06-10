@@ -1,8 +1,8 @@
 //! Byte-oriented, reliable, in-order transport
-use super::{macros::*, AsyncFlush, AsyncReceive, AsyncSplitable, AsyncTransmit};
+use super::{AsyncFlush, AsyncReceive, AsyncSplitable, AsyncTransmit, macros::*};
 use crate::util::Syncify;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use bytes::Bytes;
 use s2n_quic::stream::{BidirectionalStream, ReceiveStream, SendStream};
 use std::sync::Arc;
