@@ -10,7 +10,7 @@ use aperturec_protocol::event::{self as em, server_to_client as em_s2c};
 use aperturec_state_machine::*;
 
 use anyhow::{Result, anyhow, ensure};
-use futures::{StreamExt, stream};
+use futures::{FutureExt, StreamExt, stream};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -270,7 +270,11 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                         }
                     },
                     Some(area) = damage_stream.next() => {
-                        if let Some(area) = display_extent.intersection(&area) {
+                        let mut bounding = area;
+                        while let Some(Some(area)) = damage_stream.next().now_or_never() {
+                            bounding = bounding.union(&area);
+                        }
+                        if let Some(area) = display_extent.intersection(&bounding) {
                             let pixels = match self.state.backend.capture_area(area).await {
                                 Ok(pixels) => pixels,
                                 Err(e) => {
