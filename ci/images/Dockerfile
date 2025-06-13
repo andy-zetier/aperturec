@@ -12,9 +12,19 @@ RUN $APT_UPDATE && $APT_INSTALL clang curl build-essential cmake pkg-config libs
 FROM --platform=${ARCHITECTURE} ${IMAGE_UPSTREAM} as base-image-fedora
 ENV DNF_INSTALL="dnf install --setopt=install_weak_deps=False -y"
 ENV DNF_CLEAN="dnf clean all"
+ENV DNF_COMMON_PKGS="gcc openssl-devel cmake git protobuf-compiler protobuf-devel xorg-x11-server-Xvfb"
 WORKDIR /root
+
 RUN dnf config-manager --set-enabled crb || true
-RUN $DNF_INSTALL -y 'clang-18.*' gcc openssl-devel cmake git protobuf-compiler protobuf-devel xorg-x11-server-Xvfb && $DNF_CLEAN
+
+RUN bash -c ' \
+    if dnf list available "clang-19.*" >/dev/null 2>&1; then \
+        $DNF_INSTALL "clang-19.*" $DNF_COMMON_PKGS; \
+    else \
+        $DNF_INSTALL "clang-18.*" $DNF_COMMON_PKGS; \
+    fi \
+    && $DNF_CLEAN'
+
 
 FROM --platform=${ARCHITECTURE} base-image-${OS_VARIANT} as base-rust-image
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c rustfmt
