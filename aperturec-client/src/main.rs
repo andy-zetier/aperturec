@@ -166,11 +166,17 @@ fn main() -> Result<()> {
     let args = match env::var("AC_URI") {
         Ok(uri) => {
             if env::args().count() > 1 {
-                warn_early!(
-                    "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
-                );
+                if let Ok(args) = args_from_uri(&env::args().nth(1).unwrap()) {
+                    args
+                } else {
+                    warn_early!(
+                        "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
+                    );
+                    args_from_uri(&uri)?
+                }
+            } else {
+                args_from_uri(&uri)?
             }
-            args_from_uri(&uri)?
         }
         Err(_) => Args::parse(),
     };
