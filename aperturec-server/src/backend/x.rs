@@ -310,7 +310,13 @@ impl Backend for X {
         }
 
         let xvfb_help = Command::new(&xvfb_path).arg("-help").output().await?.stderr;
-        if !String::from_utf8_lossy(&xvfb_help).contains("-crtcs n") {
+
+        //
+        // Separate handling for "-crtcs n" and "-crtcs n@WxH" can be removed once the later is
+        // merged upstream in xserver
+        //
+        let xvfb_has_crtc_size = String::from_utf8_lossy(&xvfb_help).contains("-crtcs n[@WxH]");
+        if !xvfb_has_crtc_size && !String::from_utf8_lossy(&xvfb_help).contains("-crtcs n") {
             warn!(
                 "{} does not support the -crtcs option. Multi-display is disabled",
                 xvfb_path
@@ -330,7 +336,14 @@ impl Backend for X {
             .stderr(process_utils::StderrTracer::new(Level::DEBUG))
             .kill_on_drop(true);
 
-        if max_display_count > 1 {
+        if xvfb_has_crtc_size {
+            xvfb_cmd.arg("-crtcs").arg(format!(
+                "{}@{}x{}",
+                max_display_count,
+                X::MIN_WIDTH,
+                X::MIN_HEIGHT
+            ));
+        } else if max_display_count > 1 {
             xvfb_cmd.arg("-crtcs").arg(max_display_count.to_string());
         }
 
@@ -392,12 +405,14 @@ impl Backend for X {
             xvfb_process,
         };
 
-        x.set_displays(vec![Display::new(
-            Rect::from_size(Size::new(X::MIN_WIDTH, X::MIN_HEIGHT)),
-            true,
-        )])
-        .await
-        .map_err(|_| anyhow!("Failed to set minimal Displays"))?;
+        if !xvfb_has_crtc_size {
+            x.set_displays(vec![Display::new(
+                Rect::from_size(Size::new(X::MIN_WIDTH, X::MIN_HEIGHT)),
+                true,
+            )])
+            .await
+            .map_err(|_| anyhow!("Failed to set minimal Displays"))?;
+        }
 
         trace!("X initialized");
         Ok(x)
