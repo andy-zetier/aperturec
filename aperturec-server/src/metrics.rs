@@ -13,6 +13,7 @@ create_metric!(EncoderCount);
 create_metric!(TrackingBufferDisjointAreas);
 create_metric!(TrackingBufferUpdates);
 create_metric!(BackendEvent);
+create_metric!(ClientActivityEvent);
 create_metric!(DisplayWidth);
 create_metric!(DisplayHeight);
 
@@ -32,6 +33,7 @@ pub fn setup_server_metrics() {
     TrackingBufferDisjointAreas::register();
     TrackingBufferUpdates::register();
     BackendEvent::register();
+    ClientActivityEvent::register();
     DisplayWidth::register();
     DisplayHeight::register();
 }

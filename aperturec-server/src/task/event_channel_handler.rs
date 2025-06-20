@@ -1,4 +1,5 @@
 use crate::backend::Event;
+use crate::metrics::ClientActivityEvent;
 use crate::server;
 
 use anyhow::{Result, anyhow, bail};
@@ -130,6 +131,7 @@ impl Transitionable<Running> for Task<Created> {
                         match ec_rx_res {
                             Ok(msg) => {
                                 if matches!(msg, em_c2s::Message::KeyEvent(_) | em_c2s::Message::PointerEvent(_)) {
+                                    ClientActivityEvent::inc();
                                     sleep.set(time::sleep(timeout));
                                 }
                                 self.state.event_tx.send(msg.try_into()?).await?
