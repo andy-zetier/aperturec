@@ -25,6 +25,9 @@ stages:
 .fedora-40: &fedora-40
   IMAGE_UPSTREAM: docker.io/library/fedora:40
   IMAGE_NAME: fedora-40
+.fedora-41: &fedora-41
+  IMAGE_UPSTREAM: docker.io/library/fedora:41
+  IMAGE_NAME: fedora-41
 .centos-stream9: &centos-stream9
   IMAGE_UPSTREAM: quay.io/centos/centos:stream9
   IMAGE_NAME: centos-stream9
@@ -96,7 +99,7 @@ create-images:build:
         OS_VARIANT: debian
         ARCHITECTURE: !reference [.architectures:all]
         IMAGE_TARGET: !reference [.targets:all]
-      - <<: *fedora-40
+      - <<: *fedora-41
         OS_VARIANT: fedora
         ARCHITECTURE: !reference [.architectures:all]
         IMAGE_TARGET: !reference [.targets:all]
@@ -138,7 +141,7 @@ create-images:deploy-manifest:
       - <<: *ubuntu-24
         OS_VARIANT: debian
         IMAGE_TARGET: !reference [.targets:all]
-      - <<: *fedora-40
+      - <<: *fedora-41
         OS_VARIANT: fedora
         IMAGE_TARGET: !reference [.targets:all]
       - <<: *centos-stream9
@@ -221,7 +224,7 @@ cargo:check-build-test:
         CRATES: !reference [.crates:no-extra-dependencies]
         IMAGE_TARGET: rust-image
         ARCHITECTURE: !reference [.architectures:all]
-      - <<: *fedora-40
+      - <<: *fedora-41
         CRATES: !reference [.crates:no-extra-dependencies]
         IMAGE_TARGET: rust-image
         ARCHITECTURE: !reference [.architectures:all]
@@ -237,7 +240,7 @@ cargo:check-build-test:
         CRATES: !reference [.crates:fips-dependencies]
         IMAGE_TARGET: fips-capable-image
         ARCHITECTURE: !reference [.architectures:all]
-      - <<: *fedora-40
+      - <<: *fedora-41
         CRATES: !reference [.crates:fips-dependencies]
         IMAGE_TARGET: fips-capable-image
         ARCHITECTURE: !reference [.architectures:all]
@@ -253,7 +256,7 @@ cargo:check-build-test:
         CRATES: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
-      - <<: *fedora-40
+      - <<: *fedora-41
         CRATES: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
@@ -269,7 +272,7 @@ cargo:check-build-test:
         CRATES: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
-      - <<: *fedora-40
+      - <<: *fedora-41
         CRATES: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
@@ -411,7 +414,7 @@ package:create-rpm:
     - job: cargo:check-build-test
       parallel:
         matrix:
-          - <<: *fedora-40
+          - <<: *fedora-41
             CRATES: aperturec-server
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
@@ -419,7 +422,7 @@ package:create-rpm:
             CRATES: aperturec-server
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
-          - <<: *fedora-40
+          - <<: *fedora-41
             CRATES: aperturec-client
             IMAGE_TARGET: client-image
             ARCHIECTURE: !reference [.architectures:all]
@@ -429,7 +432,7 @@ package:create-rpm:
             ARCHIECTURE: !reference [.architectures:all]
   parallel:
     matrix:
-      - <<: *fedora-40
+      - <<: *fedora-41
         CRATES: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
@@ -439,7 +442,7 @@ package:create-rpm:
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
         PKG_CLOUD_ID: el
-      - <<: *fedora-40
+      - <<: *fedora-41
         CRATES: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]

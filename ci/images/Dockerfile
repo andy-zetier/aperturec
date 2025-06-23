@@ -16,7 +16,6 @@ ENV DNF_COMMON_PKGS="gcc openssl-devel cmake git protobuf-compiler protobuf-deve
 WORKDIR /root
 
 RUN dnf config-manager --set-enabled crb || true
-
 RUN bash -c ' \
     if dnf list available "clang-19.*" >/dev/null 2>&1; then \
         $DNF_INSTALL "clang-19.*" $DNF_COMMON_PKGS; \
@@ -24,7 +23,6 @@ RUN bash -c ' \
         $DNF_INSTALL "clang-18.*" $DNF_COMMON_PKGS; \
     fi \
     && $DNF_CLEAN'
-
 
 FROM --platform=${ARCHITECTURE} base-image-${OS_VARIANT} as base-rust-image
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c rustfmt
@@ -54,7 +52,7 @@ FROM --platform=${ARCHITECTURE} fips-capable-image as client-image-fedora
 RUN $DNF_INSTALL tzdata gtk3-devel && $DNF_CLEAN
 
 FROM --platform=${ARCHITECTURE} base-image-fedora as pe-util-build-windows
-RUN $DNF_INSTALL -y gcc-c++ boost-devel libstdc++-static glibc-static && $DNF_CLEAN
+RUN $DNF_INSTALL gcc-c++ boost-devel libstdc++-static glibc-static && $DNF_CLEAN
 RUN git clone https://github.com/gsauthof/pe-util
 WORKDIR pe-util
 RUN git submodule update --init
@@ -78,6 +76,6 @@ FROM --platform=${ARCHITECTURE} fips-capable-image as server-image-debian
 RUN $APT_UPDATE && $APT_INSTALL libxcb1-dev ubuntu-session mesa-utils lsb-release && $APT_CLEAN
 
 FROM --platform=${ARCHITECTURE} fips-capable-image as server-image-fedora
-RUN $DNF_INSTALL -y glx-utils libxcb-devel mesa-dri-drivers && $DNF_CLEAN
+RUN $DNF_INSTALL glx-utils libxcb-devel mesa-dri-drivers && $DNF_CLEAN
 
 FROM --platform=${ARCHITECTURE} server-image-${OS_VARIANT} as server-image
