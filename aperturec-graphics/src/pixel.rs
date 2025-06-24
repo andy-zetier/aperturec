@@ -4,10 +4,25 @@ use crate::geometry::*;
 use ndarray::{AssignElem, Data, DataMut, prelude::*};
 
 #[derive(PartialEq, Debug, Default, Clone, Copy)]
+#[repr(C)]
 pub struct Pixel24 {
     pub blue: u8,
     pub green: u8,
     pub red: u8,
+}
+
+impl AsRef<[u8; 3]> for Pixel24 {
+    fn as_ref(&self) -> &[u8; 3] {
+        // SAFETY: The Pixel24 structure is repr(C) and 3 bytes
+        unsafe { &*(self as *const Pixel24 as *const [u8; 3]) }
+    }
+}
+
+impl AsMut<[u8; 3]> for Pixel24 {
+    fn as_mut(&mut self) -> &mut [u8; 3] {
+        // SAFETY: The Pixel24 structure is repr(C) and 3 bytes
+        unsafe { &mut *(self as *mut Pixel24 as *mut [u8; 3]) }
+    }
 }
 
 pub type Pixel24Map = Array2<Pixel24>;

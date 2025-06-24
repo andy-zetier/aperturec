@@ -99,24 +99,6 @@ impl From<xfixes::GetCursorImageReply> for CursorImage {
 #[derive(Clone, Copy)]
 pub struct XPixel([u8; X_BYTES_PER_PIXEL]);
 
-impl XPixel {
-    fn blue(&self) -> u8 {
-        self[0]
-    }
-
-    fn green(&self) -> u8 {
-        self[1]
-    }
-
-    fn red(&self) -> u8 {
-        self[2]
-    }
-
-    fn alpha(&self) -> u8 {
-        self[3]
-    }
-}
-
 impl Deref for XPixel {
     type Target = [u8; X_BYTES_PER_PIXEL];
 
@@ -133,18 +115,13 @@ impl DerefMut for XPixel {
 
 impl PartialEq<Pixel24> for XPixel {
     fn eq(&self, rhs: &Pixel24) -> bool {
-        self.alpha() == u8::MAX
-            && self.blue() == rhs.blue
-            && self.green() == rhs.green
-            && self.red() == rhs.red
+        &self[..3] == rhs.as_ref() && self[3] == u8::MAX
     }
 }
 
 impl AssignElem<XPixel> for &mut Pixel24 {
     fn assign_elem(self, x: XPixel) {
-        self.blue = x.blue();
-        self.green = x.green();
-        self.red = x.red();
+        self.as_mut().copy_from_slice(&x[..3]);
     }
 }
 
