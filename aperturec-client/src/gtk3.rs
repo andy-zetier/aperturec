@@ -276,6 +276,7 @@ pub fn get_monitors_geometry() -> Result<MonitorsGeometry> {
 #[derive(Debug, Clone, Copy)]
 enum KeyboardShortcut {
     ToggleFullscreen { multi_monitor: bool },
+    Refresh,
     Disconnect,
 }
 
@@ -295,10 +296,12 @@ impl KeyboardShortcut {
                     multi_monitor: true,
                 })
             }
+        // Some DEs will switch TTYs with Ctrl-Alt-F#. These DE's may allow these key-combos to
+        // propagate to the client (wihout a TTY switch) by using Shift (eg. Ctrl-Alt-Shift-F12)
         } else if key_event.keyval() == gdk::keys::constants::F12 {
-            // Some DEs will switch TTYs with Ctrl-Alt-F12. These DEs may allow this key-combo to
-            // reach the client (without TTY switching) by using Shift (e.g. Ctrl-Alt-Shift-F12)
             Some(Self::Disconnect)
+        } else if key_event.keyval() == gdk::keys::constants::F5 {
+            Some(Self::Refresh)
         } else {
             None
         }
@@ -496,6 +499,41 @@ impl GtkUi {
                     KeyboardShortcut::Disconnect => {
                         windows.borrow_mut().close();
                     },
+                    KeyboardShortcut::Refresh => {
+                        let wins = windows.borrow_mut();
+                        let displays: Vec<Display> = match wins.mode {
+                            WindowMode::Single { .. } => {
+                                let size = wins.single.internals.size();
+                                wins.single.internals.blank();
+
+                                vec![Display {
+                                    area: Rect::from_size(size),
+                                    is_enabled: true,
+                                }]
+                            }
+                            WindowMode::Multi => {
+                                wins
+                                    .multi
+                                    .windows
+                                    .values()
+                                    .for_each(|window| window.internals.blank());
+
+                                wins.multi.windows.keys().map(|area| Display {
+                                    area,
+                                    is_enabled: true,
+                                }).collect()
+                            }
+                        };
+
+                        workspace
+                            .event_tx
+                            .send(EventMessage::DisplayEventMessage(
+                                DisplayEventMessage { displays },
+                            ))
+                            .unwrap_or_else(|err| {
+                                warn!(%err, "GTK failed to tx DisplayEventMessage")
+                            });
+                    }
                 }
                 glib::source::Continue(true)
             }),
@@ -857,11 +895,10 @@ mod signal_handlers {
                     }
                 }
 
-                internals.image.replace(Image::black(new_size));
+                internals.blank_with_size(new_size);
                 internals
                     .drawing_area
                     .set_size(new_size.width as _, new_size.height as _);
-                internals.drawing_area.queue_draw();
                 internals
                     .app_window
                     .resize(new_size.width as _, new_size.height as _);
@@ -1043,6 +1080,15 @@ impl WindowInternals {
         self.image.borrow().size()
     }
 
+    fn blank(&self) {
+        self.blank_with_size(self.size());
+    }
+
+    fn blank_with_size(&self, size: Size) {
+        self.image.replace(Image::black(size));
+        self.drawing_area.queue_draw();
+    }
+
     fn draw(&self, draw: &Draw, window_origin: Point) {
         let window_area = Rect::new(window_origin, self.size());
         if let Some(isect) = draw.area().intersection(&window_area) {
@@ -1102,8 +1148,7 @@ impl SingleDisplayWindow {
         internals.app_window.connect_map(
             glib::clone!(@strong workspace, @strong internals, @strong needs_dm_on_map => move |_| {
                 let size = internals.size();
-                internals.image.replace(Image::black(size));
-                internals.drawing_area.queue_draw();
+                internals.blank();
 
                 if needs_dm_on_map.take() {
                     let display = Display {
@@ -1222,8 +1267,7 @@ impl MultiDisplayWindow {
                 #[cfg(not(target_os = "macos"))]
                 internals.app_window.set_decorated(false);
                 internals.app_window.fullscreen();
-                internals.image.replace(Image::black(area.size));
-                internals.drawing_area.queue_draw();
+                internals.blank();
                 internals.drawing_area.grab_focus();
             }));
         internals.app_window.connect_configure_event(

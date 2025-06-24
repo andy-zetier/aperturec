@@ -177,11 +177,12 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             // Try to set the backend resolution
                             //
                             let displays = match self.state.backend.set_displays(client_displays.to_vec()).await {
-                                Ok(success) if !success.changed => {
-                                    debug!(?client_displays, "Requested display configuration matches current, ignoring");
-                                    continue;
+                                Ok(success) => {
+                                    if !success.changed {
+                                        debug!(?client_displays, "Requested display configuration matches current, refreshing");
+                                    }
+                                    success.displays
                                 }
-                                Ok(success) => success.displays,
                                 Err(displays) => {
                                     warn!("Failed to set displays, repartitioning");
                                     displays
