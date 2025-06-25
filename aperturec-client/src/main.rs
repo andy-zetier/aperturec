@@ -1,4 +1,4 @@
-use aperturec_client::{client, gtk3};
+use aperturec_client::{client, gtk3, metrics};
 use aperturec_graphics::prelude::*;
 use aperturec_utils::{args, warn_early};
 
@@ -222,6 +222,7 @@ fn main() -> Result<()> {
             .with_exporters(metrics_exporters)
             .init()
             .expect("Failed to setup metrics");
+        metrics::setup_client_metrics();
     }
 
     client::run_client(config.clone())?;

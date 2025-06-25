@@ -5,6 +5,7 @@ use crate::client::{
 };
 use crate::frame::Draw;
 use crate::gtk3::image::Image;
+use crate::metrics::RefreshCount;
 
 use aperturec_graphics::{display::*, euclid_collections::*, prelude::*};
 
@@ -525,14 +526,14 @@ impl GtkUi {
                             }
                         };
 
-                        workspace
+                        match workspace
                             .event_tx
-                            .send(EventMessage::DisplayEventMessage(
-                                DisplayEventMessage { displays },
-                            ))
-                            .unwrap_or_else(|err| {
-                                warn!(%err, "GTK failed to tx DisplayEventMessage")
-                            });
+                            .send(EventMessage::DisplayEventMessage(DisplayEventMessage { displays }))
+                            {
+                                Ok(_) => RefreshCount::inc(),
+                                Err(err) => warn!(%err, "GTK failed to tx DisplayEventMessage"),
+                            }
+
                     }
                 }
                 glib::source::Continue(true)

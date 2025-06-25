@@ -1,5 +1,5 @@
 use crate::backend::{Backend, Event, SwapableBackend};
-use crate::metrics::CaptureLatency;
+use crate::metrics::{CaptureLatency, RefreshCount};
 use crate::task::encoder;
 use crate::task::frame_sync::{NewDisplayConfig, SubframeBuffer};
 
@@ -182,6 +182,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                                 Ok(success) => {
                                     if !success.changed {
                                         debug!(?client_displays, "Requested display configuration matches current, refreshing");
+                                        RefreshCount::inc();
                                     }
                                     success.displays
                                 }

@@ -735,7 +735,6 @@ impl Backend for X {
         let mut changed = false;
 
         if requested_displays.len() != self.max_display_count {
-            changed = true;
             if requested_displays.len() > self.max_display_count {
                 warn!(
                     "Received {} display requests, truncating to {}",
@@ -1174,7 +1173,7 @@ impl X {
             return Ok(SetDisplaySuccess::NoChange);
         }
 
-        // We assume that the scren size has been appropriately set when `set_display` is called
+        // We assume that the screen size has been appropriately set when `set_display` is called
         // from `set_displays` and therefore we do not have to call `resize_screen_if` again
 
         let (mode, x, y, outputs) = if display.is_enabled {

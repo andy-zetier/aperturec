@@ -189,6 +189,7 @@ dependencies = [
  "keycode",
  "ndarray",
  "openssl",
+ "paste",
  "range-set-blaze",
  "regex",
  "rpassword",

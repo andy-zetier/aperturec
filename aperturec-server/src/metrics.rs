@@ -15,6 +15,7 @@ create_metric!(BackendEvent);
 create_metric!(ClientActivityEvent);
 create_metric!(DisplayWidth);
 create_metric!(DisplayHeight);
+create_metric!(RefreshCount);
 
 create_histogram_metric_with_buckets!(
     TimeInCompression,
@@ -69,4 +70,5 @@ pub fn setup_server_metrics() {
     CaptureLatency::register();
     TrackingBufferUpdateTime::register();
     MediaChannelSendLatency::register();
+    RefreshCount::register();
 }
