@@ -23,6 +23,12 @@ create_histogram_metric_with_buckets!(
 );
 
 create_histogram_metric_with_buckets!(
+    FrameSyncPermitWaitLatency,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
+);
+
+create_histogram_metric_with_buckets!(
     TrackingBufferDamageRatio,
     "%",
     prometheus::linear_buckets(10., 10., 10).unwrap()
@@ -34,6 +40,7 @@ pub fn setup_server_metrics() {
     PixelsCompressed::register();
     TimeInCompression::register();
     FramesCut::register();
+    FrameSyncPermitWaitLatency::register();
     EncoderCount::register();
     TrackingBufferDisjointAreas::register();
     TrackingBufferUpdates::register();

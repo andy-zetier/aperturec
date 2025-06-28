@@ -1,6 +1,7 @@
 use crate::backend::Backend;
 use crate::metrics::{
-    FramesCut, TrackingBufferDamageRatio, TrackingBufferDisjointAreas, TrackingBufferUpdates,
+    FrameSyncPermitWaitLatency, FramesCut, TrackingBufferDamageRatio, TrackingBufferDisjointAreas,
+    TrackingBufferUpdates,
 };
 
 use aperturec_graphics::{display::*, prelude::*, rectangle_cover::diff_rectangle_cover};
@@ -11,6 +12,7 @@ use futures::{self, TryFutureExt, future};
 use ndarray::{AssignElem, prelude::*};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{self, JoinSet};
@@ -264,6 +266,7 @@ where
                                 }
                             };
 
+                            let permit_start = Instant::now();
                             let (permits, _) = future::try_join(
                                 future::try_join_all(
                                     txs_to_reserve.iter().cloned().map(|tx| tx.reserve_owned()),
@@ -272,6 +275,9 @@ where
                                 dh_fut,
                             )
                             .await?;
+                            FrameSyncPermitWaitLatency::observe(
+                                permit_start.elapsed().as_secs_f64() * 1000.0,
+                            );
 
                             if revoke_watch.has_changed().unwrap_or(false) {
                                 let _ = revoke_watch.borrow_and_update();
