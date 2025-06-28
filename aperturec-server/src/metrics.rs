@@ -7,7 +7,6 @@ create_histogram_metric_with_buckets!(
 );
 
 create_metric!(PixelsCompressed);
-create_metric!(TimeInCompression);
 create_metric!(FramesCut);
 create_metric!(EncoderCount);
 create_metric!(TrackingBufferDisjointAreas);
@@ -16,6 +15,12 @@ create_metric!(BackendEvent);
 create_metric!(ClientActivityEvent);
 create_metric!(DisplayWidth);
 create_metric!(DisplayHeight);
+
+create_histogram_metric_with_buckets!(
+    TimeInCompression,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
+);
 
 create_histogram_metric_with_buckets!(
     TrackingBufferDamageRatio,

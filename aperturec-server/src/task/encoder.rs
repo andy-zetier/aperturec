@@ -701,7 +701,7 @@ impl Transitionable<Running> for Task<Created> {
                                     let start = Instant::now();
                                     let data = self.state.compression_scheme.compress(pixels).await?;
                                     let end = Instant::now();
-                                    TimeInCompression::inc_by((end - start).as_secs_f64());
+                                    TimeInCompression::observe((end - start).as_secs_f64() * 1_000.0);
                                     PixelsCompressed::inc_by(size.area() as f64);
 
                                     let nbytes_produced = data.len();
