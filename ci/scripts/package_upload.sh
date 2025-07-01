@@ -33,6 +33,17 @@ for distro in "$BASE_DIR"/*; do
                         package_cloud push zetier/aperturec/"$distro_name"/"$release_name" "$package"
                     fi
                 done
+
+                # Loop through each client .deb/.rpm file
+                for package in "$release"/aperturec-client*.deb "$release"/aperturec-client*.rpm; do
+                    if [ -f "$package" ]; then
+                        counter=$((counter + 1))
+                        echo "Uploading $package to $distro_name/$release_name ..."
+
+                        # Upload the package
+                        package_cloud push zetier/aperturec-client/"$distro_name"/"$release_name" "$package"
+                    fi
+                done
             fi
         done
     fi
