@@ -1,7 +1,7 @@
 use crate::backend::Backend;
 use crate::metrics::{
     FrameSyncPermitWaitLatency, FramesCut, TrackingBufferDamageRatio, TrackingBufferDisjointAreas,
-    TrackingBufferUpdates,
+    TrackingBufferUpdateTime, TrackingBufferUpdates,
 };
 
 use aperturec_graphics::{display::*, prelude::*, rectangle_cover::diff_rectangle_cover};
@@ -452,6 +452,7 @@ where
         let pixmap = framebuffer_data.pixels.as_ndarray();
         let new = pixmap.slice(&fb_relative_area.as_slice());
 
+        let start = Instant::now();
         task::block_in_place(|| match self.damage {
             Damage::Full => {
                 new.assign_to(self.data.slice_mut(tb_relative_area.as_slice()));
@@ -476,6 +477,9 @@ where
                 );
             }
         });
+        TrackingBufferUpdateTime::observe(
+            Instant::now().duration_since(start).as_secs_f64() * 1000.0,
+        );
     }
 
     fn mark_stale(&mut self, stale: Box2D) {

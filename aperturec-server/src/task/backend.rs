@@ -1,4 +1,5 @@
 use crate::backend::{Backend, Event, SwapableBackend};
+use crate::metrics::CaptureLatency;
 use crate::task::encoder;
 use crate::task::frame_sync::{NewDisplayConfig, SubframeBuffer};
 
@@ -14,6 +15,7 @@ use futures::{FutureExt, StreamExt, stream};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -276,8 +278,12 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             bounding = bounding.union(&area);
                         }
                         if let Some(area) = display_extent.intersection(&bounding) {
+                            let start = Instant::now();
                             let pixels = match self.state.backend.capture_area(area).await {
-                                Ok(pixels) => pixels,
+                                Ok(pixels) => {
+                                    CaptureLatency::observe(Instant::now().duration_since(start).as_secs_f64() * 1000.0);
+                                    pixels
+                                },
                                 Err(e) => {
                                     warn!(error = ?e, ?area, "Failed to capture area");
                                     continue;

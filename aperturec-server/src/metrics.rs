@@ -29,9 +29,27 @@ create_histogram_metric_with_buckets!(
 );
 
 create_histogram_metric_with_buckets!(
+    CaptureLatency,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
+);
+
+create_histogram_metric_with_buckets!(
+    TrackingBufferUpdateTime,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
+);
+
+create_histogram_metric_with_buckets!(
     TrackingBufferDamageRatio,
     "%",
     prometheus::linear_buckets(10., 10., 10).unwrap()
+);
+
+create_histogram_metric_with_buckets!(
+    MediaChannelSendLatency,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
 );
 
 pub fn setup_server_metrics() {
@@ -48,4 +66,7 @@ pub fn setup_server_metrics() {
     ClientActivityEvent::register();
     DisplayWidth::register();
     DisplayHeight::register();
+    CaptureLatency::register();
+    TrackingBufferUpdateTime::register();
+    MediaChannelSendLatency::register();
 }
