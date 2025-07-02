@@ -5,36 +5,39 @@ use crate::process_utils::{self, DisplayableExitStatus};
 use aperturec_graphics::{display::*, geometry::*, prelude::*};
 use aperturec_protocol::event as em;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 use futures::{Future, Stream, StreamExt, TryFutureExt, future, stream};
 use ndarray::{AssignElem, prelude::*};
+use scan_fmt::scan_fmt;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt::{self, Debug, Formatter};
 use std::iter::Iterator;
+use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
+use std::ptr::{self, NonNull};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tokio::io::unix::AsyncFd;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader, unix::AsyncFd};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::*;
-use xcb::damage::{self};
-use xcb::x::{self};
 use xcb::{
     BaseEvent, CookieWithReplyChecked, Request, RequestWithReply, RequestWithoutReply, Xid, XidNew,
-    composite, randr, xfixes, xtest,
+    composite, damage, randr, x, xfixes, xtest,
 };
+use zerocopy::byteorder::{BE, U16, U32};
 
 const CHILD_STARTUP_WAIT_TIME_MS: Duration = Duration::from_millis(1000);
 
+const XPIXMAP_DEPTH: u32 = 24;
+const XWD_FILE_VERSION: u32 = 7;
 pub const X_BYTES_PER_PIXEL: usize = 4;
 
 fn u8_for_button(button: &em::Button) -> u8 {
@@ -60,6 +63,7 @@ pub struct X {
     max_display_count: usize,
     max_height: usize,
     max_width: usize,
+    framebuffer: Arc<XFrameBuffer>,
     root_window: x::Window,
     root_process: Option<Child>,
     xvfb_process: Child,
@@ -95,8 +99,131 @@ impl From<xfixes::GetCursorImageReply> for CursorImage {
     }
 }
 
-// B-G-R-A format
-#[derive(Clone, Copy)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct XWDFileHeader {
+    header_size: U32<BE>,
+    file_version: U32<BE>,
+    pixmap_format: U32<BE>,
+    pixmap_depth: U32<BE>,
+    pixmap_width: U32<BE>,
+    pixmap_height: U32<BE>,
+    xoffset: U32<BE>,
+    byte_order: U32<BE>,
+    bitmap_unit: U32<BE>,
+    bitmap_bit_order: U32<BE>,
+    bitmap_pad: U32<BE>,
+    bits_per_pixel: U32<BE>,
+    bytes_per_line: U32<BE>,
+    visual_class: U32<BE>,
+    red_mask: U32<BE>,
+    green_mask: U32<BE>,
+    blue_mask: U32<BE>,
+    bits_per_rgb: U32<BE>,
+    colormap_entries: U32<BE>,
+    ncolors: U32<BE>,
+    window_width: U32<BE>,
+    window_height: U32<BE>,
+    window_x: U32<BE>,
+    window_y: U32<BE>,
+    window_bdrwidth: U32<BE>,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct XWDColor {
+    pixel: U32<BE>,
+    red: U16<BE>,
+    green: U16<BE>,
+    blue: U16<BE>,
+    flags: u8,
+    pad: u8,
+}
+
+#[derive(Debug)]
+struct XFrameBuffer {
+    shmaddr: NonNull<u8>,
+}
+
+/// SAFETY: XFrameBuffer owns a raw pointer to a shared memory segment that is mapped read-only.
+/// The underlying memory region is never mutated by XFrameBuffer, so concurrent access from multiple
+/// threads is safe. Detaching the segment in Drop is also thread-safe.
+/// No interior mutability or synchronization primitives are required.
+unsafe impl Send for XFrameBuffer {}
+unsafe impl Sync for XFrameBuffer {}
+
+impl XFrameBuffer {
+    fn header(&self) -> &XWDFileHeader {
+        // SAFETY: The shared memory segment begins with a valid XWDFileHeader at its start.
+        unsafe { &*(self.shmaddr.as_ptr() as *const XWDFileHeader) }
+    }
+
+    fn color_offset(&self) -> usize {
+        self.header().header_size.get() as usize
+            + self.header().ncolors.get() as usize * mem::size_of::<XWDColor>()
+    }
+
+    fn new(shmid: i32) -> Result<Self> {
+        // SAFETY: Attaching to the shared memory segment shmid returns a valid pointer or error.
+        let shmaddr = unsafe { libc::shmat(shmid, ptr::null_mut(), libc::SHM_RDONLY) };
+        if shmaddr == (-1isize) as *mut libc::c_void {
+            bail!("shmat failed");
+        }
+        let shmaddr = NonNull::new(shmaddr).ok_or(anyhow!("null shmaddr"))?;
+
+        let mut ds = mem::MaybeUninit::zeroed();
+        // SAFETY: shmctl with IPC_STAT initializes the ds structure pointed to by ds.as_mut_ptr().
+        if unsafe { libc::shmctl(shmid, libc::IPC_STAT, ds.as_mut_ptr()) } != 0 {
+            // SAFETY: Detach the shared memory on error cleanup; shmaddr is from successful shmat.
+            unsafe { libc::shmdt(shmaddr.as_ptr() as *const _) };
+            bail!("shmctl IPC_STAT failed");
+        }
+        // SAFETY: ds has been initialized by the successful shmctl call above.
+        let ds = unsafe { ds.assume_init() };
+
+        // SAFETY: The shared memory region mapped by shmaddr is at least header_size bytes long.
+        let header = unsafe { &*(shmaddr.as_ptr() as *const XWDFileHeader) };
+        debug!(xwd_header=?header);
+        ensure!(
+            header.file_version == XWD_FILE_VERSION,
+            "unknown XWD file version: {}",
+            header.file_version
+        );
+        ensure!(
+            ds.shm_segsz as u32
+                >= (header.header_size + header.window_height * header.bytes_per_line).get(),
+            "shmem segment too small"
+        );
+        ensure!(
+            header.pixmap_depth == XPIXMAP_DEPTH,
+            "invalid X pixmap depth: {}",
+            header.pixmap_depth,
+        );
+        ensure!(
+            header.bits_per_pixel == (X_BYTES_PER_PIXEL * 8) as u32,
+            "invalid bits per pixel: {}",
+            header.bits_per_pixel
+        );
+
+        Ok(XFrameBuffer {
+            // SAFETY: shmaddr is non-null and correctly aligned for u8 pointer, safe to wrap.
+            shmaddr: shmaddr.cast(),
+        })
+    }
+}
+
+impl Drop for XFrameBuffer {
+    fn drop(&mut self) {
+        // SAFETY: Detaching the shared memory pointer previously attached with shmat.
+        unsafe {
+            libc::shmdt(self.shmaddr.as_ptr() as *const _);
+        }
+    }
+}
+
+/// B-G-R-A format
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
 pub struct XPixel([u8; X_BYTES_PER_PIXEL]);
 
 impl Deref for XPixel {
@@ -126,15 +253,34 @@ impl AssignElem<XPixel> for &mut Pixel24 {
 }
 
 pub struct XPixelMap {
-    reply: x::GetImageReply,
-    size: Size,
+    framebuffer: Arc<XFrameBuffer>,
+    area: Rect,
 }
 
 impl XPixelMap {
-    fn new(area: &Rect, reply: x::GetImageReply) -> Self {
-        XPixelMap {
-            reply,
-            size: area.size,
+    fn new(framebuffer: Arc<XFrameBuffer>, area: Rect) -> Self {
+        XPixelMap { framebuffer, area }
+    }
+}
+
+impl PixelMap for XPixelMap {
+    type Pixel = XPixel;
+
+    fn as_ndarray(&self) -> ArrayView2<Self::Pixel> {
+        let xwd_header = self.framebuffer.header();
+        let pixel_offset = self.framebuffer.color_offset()
+            + self.area.origin.y * xwd_header.bytes_per_line.get() as usize
+            + self.area.origin.x * mem::size_of::<XPixel>();
+        let base = self.framebuffer.shmaddr.as_ptr();
+        // SAFETY: `base` is valid for the entire framebuffer, and `pixel_offset` is in bounds
+        let pixel_ptr = unsafe { base.add(pixel_offset) as *const XPixel };
+        let row_stride = xwd_header.bytes_per_line.get() as usize / mem::size_of::<XPixel>();
+        // SAFETY: The shape and strides correspond exactly to a contiguous region of XPixel values.
+        unsafe {
+            ArrayView2::from_shape_ptr(
+                (self.area.size.height, self.area.size.width).strides((row_stride, 1)),
+                pixel_ptr,
+            )
         }
     }
 }
@@ -143,21 +289,6 @@ impl From<&xfixes::CursorNotifyEvent> for CursorChange {
     fn from(cn: &xfixes::CursorNotifyEvent) -> Self {
         CursorChange {
             serial: cn.cursor_serial(),
-        }
-    }
-}
-
-impl PixelMap for XPixelMap {
-    type Pixel = XPixel;
-
-    fn as_ndarray(&self) -> ArrayView2<Self::Pixel> {
-        // SAFETY: self.reply.data() returns a slice with a lifetime of self and the
-        // returned ArrayView is guaranteed only live as long as self is borrowed
-        unsafe {
-            ArrayView2::from_shape_ptr(
-                (self.size.height, self.size.width),
-                self.reply.data() as *const [u8] as *const XPixel,
-            )
         }
     }
 }
@@ -201,19 +332,7 @@ impl Backend for X {
     }
 
     async fn capture_area(&self, area: Rect) -> Result<Self::PixelMap> {
-        let get_image_reply = self
-            .connection
-            .checked_request_with_reply(x::GetImage {
-                format: x::ImageFormat::ZPixmap,
-                drawable: x::Drawable::Window(self.root_window),
-                x: area.origin.x as i16,
-                y: area.origin.y as i16,
-                width: area.size.width as u16,
-                height: area.size.height as u16,
-                plane_mask: u32::MAX,
-            })
-            .await?;
-        Ok(XPixelMap::new(&area, get_image_reply))
+        Ok(XPixelMap::new(self.framebuffer.clone(), area))
     }
 
     async fn damage_stream(&self) -> Result<impl Stream<Item = Rect> + Send + Unpin + 'static> {
@@ -306,11 +425,12 @@ impl Backend for X {
         xvfb_cmd
             .arg("-screen")
             .arg("0")
-            .arg(format!("{}x{}x{}", max_width, max_height, 24))
+            .arg(format!("{}x{}x{}", max_width, max_height, XPIXMAP_DEPTH))
             .arg("-displayfd")
             .arg("1") // stdout
+            .arg("-shmem")
             .stdout(Stdio::piped())
-            .stderr(process_utils::StderrTracer::new(Level::DEBUG))
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
 
         if xvfb_has_crtc_size {
@@ -339,7 +459,24 @@ impl Backend for X {
         let mut display_name = String::new();
         xvfb_stdout.read_line(&mut display_name).await?;
         display_name = format!(":{}", display_name.trim().trim_end());
-        trace!("Started X server with name \"{}\"", display_name);
+
+        let mut xvfb_stderr = BufReader::new(
+            xvfb_process
+                .stderr
+                .as_mut()
+                .ok_or(anyhow!("No Xvfb stderr"))?,
+        );
+        let shmem_id = loop {
+            let mut line = String::new();
+            xvfb_stderr
+                .read_line(&mut line)
+                .await
+                .map_err(|e| anyhow!("Failed reading Xvfb stderr: {}", e))?;
+            if let Ok((_, id)) = scan_fmt!(line.trim(), "screen {d} shmid {d}", usize, usize) {
+                break id;
+            }
+        };
+        trace!(server = %display_name, %shmem_id, "Started X server");
 
         trace!("Creating new XConnection");
         let connection = XConnection::new(&*display_name)?;
@@ -358,6 +495,8 @@ impl Backend for X {
         X::setup_xtest_extension(&connection).await?;
         trace!("Setting up xfixes monitor");
         X::setup_xfixes_monitor(&connection, &root_window).await?;
+        trace!("Hiding cursor");
+        X::hide_cursor(&connection, &root_window).await?;
 
         let root_process = match root_process_cmd {
             None => {
@@ -369,6 +508,8 @@ impl Backend for X {
 
         let (displays, default_mode_id) = X::setup_displays(&connection, &root_window).await?;
 
+        let framebuffer = Arc::new(XFrameBuffer::new(shmem_id as i32)?);
+
         let mut x = X {
             connection,
             default_mode_id,
@@ -377,6 +518,7 @@ impl Backend for X {
             max_display_count,
             max_height,
             max_width,
+            framebuffer,
             root_window,
             root_process,
             xvfb_process,
@@ -846,6 +988,12 @@ impl X {
             .await
     }
 
+    async fn hide_cursor(connection: &XConnection, window: &x::Window) -> Result<()> {
+        connection
+            .checked_void_request(xfixes::HideCursor { window: *window })
+            .await
+    }
+
     async fn setup_displays(
         connection: &XConnection,
         window: &x::Window,
@@ -1030,7 +1178,7 @@ impl X {
         // from `set_displays` and therefore we do not have to call `resize_screen_if` again
 
         let (mode, x, y, outputs) = if display.is_enabled {
-            anyhow::ensure!(
+            ensure!(
                 Rect::from_size(Size::new(self.max_width, self.max_height))
                     .contains_rect(&display.area)
                     && display.area.size.width >= Self::MIN_WIDTH
@@ -1472,5 +1620,14 @@ mod test {
         for d in &result.displays {
             assert!(!d.is_enabled);
         }
+    }
+
+    #[test]
+    fn parse_shmem_id_line() {
+        let s = "screen 0 shmid 123";
+        let (screen, id) =
+            scan_fmt!(&s, "screen {d} shmid {d}", usize, usize).expect("scan_fmt failed");
+        assert_eq!(screen, 0);
+        assert_eq!(id, 123);
     }
 }

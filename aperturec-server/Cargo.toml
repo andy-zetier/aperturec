@@ -34,6 +34,7 @@ ndarray = "0.16"
 nix = { version = "0.29", features = ["signal"] }
 os_pipe = "1.2"
 rand = { version = "0.8", features = ["std", "std_rng"] }
+scan_fmt = "0.2"
 secrecy = "0.10"
 shlex = "1.2"
 tokio = { version = "1.38", features = ["full", "rt", "signal", "tracing"] }
@@ -45,6 +46,7 @@ trait-variant = "0.1"
 which = "7.0"
 xcb = { version = "1.5.0", features = ["composite", "damage", "randr", "xtest", "xfixes" ] }
 regex = "1.11.1"
+zerocopy = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies.aperturec-metrics]
 path = "../aperturec-metrics/"
