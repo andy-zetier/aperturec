@@ -1,3 +1,4 @@
+use crate::metrics::{RateLimitBlockedBytes, RateLimitMbps, RateLimitTotalBytes};
 use aperturec_channel::gate::*;
 use aperturec_state_machine::*;
 
@@ -80,6 +81,11 @@ impl Configuration {
             (None, client_max) => Some(client_max),
         };
 
+        match mbps_max {
+            Some(rate_limit) => RateLimitMbps::update(rate_limit as f64),
+            None => RateLimitMbps::update(f64::INFINITY),
+        }
+
         Self { mbps_max }
     }
 }
@@ -106,10 +112,13 @@ impl TokenBucket {
     {
         let count = count.into();
 
+        RateLimitTotalBytes::inc_by(count as f64);
+
         match self.bucket.try_acquire_many(count as u32) {
             Ok(permit) => permit,
             Err(TryAcquireError::Closed) => panic!("Failed to acquire_many!"),
             Err(TryAcquireError::NoPermits) => {
+                RateLimitBlockedBytes::inc_by(count as f64);
                 trace!("{} blocking acquire of {} tokens!", self.name, count);
                 self.bucket
                     .acquire_many(count as u32)

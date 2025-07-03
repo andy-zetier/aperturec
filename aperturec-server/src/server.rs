@@ -1,5 +1,5 @@
 use crate::backend::{Backend, LockState, SwapableBackend};
-use crate::metrics::{EncoderCount, RefreshCount};
+use crate::metrics::{EncoderCount, clear_session_metrics};
 use crate::process_utils::DisplayableExitStatus;
 use crate::session;
 use crate::task::{
@@ -875,7 +875,6 @@ where
                 biased;
                 _ = ct.cancelled(), if !cleanup_started => {
                     debug!("session cancelled");
-                    RefreshCount::clear();
                     if let Some(gb_reason) = gb_reason {
                         cc_tx
                             .send(cm::ServerGoodbye::from(gb_reason).into())
@@ -954,6 +953,9 @@ where
                 None
             }
         };
+
+        clear_session_metrics();
+
         Server {
             state: SessionTerminated {
                 backend: backend_out,
