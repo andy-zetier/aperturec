@@ -160,7 +160,9 @@ create-images:deploy-manifest:
     IMAGE_VERSION: "$CI_DEFAULT_BRANCH"
     IMAGE_NAME: ubuntu-22
     IMAGE: "$CI_REGISTRY_IMAGE/$IMAGE_VERSION-$IMAGE_TARGET-$IMAGE_NAME:latest"
-  image: $IMAGE
+  image:
+    name: $IMAGE
+    pull_policy: always
   rules:
     - if: $CI_COMMIT_BRANCH
       changes:
