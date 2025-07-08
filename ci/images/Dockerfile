@@ -63,7 +63,8 @@ RUN make
 
 FROM --platform=${ARCHITECTURE} fips-capable-image as client-image-windows
 COPY --from=pe-util-build-windows /root/pe-util/build/peldd /usr/bin/peldd
-RUN $DNF_INSTALL mingw64-gcc mingw64-gcc-c++ mingw64-freetype mingw64-cairo mingw64-harfbuzz mingw64-pango mingw64-poppler mingw64-gtk3 mingw64-winpthreads-static mingw64-glib2-static mingw64-openssl boost zip jq nasm bindgen && $DNF_CLEAN
+RUN $DNF_INSTALL mingw64-gcc mingw64-gcc-c++ mingw64-freetype mingw64-cairo mingw64-harfbuzz mingw64-pango mingw64-poppler mingw64-gtk3 mingw64-winpthreads-static mingw64-glib2-static mingw64-openssl boost zip jq nasm bindgen util-linux msitools && $DNF_CLEAN
+
 ENV PKG_CONFIG_ALLOW_CROSS=1
 ENV PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/sys-root/mingw/lib/pkgconfig/
 ENV GTK_INSTALL_PATH=/usr/x86_64-w64-mingw32/sys-root/mingw/

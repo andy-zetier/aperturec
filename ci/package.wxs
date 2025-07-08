@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="ApertureC Client"
+           Language="1033" Version="$(var.Version)"
+           Manufacturer="Zetier Inc."
+           UpgradeCode="52BFF4AB-690B-4B22-A4DD-33C8B919C725">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"/>
+    <Media Id="1" Cabinet="cab1.cab" EmbedCab="yes" />
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="ApertureC Client"/>
+      </Directory>
+    </Directory>
+    <Feature Id="DefaultFeature" Level="1">
+      <ComponentGroupRef Id="ClientFiles"/>
+      <ComponentRef Id="RegisterApertureCProtocol"/>
+    </Feature>
+  </Product>
+  <Fragment>
+    <DirectoryRef Id="INSTALLFOLDER">
+        <Component Id="RegisterApertureCProtocol"
+                   Guid="D3E7F6A0-1234-4DEF-ABCD-1234567890AB"
+                   Win64="yes">
+          <RegistryKey Root="HKCR" Key="aperturec">
+            <RegistryValue Name=""   Type="string"
+              Value="URL:ApertureC Protocol" KeyPath="yes"/>
+            <RegistryValue Name="URL Protocol" Type="string" Value=""/>
+          </RegistryKey>
+          <RegistryKey Root="HKCR" Key="aperturec\shell\open\command">
+            <RegistryValue Name="" Type="string"
+              Value="&quot;[INSTALLFOLDER]aperturec-client.exe&quot; &quot;%1&quot;"/>
+          </RegistryKey>
+        </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

@@ -163,22 +163,27 @@ fn args_from_uri(uri: &str) -> Result<Args> {
 }
 
 fn main() -> Result<()> {
-    let args = match env::var("AC_URI") {
-        Ok(uri) => {
-            if env::args().count() > 1 {
-                if let Ok(args) = args_from_uri(&env::args().nth(1).unwrap()) {
-                    args
-                } else {
-                    warn_early!(
-                        "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
-                    );
-                    args_from_uri(&uri)?
-                }
-            } else {
-                args_from_uri(&uri)?
-            }
+    let args = if env::args().count() == 2 {
+        let arg1 = env::args().nth(1).unwrap();
+        if let Ok(parsed) = args_from_uri(&arg1) {
+            parsed
+        } else if let Ok(uri) = env::var("AC_URI") {
+            warn_early!(
+                "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
+            );
+            args_from_uri(&uri)?
+        } else {
+            Args::parse()
         }
-        Err(_) => Args::parse(),
+    } else if let Ok(uri) = env::var("AC_URI") {
+        if env::args().count() > 1 {
+            warn_early!(
+                "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
+            );
+        }
+        args_from_uri(&uri)?
+    } else {
+        Args::parse()
     };
 
     let (log_layer, _guard) = args.log.as_tracing_layer()?;

@@ -347,7 +347,9 @@ package:windows-client:
   needs:
     - job: cargo:check-build-windows-client
   artifacts:
-    paths: [aperturec-client-win.zip]
+    paths:
+      - aperturec-client-win.zip
+      - aperturec-client.msi
 
 package:create-deb:
   stage: package

@@ -1,6 +1,15 @@
 #!/bin/bash
 
-set -eux
+set -euxo pipefail
+
+# ==== derive product version from root Cargo.toml ====
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+ROOT_DIR=$(dirname "$(dirname "$SCRIPT_DIR")")
+version=$(
+  grep -m1 '^version *= *"' "$ROOT_DIR/Cargo.toml" \
+    | sed -E 's/.*version *= *"([^"]+)".*/\1/'
+)
+
 
 mkdir -p package
 cp aperturec-client.exe package
@@ -15,5 +24,22 @@ cp -r "$GTK_INSTALL_PATH/share/icons" package/share/icons
 
 find package -maxdepth 1 -type f -exec mingw-strip {} +
 
-(cd package && zip -qr ../aperturec-client-win.zip .)
+(
+  cd package
+
+  # zip up exe + DLLs
+  zip -qr ../aperturec-client-win.zip .
+
+  # generate file/directory fragment
+  find "$(pwd)/" -type f | wixl-heat \
+    -p "$(pwd)/" \
+    --var var.SourceDir \
+    --component-group ClientFiles \
+    --directory-ref INSTALLFOLDER \
+    --win64 > files.wxs
+
+  # compile MSI
+  wixl -v -D SourceDir="$(pwd)/" -D Win64=yes -D Version="$version" -a x64 -o ../aperturec-client.msi "${ROOT_DIR}/ci/package.wxs" files.wxs
+)
+
 rm -rf package
