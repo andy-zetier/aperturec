@@ -222,9 +222,7 @@ impl CsvExporter {
         }
 
         Err(last_error
-            .unwrap_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::Other, "Unknown error occurred")
-            })
+            .unwrap_or_else(|| std::io::Error::other("Unknown error occured"))
             .into())
     }
 }

@@ -249,13 +249,11 @@ where
                         let mut permits_revoked = false;
                         loop {
                             let txs_to_reserve = {
-                                let clones = txs
-                                    .lock()
+                                txs.lock()
                                     .expect("tx vector poisoned")
                                     .iter()
                                     .cloned()
-                                    .collect::<Vec<_>>();
-                                clones
+                                    .collect::<Vec<_>>()
                             };
 
                             let dh_fut = async {

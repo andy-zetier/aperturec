@@ -13,8 +13,8 @@ fn sampled_diff_image(
     b: impl PixelMap + Sync,
     sample_grid_size: usize,
 ) -> GrayImage {
-    let tiles_x = (a.as_ndarray().len_of(axis::X) + sample_grid_size - 1) / sample_grid_size;
-    let tiles_y = (a.as_ndarray().len_of(axis::Y) + sample_grid_size - 1) / sample_grid_size;
+    let tiles_x = a.as_ndarray().len_of(axis::X).div_ceil(sample_grid_size);
+    let tiles_y = a.as_ndarray().len_of(axis::Y).div_ceil(sample_grid_size);
     GrayImage::from_par_fn(tiles_x as u32, tiles_y as u32, |x, y| {
         let (min_x, min_y) = (x as usize * sample_grid_size, y as usize * sample_grid_size);
         let max_x = min(min_x + sample_grid_size, a.as_ndarray().len_of(axis::X));
