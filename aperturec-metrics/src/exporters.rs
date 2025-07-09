@@ -79,7 +79,7 @@ impl LogExporter {
     fn do_export(&mut self, results: &[Measurement]) -> Result<()> {
         let s = results
             .iter()
-            .map(|r| format!("[{}]", r))
+            .map(|r| format!("[{r}]"))
             .collect::<Vec<_>>()
             .join("");
         match self.log_level {
@@ -169,7 +169,7 @@ impl CsvExporter {
             })
             .collect::<Vec<_>>()
             .join(",");
-        writeln!(self.file.as_ref().unwrap(), "{},{}", timestamp, line).or_else(|e| {
+        writeln!(self.file.as_ref().unwrap(), "{timestamp},{line}").or_else(|e| {
             warn!("Failed to write metrics to '{}': {}", self.path, e);
             self.reopen_file()
         })?;
@@ -354,7 +354,7 @@ impl PushgatewayExporter {
         }
 
         if let Ok(host_name) = whoami::fallible::hostname() {
-            groupings.insert("id".to_owned(), format!("{}:{}", host_name, id));
+            groupings.insert("id".to_owned(), format!("{host_name}:{id}"));
         }
 
         Ok(Self {
@@ -403,7 +403,7 @@ impl PushgatewayExporter {
             &self
                 .groupings
                 .iter()
-                .map(|(k, v)| format!("{}/{}", k, v))
+                .map(|(k, v)| format!("{k}/{v}"))
                 .collect::<Vec<_>>()
                 .join("/")
         );
@@ -440,13 +440,13 @@ impl PrometheusExporter {
         const DEFAULT_ADDR: Ipv4Addr = Ipv4Addr::LOCALHOST;
 
         let bind_addr = match bind_addr.rsplit_once(':') {
-            None => format!("{}:{}", bind_addr, DEFAULT_PORT),
+            None => format!("{bind_addr}:{DEFAULT_PORT}"),
             Some((a, p)) => {
                 if a.is_empty() {
-                    format!("{}:{}", DEFAULT_ADDR, p)
+                    format!("{DEFAULT_ADDR}:{p}")
                 } else if p.parse::<u16>().is_err() {
                     // Presume ipv6 bind address with no port specified
-                    format!("{}:{}", bind_addr, DEFAULT_PORT)
+                    format!("{bind_addr}:{DEFAULT_PORT}")
                 } else {
                     bind_addr.to_string()
                 }
@@ -716,7 +716,7 @@ mod test {
         let measurements = generate_measurements();
 
         let mut pge =
-            PushgatewayExporter::new(format!("http://127.0.0.1:{}", port), JOB.to_string(), id)
+            PushgatewayExporter::new(format!("http://127.0.0.1:{port}"), JOB.to_string(), id)
                 .expect("Pushgateway Exporter");
 
         pge.register_measurements(&measurements).expect("register");
@@ -730,13 +730,13 @@ mod test {
         // Shutdown fake pushgateway
         is_running.store(false, Ordering::SeqCst);
 
-        let uri = format!("/metrics/job/{}/", JOB);
-        vec!["PUT", "DELETE"]
+        let uri = format!("/metrics/job/{JOB}/");
+        ["PUT", "DELETE"]
             .iter()
             .zip(vec![put_request, delete_request])
             .for_each(|(m, s)| {
                 let req = s.lock().expect("lock");
-                let expected = format!("{} {}", m, uri);
+                let expected = format!("{m} {uri}");
                 assert!(
                     req.starts_with(&expected),
                     "\"{:?}\"... != \"{}\"",
@@ -755,7 +755,7 @@ mod test {
             .flatten()
             .collect::<Vec<_>>()
         {
-            assert!(content.contains(&s), "\"{:?}\" ⊉ \"{:?}\"", content, s);
+            assert!(content.contains(&s), "\"{content:?}\" ⊉ \"{s:?}\"");
         }
     }
 
@@ -774,7 +774,7 @@ mod test {
             .unwrap()
             .request(
                 Method::GET,
-                Url::from_str(&format!("http://{}/bad_endpoint", URL)).unwrap(),
+                Url::from_str(&format!("http://{URL}/bad_endpoint")).unwrap(),
             )
             .send();
 
@@ -786,7 +786,7 @@ mod test {
             .unwrap()
             .request(
                 Method::GET,
-                Url::from_str(&format!("http://{}/metrics", URL)).unwrap(),
+                Url::from_str(&format!("http://{URL}/metrics")).unwrap(),
             )
             .send();
 
@@ -799,8 +799,7 @@ mod test {
             text.contains(
                 "# HELP ac_bars All bars available\n# TYPE ac_bars gauge\nac_bars 33.33333"
             ),
-            "\"{:?}\" ⊉ \"# HELP ac_bars ALL bars ...\"",
-            text
+            "\"{text:?}\" ⊉ \"# HELP ac_bars ALL bars ...\""
         );
     }
 }

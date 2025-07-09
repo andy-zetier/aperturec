@@ -537,7 +537,7 @@ impl Client {
                 "x86" => Architecture::X86,
                 "x86_64" => Architecture::X86,
                 "aarch64" => Architecture::Arm,
-                arch => panic!("Unsupported architcture {}", arch),
+                arch => panic!("Unsupported architcture {arch}"),
             })
             .cpu_id(sys.cpus()[0].brand().to_string())
             .number_of_cores(sys.cpus().len() as u64)
@@ -1003,8 +1003,8 @@ impl Client {
         debug!("Client Init sent, waiting for ServerInit...");
         let si = match client_cc_read.receive() {
             Ok(cm_s2c::Message::ServerInit(si)) => si,
-            Ok(cm_s2c::Message::ServerGoodbye(gb)) => panic!("Server sent goodbye: {:?}", gb),
-            Err(other) => panic!("Failed to read ServerInit: {:?}", other),
+            Ok(cm_s2c::Message::ServerGoodbye(gb)) => panic!("Server sent goodbye: {gb:?}"),
+            Err(other) => panic!("Failed to read ServerInit: {other:?}"),
         };
 
         debug!("{:#?}", si);
@@ -1157,7 +1157,7 @@ impl Client {
                                 ErrorKind::WouldBlock | ErrorKind::Interrupted => (),
                                 _ => {
                                     let _ = ui_tx
-                                        .send(UiMessage::Quit(format!("{:?}", ioe)));
+                                        .send(UiMessage::Quit(format!("{ioe:?}")));
                                     let _ = control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into());
                                     trace!("Sent ClientGoodbye: Terminating");
                                     error!("Fatal I/O error reading control message: {:?}", ioe);
@@ -1166,7 +1166,7 @@ impl Client {
                             },
                             Err(other) => {
                                 let _ = ui_tx
-                                    .send(UiMessage::Quit(format!("{:?}", other)));
+                                    .send(UiMessage::Quit(format!("{other:?}")));
                                 let _ = control_tx_tx.send(ClientGoodbye::new(
                                             client_id,
                                             ClientGoodbyeReason::Terminating.into(),
@@ -1189,7 +1189,7 @@ impl Client {
                         Ok(ControlMessage::Quit(quit_reason)) => {
                             debug!("Received quit message");
                             let _ = ui_tx
-                                .send(UiMessage::Quit(format!("{:?}", quit_reason)));
+                                .send(UiMessage::Quit(format!("{quit_reason:?}")));
                             control_tx_tx
                                 .send(quit_reason.to_client_goodbye(client_id).into())
                                 .unwrap_or_else(|error| warn!(%error, "Failed to send client goodbye to control channel"));
@@ -1375,7 +1375,7 @@ mod test {
             .auth_token(auth_token)
             .decoder_max(dec_max)
             .name(String::from("test_client"))
-            .server_addr(format!("127.0.0.1:{}", server_port))
+            .server_addr(format!("127.0.0.1:{server_port}"))
             .initial_display_mode(DisplayMode::Windowed { size })
             .build()
             .expect("Failed to build Configuration!")

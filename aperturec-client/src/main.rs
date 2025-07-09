@@ -22,12 +22,10 @@ fn parse_resolution(s: &str) -> Result<Size, String> {
     let Some((_, [width, height])) = re.captures(s).map(|c| c.extract()) else {
         return Err("Resolution must be in the form WIDTHxHEIGHT".to_string());
     };
-    let width = width
-        .parse()
-        .map_err(|w| format!("Invalid width: '{}'", w))?;
+    let width = width.parse().map_err(|w| format!("Invalid width: '{w}'"))?;
     let height = height
         .parse()
-        .map_err(|h| format!("Invalid height: '{}'", h))?;
+        .map_err(|h| format!("Invalid height: '{h}'"))?;
     Ok(Size::new(width, height))
 }
 
@@ -140,13 +138,13 @@ fn args_from_uri(uri: &str) -> Result<Args> {
         .ok_or(anyhow!("URI provides no host"))?
         .to_string();
     if let Some(port) = parsed_uri.port() {
-        host = format!("{}:{}", host, port);
+        host = format!("{host}:{port}");
     }
     let args = parsed_uri.query_pairs().flat_map(|(k, v)| {
         let k = if k.len() == 1 {
-            format!("-{}", k)
+            format!("-{k}")
         } else {
-            format!("--{}", k)
+            format!("--{k}")
         };
 
         if v.is_empty() {

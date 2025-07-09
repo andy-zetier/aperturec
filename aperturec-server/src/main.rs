@@ -92,13 +92,13 @@ impl FromStr for ScreenConfig {
         let re = regex::Regex::new(r"^(?:(\d+)x(\d+))?(?::(\d+))?$").unwrap();
         let caps = re
             .captures(s)
-            .ok_or_else(|| format!("Failed to parse '{}'", s))?;
+            .ok_or_else(|| format!("Failed to parse '{s}'"))?;
         let parse_or_default =
             |group: Option<regex::Match>, default: usize| -> Result<usize, String> {
                 group.map_or(Ok(default), |m| {
                     m.as_str()
                         .parse()
-                        .map_err(|_| format!("Invalid number in '{}'", s))
+                        .map_err(|_| format!("Invalid number in '{s}'"))
                 })
             };
 
@@ -132,8 +132,7 @@ impl FromStr for ScreenConfig {
             .find(|(_, v, min, max)| *v < *min || *v > *max)
         {
             return Err(format!(
-                "{} ({}) must be within the range [{},{}]",
-                name, value, min, max
+                "{name} ({value}) must be within the range [{min},{max}]"
             ));
         }
 
@@ -329,7 +328,7 @@ async fn main() -> Result<()> {
     if !handle.is_stopped() {
         if let Err(e) = res {
             error!(%e, "server exiting with error");
-            panic!("server error: {:#?}", e);
+            panic!("server error: {e:#?}");
         }
     }
     info!("ApertureC Server exiting");

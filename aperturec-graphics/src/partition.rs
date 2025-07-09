@@ -186,8 +186,7 @@ mod test {
             assert_eq!(
                 total_area,
                 resolution.width * resolution.height,
-                "Total area mismatch for resolution {:?}",
-                resolution
+                "Total area mismatch for resolution {resolution:?}"
             );
         }
 
@@ -214,8 +213,7 @@ mod test {
                 for (x, count) in row.iter().enumerate() {
                     assert_eq!(
                         *count, 1,
-                        "Pixel ({}, {}) was covered {} times (expected exactly once)",
-                        x, y, count
+                        "Pixel ({x}, {y}) was covered {count} times (expected exactly once)"
                     );
                 }
             }

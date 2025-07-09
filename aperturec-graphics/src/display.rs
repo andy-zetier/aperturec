@@ -212,8 +212,7 @@ mod test {
                     assert_eq!(
                         result.unwrap(),
                         expected_size,
-                        "{}: Display extent size mismatch",
-                        desc
+                        "{desc}: Display extent size mismatch"
                     );
                 }
                 Err(expected_err) => {
@@ -227,8 +226,7 @@ mod test {
                     assert_eq!(
                         result.unwrap_err(),
                         expected_err,
-                        "{}: Error message mismatch",
-                        desc
+                        "{desc}: Error message mismatch"
                     );
                 }
             }

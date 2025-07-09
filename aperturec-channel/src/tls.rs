@@ -246,7 +246,7 @@ pub mod test_material {
         }
     }
 
-    pub static RAW: Lazy<Material> = Lazy::new(|| Material::ec_self_signed_localhost_only());
+    pub static RAW: Lazy<Material> = Lazy::new(Material::ec_self_signed_localhost_only);
     pub static DER: Lazy<DerMaterial> = Lazy::new(|| RAW.clone().try_into().expect("DER"));
     pub static PEM: Lazy<PemMaterial> = Lazy::new(|| RAW.clone().try_into().expect("PEM"));
 }

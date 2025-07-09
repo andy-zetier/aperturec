@@ -118,11 +118,11 @@ impl DisplayableExitStatus for ExitStatus {
     fn display(&self) -> String {
         match self.code() {
             Some(0) => "Success".into(),
-            Some(code) => format!("Non-zero exit: {}", code),
+            Some(code) => format!("Non-zero exit: {code}"),
             None => {
                 if let Some(sig) = self.signal() {
                     if let Ok(sig) = nix::sys::signal::Signal::try_from(sig) {
-                        format!("Terminated by signal {}", sig)
+                        format!("Terminated by signal {sig}")
                     } else {
                         "Terminated by unknown signal".into()
                     }
@@ -138,7 +138,7 @@ impl<E: fmt::Display> DisplayableExitStatus for Result<ExitStatus, E> {
     fn display(&self) -> String {
         match self {
             Ok(es) => es.display(),
-            Err(error) => format!("Failed retrieving status: {}", error),
+            Err(error) => format!("Failed retrieving status: {error}"),
         }
     }
 }

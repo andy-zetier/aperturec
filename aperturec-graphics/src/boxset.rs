@@ -248,7 +248,7 @@ mod test {
         set.add(b1);
         set.add(b2);
         set.add(b3);
-        let mut boxes: Vec<Box2D> = set.iter().map(|b| *b).collect();
+        let mut boxes: Vec<Box2D> = set.iter().copied().collect();
         boxes.sort_by_key(|b| b.min.x);
         boxes.sort_by_key(|b| b.min.y);
         boxes.sort_by_key(|b| b.max.x);

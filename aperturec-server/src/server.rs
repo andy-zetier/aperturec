@@ -1248,7 +1248,7 @@ mod test {
 
         let dc = dc
             .display_decoder_infos
-            .get(0)
+            .first()
             .expect("missing DisplayDecoderInfo 0");
 
         info!(?dc.decoder_areas);
@@ -1256,7 +1256,7 @@ mod test {
         assert_eq!(dc.decoder_areas.len(), 3);
         assert_eq!(
             dc.decoder_areas
-                .get(0)
+                .first()
                 .expect("area 0")
                 .dimension
                 .as_ref()
@@ -1286,7 +1286,7 @@ mod test {
         );
         assert_eq!(
             dc.decoder_areas
-                .get(0)
+                .first()
                 .expect("area 0")
                 .dimension
                 .as_ref()
@@ -1316,7 +1316,7 @@ mod test {
         );
         assert_eq!(
             dc.decoder_areas
-                .get(0)
+                .first()
                 .expect("area 0")
                 .location
                 .as_ref()
@@ -1346,7 +1346,7 @@ mod test {
         );
         assert_eq!(
             dc.decoder_areas
-                .get(0)
+                .first()
                 .expect("area 0")
                 .location
                 .as_ref()

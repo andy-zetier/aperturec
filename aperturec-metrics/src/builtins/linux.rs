@@ -150,7 +150,7 @@ mod test {
         let cpu1 = v[0].value.unwrap();
 
         // CPU usage increases under heavy load
-        assert!(cpu0 < cpu1, "{} < {}", cpu0, cpu1);
+        assert!(cpu0 < cpu1, "{cpu0} < {cpu1}");
     }
 
     #[test]

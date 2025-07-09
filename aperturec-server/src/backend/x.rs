@@ -416,7 +416,7 @@ impl Backend for X {
         xvfb_cmd
             .arg("-screen")
             .arg("0")
-            .arg(format!("{}x{}x{}", max_width, max_height, XPIXMAP_DEPTH))
+            .arg(format!("{max_width}x{max_height}x{XPIXMAP_DEPTH}"))
             .arg("-displayfd")
             .arg("1") // stdout
             .arg("-shmem")
@@ -1185,7 +1185,7 @@ impl X {
                 display,
             );
 
-            let name = format!("{}x{}", width, height);
+            let name = format!("{width}x{height}");
 
             let mode = if let Some(mode) = self.find_mode_by_name(&name).await? {
                 mode
@@ -1519,7 +1519,7 @@ mod test {
                 .expect("resize screen");
             x.set_display(0, &display)
                 .await
-                .unwrap_or_else(|err| panic!("set display to {:?}: {}", display, err));
+                .unwrap_or_else(|err| panic!("set display to {display:?}: {err}"));
             assert_eq!(display, x.get_display(0).await.expect("get display"));
         }
 
@@ -1600,7 +1600,7 @@ mod test {
         let mut result = x
             .set_displays(displays.clone())
             .await
-            .unwrap_or_else(|_| panic!("set displays {:?} failed", displays));
+            .unwrap_or_else(|_| panic!("set displays {displays:?} failed"));
 
         // Ensure resulting displays are expanded to max_display_count
         assert!(result.displays.len() == x.max_display_count);
