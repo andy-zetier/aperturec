@@ -49,7 +49,7 @@ impl Distribution<DamageShape> for Standard {
     }
 }
 
-pub fn generate_updates(curr: &Pixel24Map, num_areas: usize) -> Vec<SubframeBuffer<Pixel24Map>> {
+pub fn generate_updates(curr: &Pixel32Map, num_areas: usize) -> Vec<SubframeBuffer<Pixel32Map>> {
     let mut rng = rand::thread_rng();
     let total_area = Size::new(
         curr.as_ndarray().len_of(axis::X),
@@ -71,10 +71,11 @@ pub fn generate_updates(curr: &Pixel24Map, num_areas: usize) -> Vec<SubframeBuff
             let area = Rect::new(origin, size).to_box2d();
 
             let curr = curr.as_ndarray().slice(area.as_slice()).to_owned();
-            let mut new = Array2::from_shape_fn(area.as_shape(), |_| Pixel24 {
+            let mut new = Array2::from_shape_fn(area.as_shape(), |_| Pixel32 {
                 red: random(),
                 blue: random(),
                 green: random(),
+                alpha: u8::MAX,
             });
 
             let damaged_width = rng.gen_range(0..=area.width());

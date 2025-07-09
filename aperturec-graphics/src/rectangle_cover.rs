@@ -9,7 +9,7 @@ use std::cmp::{max, min};
 use std::collections::BTreeMap;
 
 fn sampled_diff_image(
-    a: impl PixelMap<Pixel = Pixel24> + Sync,
+    a: impl PixelMap<Pixel = Pixel32> + Sync,
     b: impl PixelMap + Sync,
     sample_grid_size: usize,
 ) -> GrayImage {
@@ -96,7 +96,7 @@ fn region_bounds(labeled_regions: ArrayView2<u32>) -> BTreeMap<u32, Box2D> {
 }
 
 pub fn diff_rectangle_cover(
-    a: impl PixelMap<Pixel = Pixel24> + Sync,
+    a: impl PixelMap<Pixel = Pixel32> + Sync,
     b: impl PixelMap + Sync,
 ) -> BoxSet {
     const SAMPLE_GRID_SIZE: usize = 64;
@@ -140,10 +140,11 @@ mod test {
         let size = Size::new(1920, 1080);
         let orig = Array2::from_elem(
             size.as_shape(),
-            Pixel24 {
+            Pixel32 {
                 red: u8::MAX,
                 green: u8::MAX,
                 blue: u8::MAX,
+                alpha: u8::MAX,
             },
         );
         let new = orig.clone();
@@ -156,18 +157,20 @@ mod test {
         let size = Size::new(1920, 1080);
         let orig = Array2::from_elem(
             size.as_shape(),
-            Pixel24 {
+            Pixel32 {
                 red: u8::MAX,
                 green: 0,
                 blue: 0,
+                alpha: u8::MAX,
             },
         );
         let new = Array2::from_elem(
             size.as_shape(),
-            Pixel24 {
+            Pixel32 {
                 red: 0,
                 green: u8::MAX,
                 blue: 0,
+                alpha: u8::MAX,
             },
         );
         let mut diff = diff_rectangle_cover(orig.view(), new.view());
@@ -180,22 +183,25 @@ mod test {
         let size = Size::new(1920, 1080);
         let orig = Array2::from_elem(
             size.as_shape(),
-            Pixel24 {
+            Pixel32 {
                 red: u8::MAX,
                 green: 0,
                 blue: 0,
+                alpha: u8::MAX,
             },
         );
         let mut new = orig.clone();
-        new.slice_mut(s![0..100, 0..100]).assign(&arr0(Pixel24 {
+        new.slice_mut(s![0..100, 0..100]).assign(&arr0(Pixel32 {
             red: 0,
             green: 0,
             blue: 0,
+            alpha: u8::MAX,
         }));
-        new.slice_mut(s![200..300, 200..300]).assign(&arr0(Pixel24 {
+        new.slice_mut(s![200..300, 200..300]).assign(&arr0(Pixel32 {
             red: 0,
             green: 0,
             blue: 0,
+            alpha: u8::MAX,
         }));
         let diff = diff_rectangle_cover(orig.view(), new.view())
             .into_iter()
@@ -215,27 +221,31 @@ mod test {
         let size = Size::new(1920, 1080);
         let orig = Array2::from_elem(
             size.as_shape(),
-            Pixel24 {
+            Pixel32 {
                 red: u8::MAX,
                 green: 0,
                 blue: 0,
+                alpha: u8::MAX,
             },
         );
         let mut new = orig.clone();
-        new.slice_mut(s![0..100, 0..100]).assign(&arr0(Pixel24 {
+        new.slice_mut(s![0..100, 0..100]).assign(&arr0(Pixel32 {
             red: 0,
             green: 0,
             blue: 0,
+            alpha: u8::MAX,
         }));
-        new.slice_mut(s![200..300, 200..300]).assign(&arr0(Pixel24 {
+        new.slice_mut(s![200..300, 200..300]).assign(&arr0(Pixel32 {
             red: 0,
             green: 0,
             blue: 0,
+            alpha: u8::MAX,
         }));
-        new.slice_mut(s![400..500, 400..500]).assign(&arr0(Pixel24 {
+        new.slice_mut(s![400..500, 400..500]).assign(&arr0(Pixel32 {
             red: 0,
             green: 0,
             blue: 0,
+            alpha: u8::MAX,
         }));
         let diff = diff_rectangle_cover(orig.view(), new.view())
             .into_iter()
@@ -254,7 +264,7 @@ mod test {
     #[test]
     fn thin_equal_image() {
         let size = Size::new(50, 300); // only one tile wide
-        let img = Array2::from_elem(size.as_shape(), Pixel24::default());
+        let img = Array2::from_elem(size.as_shape(), Pixel32::default());
         let diff = diff_rectangle_cover(img.view(), img.view());
         assert!(
             diff.is_empty(),
@@ -265,12 +275,13 @@ mod test {
     #[test]
     fn thin_different_image() {
         let size = Size::new(50, 300); // only one tile wide
-        let orig = Array2::from_elem(size.as_shape(), Pixel24::default());
+        let orig = Array2::from_elem(size.as_shape(), Pixel32::default());
         let mut new = orig.clone();
-        new[(0, 0)] = Pixel24 {
+        new[(0, 0)] = Pixel32 {
             red: 1,
             green: 0,
             blue: 0,
+            alpha: u8::MAX,
         };
         let diff = diff_rectangle_cover(orig.view(), new.view());
         assert_eq!(

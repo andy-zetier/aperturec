@@ -5,7 +5,7 @@ use aperturec_graphics::prelude::*;
 use aperturec_server::task::frame_sync::*;
 
 use criterion::{measurement::*, *};
-use ndarray::{Zip, prelude::*};
+use ndarray::Zip;
 use rand::random;
 
 struct UndamagedPixelsCaptured;
@@ -77,15 +77,22 @@ fn tracking_buffer_pixels(c: &mut Criterion<UndamagedPixelsCaptured>) {
                             let mut undamaged_pixels_captured = 0;
 
                             for _ in 0..niters {
-                                let mut curr = Array2::from_shape_fn(dim.as_shape(), |_| Pixel24 {
-                                    red: random(),
-                                    blue: random(),
-                                    green: random(),
-                                });
+                                let mut curr =
+                                    Pixel32Map::from_shape_fn(dim.as_shape(), |_| Pixel32 {
+                                        red: random(),
+                                        blue: random(),
+                                        green: random(),
+                                        alpha: u8::MAX,
+                                    });
                                 let mut new = curr.clone();
                                 let updates = generate_updates(&curr, num_areas);
 
-                                let mut tb = TrackingBuffer::new(0, to_display(dim), 0);
+                                let mut tb = TrackingBuffer::new(
+                                    0,
+                                    to_display(dim),
+                                    0,
+                                    OutputPixelFormat::Bit24,
+                                );
                                 tb.update(&SubframeBuffer {
                                     origin: Point::zero(),
                                     pixels: curr.clone(),
@@ -102,9 +109,10 @@ fn tracking_buffer_pixels(c: &mut Criterion<UndamagedPixelsCaptured>) {
                                         .sum::<usize>();
 
                                     for buffer in frame.buffers {
-                                        new.as_ndarray_mut()
-                                            .slice_mut(buffer.area().as_slice())
-                                            .assign(&buffer.pixels.as_ndarray());
+                                        buffer.pixels.as_ndarray().assign_to(
+                                            new.as_ndarray_mut()
+                                                .slice_mut(buffer.area().as_slice()),
+                                        );
                                     }
                                     let pixels_damaged =
                                         Zip::from(&new).and(&curr).fold(0, |acc, n, c| {

@@ -15,7 +15,6 @@ use std::env;
 use std::fmt::{self, Debug, Formatter};
 use std::iter::Iterator;
 use std::mem;
-use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
 use std::ptr::{self, NonNull};
@@ -222,33 +221,25 @@ impl Drop for XFrameBuffer {
 }
 
 /// B-G-R-A format
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct XPixel([u8; X_BYTES_PER_PIXEL]);
 
-impl Deref for XPixel {
-    type Target = [u8; X_BYTES_PER_PIXEL];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl PartialEq<Pixel32> for XPixel {
+    fn eq(&self, rhs: &Pixel32) -> bool {
+        self.0[0] == rhs.blue
+            && self.0[1] == rhs.green
+            && self.0[2] == rhs.red
+            && self.0[3] == rhs.alpha
     }
 }
 
-impl DerefMut for XPixel {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl PartialEq<Pixel24> for XPixel {
-    fn eq(&self, rhs: &Pixel24) -> bool {
-        &self[..3] == rhs.as_ref() && self[3] == u8::MAX
-    }
-}
-
-impl AssignElem<XPixel> for &mut Pixel24 {
+impl AssignElem<XPixel> for &mut Pixel32 {
     fn assign_elem(self, x: XPixel) {
-        self.as_mut().copy_from_slice(&x[..3]);
+        self.blue = x.0[0];
+        self.green = x.0[1];
+        self.red = x.0[2];
+        self.alpha = x.0[3];
     }
 }
 

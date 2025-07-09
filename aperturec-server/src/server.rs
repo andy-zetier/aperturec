@@ -710,7 +710,7 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
 
 impl<B: Backend + 'static> AsyncTransitionable<SessionTerminated<B>> for Server<SessionActive<B>>
 where
-    for<'p> &'p mut Pixel24: AssignElem<<B::PixelMap as PixelMap>::Pixel>,
+    for<'p> &'p mut Pixel32: AssignElem<<B::PixelMap as PixelMap>::Pixel>,
 {
     type NextStateful = Server<SessionTerminated<B>>;
 
@@ -735,6 +735,7 @@ where
                     .into_iter()
                     .zip(encoder_counts)
                     .collect(),
+                frame_sync::OutputPixelFormat::Bit24,
             );
         let (mc_handler_task, mc_handler_channels) =
             mc_handler::Task::new(self.state.session.mc, rl_handle);

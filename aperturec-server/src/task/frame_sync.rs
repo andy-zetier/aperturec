@@ -9,8 +9,7 @@ use aperturec_state_machine::*;
 
 use anyhow::{Result, anyhow, bail, ensure};
 use futures::{self, TryFutureExt, future};
-use ndarray::{AssignElem, prelude::*};
-use std::marker::PhantomData;
+use ndarray::AssignElem;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::runtime::Handle;
@@ -28,6 +27,12 @@ impl<M: PixelMap> SubframeBuffer<M> {
     pub fn area(&self) -> Rect {
         Rect::new(self.origin, self.pixels.size())
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum OutputPixelFormat {
+    Bit24,
+    Bit32,
 }
 
 #[derive(Debug)]
@@ -58,6 +63,7 @@ pub struct Created<B: Backend> {
     frame_txs: Vec<mpsc::Sender<Arc<Frame>>>,
     damage_rx: mpsc::UnboundedReceiver<SubframeBuffer<B::PixelMap>>,
     display_config_rx: mpsc::Receiver<NewDisplayConfig>,
+    output_pixel_format: OutputPixelFormat,
 }
 
 #[derive(State, Debug)]
@@ -80,6 +86,7 @@ impl<B: Backend> Task<Created<B>> {
     pub fn new(
         max_encoder_count: usize,
         display_encoder_counts: Vec<(Display, usize)>,
+        output_pixel_format: OutputPixelFormat,
     ) -> (Self, Channels<B>) {
         let (frame_txs, frame_rxs) = (0..max_encoder_count).map(|_| mpsc::channel(1)).collect();
         let (damage_tx, damage_rx) = mpsc::unbounded_channel();
@@ -93,6 +100,7 @@ impl<B: Backend> Task<Created<B>> {
                     frame_txs,
                     damage_rx,
                     display_config_rx,
+                    output_pixel_format,
                 },
             },
             Channels {
@@ -112,7 +120,7 @@ impl Task<Running> {
 
 impl<B: Backend> Transitionable<Running> for Task<Created<B>>
 where
-    for<'p> &'p mut Pixel24: AssignElem<<B::PixelMap as PixelMap>::Pixel>,
+    for<'p> &'p mut Pixel32: AssignElem<<B::PixelMap as PixelMap>::Pixel>,
 {
     type NextStateful = Task<Running>;
 
@@ -131,7 +139,12 @@ where
                 let subset: Vec<_> = self.state.frame_txs[i..end].to_vec();
                 i = end;
                 (
-                    Arc::new(Mutex::new(TrackingBuffer::new(id, display, 0))),
+                    Arc::new(Mutex::new(TrackingBuffer::new(
+                        id,
+                        display,
+                        0,
+                        self.state.output_pixel_format,
+                    ))),
                     Arc::new(Mutex::new(subset)),
                 )
             })
@@ -213,11 +226,10 @@ where
             js.spawn_on(
                 async move {
                     while let Some(framebuffer_data) = self.state.damage_rx.recv().await {
-                        let fd = Arc::new(framebuffer_data);
                         tracking_buffers.iter_mut().for_each(|tb| {
                             tb.lock()
                                 .expect("tracking_buffer poisoned")
-                                .update(fd.as_ref())
+                                .update(&framebuffer_data)
                         });
                     }
                     bail!("damage stream exhausted")
@@ -381,42 +393,45 @@ enum Damage {
 /// - A boolean indicating if the entire buffer is damaged (`is_fully_damaged`).
 ///
 /// This structure is particularly useful in graphical applications where partial updates to the pixel data are common.
-pub struct TrackingBuffer<BackendPixelMap: PixelMap> {
+pub struct TrackingBuffer {
     display: Display,
     display_id: usize,
     display_config: usize,
-    data: Array2<Pixel24>,
+    data: Pixel32Map,
     damage: Damage,
     curr_frame_id: usize,
     damage_watch_tx: watch::Sender<()>,
-    _pixel_map: PhantomData<BackendPixelMap>,
+    _output_pixel_format: OutputPixelFormat,
 }
 
-impl<BackendPixelMap> TrackingBuffer<BackendPixelMap>
-where
-    BackendPixelMap: PixelMap,
-    for<'p> &'p mut Pixel24: AssignElem<BackendPixelMap::Pixel>,
-{
-    pub fn new(display_id: usize, display: Display, display_config: usize) -> Self {
+impl TrackingBuffer {
+    pub fn new(
+        display_id: usize,
+        display: Display,
+        display_config: usize,
+        output_pixel_format: OutputPixelFormat,
+    ) -> Self {
         let (damage_watch_tx, _) = watch::channel(());
         let shape = (display.area.height(), display.area.width());
         TrackingBuffer {
             display,
             display_id,
             display_config,
-            data: Array2::from_elem(shape, Pixel24::default()),
+            data: Pixel32Map::default(shape),
             damage: Damage::Full,
             curr_frame_id: 0,
             damage_watch_tx,
-            _pixel_map: PhantomData,
+            _output_pixel_format: output_pixel_format,
         }
     }
+}
 
+impl TrackingBuffer {
     fn resize(&mut self, display: Display, display_config: usize) {
         self.curr_frame_id = 0;
         self.display_config = display_config;
         self.display = display;
-        self.data = Array2::from_elem(self.display.area.as_shape(), Pixel24::default());
+        self.data = Pixel32Map::default(self.display.area.as_shape());
         self.clear();
 
         // Notify damage listeners that the Display has been changed
@@ -425,7 +440,12 @@ where
             .expect("Failed to send damage watch");
     }
 
-    pub fn update(&mut self, framebuffer_data: &SubframeBuffer<BackendPixelMap>) {
+    pub fn update<BackendPixelMap: PixelMap>(
+        &mut self,
+        framebuffer_data: &SubframeBuffer<BackendPixelMap>,
+    ) where
+        for<'p> &'p mut Pixel32: AssignElem<BackendPixelMap::Pixel>,
+    {
         if !self.display.is_enabled {
             return;
         }
@@ -505,10 +525,10 @@ where
                 boxes
                     .iter()
                     .map(|b| {
-                        // SAFETY: We initialize the Array2 in the call to `build_init`, so
-                        // `assume_init` is safe to call
+                        // SAFETY: We initialize the Pixel24Map contents in the closure provided to
+                        // `build_uninit`, so `assume_init` is safe to call
                         let pixels = unsafe {
-                            Array2::build_uninit(b.as_shape(), |dst| {
+                            Pixel24Map::build_uninit(b.as_shape(), |dst| {
                                 self.data.slice(b.as_slice()).assign_to(dst)
                             })
                             .assume_init()
@@ -522,10 +542,10 @@ where
                     .collect()
             }
             Damage::Full => {
-                // SAFETY: We initialize the Array2 in the call to `build_init`, so
+                // SAFETY: We initialize the Pixel24Map in the call to `build_init`, so
                 // `assume_init` is safe to call
                 let pixels = unsafe {
-                    Array2::build_uninit(self.display.area.size.as_shape(), |dst| {
+                    Pixel24Map::build_uninit(self.display.area.size.as_shape(), |dst| {
                         self.data.assign_to(dst)
                     })
                     .assume_init()
