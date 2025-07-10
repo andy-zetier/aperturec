@@ -221,16 +221,21 @@ where
         }
 
         {
-            let mut tracking_buffers: Vec<Arc<_>> =
-                tb_txs.iter().map(|(arc, _)| Arc::clone(arc)).collect();
+            let tracking_buffers: Vec<_> = tb_txs.iter().map(|(arc, _)| Arc::clone(arc)).collect();
             js.spawn_on(
                 async move {
                     while let Some(framebuffer_data) = self.state.damage_rx.recv().await {
-                        tracking_buffers.iter_mut().for_each(|tb| {
-                            tb.lock()
-                                .expect("tracking_buffer poisoned")
-                                .update(&framebuffer_data)
-                        });
+                        let framebuffer_data = Arc::new(framebuffer_data);
+                        future::join_all(tracking_buffers.iter().map(|tb| {
+                            let tb = tb.clone();
+                            let framebuffer_data = framebuffer_data.clone();
+                            task::spawn_blocking(move || {
+                                tb.lock()
+                                    .expect("tracking_buffer poisoned")
+                                    .update(&framebuffer_data)
+                            })
+                        }))
+                        .await;
                     }
                     bail!("damage stream exhausted")
                 },
@@ -471,7 +476,7 @@ impl TrackingBuffer {
         let new = pixmap.slice(&fb_relative_area.as_slice());
 
         let start = Instant::now();
-        task::block_in_place(|| match self.damage {
+        match self.damage {
             Damage::Full => {
                 new.assign_to(self.data.slice_mut(tb_relative_area.as_slice()));
                 TrackingBufferDamageRatio::observe(1.);
@@ -494,7 +499,7 @@ impl TrackingBuffer {
                     total_area as f64 / intersection.area() as f64 * 100.,
                 );
             }
-        });
+        }
         TrackingBufferUpdateTime::observe(
             Instant::now().duration_since(start).as_secs_f64() * 1000.0,
         );

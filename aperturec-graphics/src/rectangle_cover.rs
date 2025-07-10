@@ -4,7 +4,6 @@ use image::{GrayImage, Luma};
 use imageproc::region_labelling::{Connectivity, connected_components};
 use ndarray::prelude::*;
 use nshare::*;
-use rayon::prelude::*;
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
 
@@ -15,7 +14,7 @@ fn sampled_diff_image(
 ) -> GrayImage {
     let tiles_x = a.as_ndarray().len_of(axis::X).div_ceil(sample_grid_size);
     let tiles_y = a.as_ndarray().len_of(axis::Y).div_ceil(sample_grid_size);
-    GrayImage::from_par_fn(tiles_x as u32, tiles_y as u32, |x, y| {
+    GrayImage::from_fn(tiles_x as u32, tiles_y as u32, |x, y| {
         let (min_x, min_y) = (x as usize * sample_grid_size, y as usize * sample_grid_size);
         let max_x = min(min_x + sample_grid_size, a.as_ndarray().len_of(axis::X));
         let max_y = min(min_y + sample_grid_size, a.as_ndarray().len_of(axis::Y));
@@ -71,14 +70,13 @@ fn region_bounds(labeled_regions: ArrayView2<u32>) -> BTreeMap<u32, Box2D> {
     fn identify_axis_bounds(regions: ArrayView2<u32>, axis: Axis) -> BTreeMap<u32, (usize, usize)> {
         regions
             .axis_iter(axis)
-            .into_par_iter()
             .map(identify_bounds_1d)
-            .reduce(BTreeMap::default, merge_axis_bounds)
+            .fold(BTreeMap::default(), merge_axis_bounds)
     }
 
-    let (width_bounds, height_bounds) = rayon::join(
-        || identify_axis_bounds(labeled_regions, axis::Y),
-        || identify_axis_bounds(labeled_regions, axis::X),
+    let (width_bounds, height_bounds) = (
+        identify_axis_bounds(labeled_regions, axis::Y),
+        identify_axis_bounds(labeled_regions, axis::X),
     );
 
     assert_eq!(height_bounds.len(), width_bounds.len());
