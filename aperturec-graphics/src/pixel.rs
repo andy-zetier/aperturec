@@ -1,8 +1,9 @@
 use crate::axis;
 use crate::geometry::*;
 
-use ndarray::{AssignElem, Data, DataMut, prelude::*};
+use ndarray::{AssignElem, Data, DataMut, FoldWhile, Zip, prelude::*};
 use std::mem;
+use wide::u32x8;
 
 /// A 24-bit pixel in B-G-R order (no alpha channel).
 #[derive(PartialEq, Debug, Default, Clone, Copy)]
@@ -64,13 +65,37 @@ impl AssignElem<Pixel24> for &mut Pixel32 {
 pub type Pixel24Map = Array2<Pixel24>;
 
 /// A 32-bit pixel in B-G-R-A order, with explicit alpha.
+/// A 32-bit pixel in B-G-R-A order.
+/// 
+/// The `#[repr(C, align(4))]` ensures 4-byte alignment so that
+/// rows of `Pixel32` can be safely reinterpreted as `u32` chunks
+/// for SIMD comparisons.
 #[derive(PartialEq, Debug, Default, Clone, Copy)]
-#[repr(C)]
+#[repr(C, align(4))]
 pub struct Pixel32 {
     pub blue: u8,
     pub green: u8,
     pub red: u8,
     pub alpha: u8,
+}
+
+// Static‐assert that Pixel32 is exactly 4 bytes (no padding)
+const _: () = assert!(std::mem::size_of::<Pixel32>() == 4);
+
+impl Pixel32 {
+    fn as_simdable_chunks<const SIMD_WIDTH: usize>(
+        s: &[Self],
+    ) -> (&[[u32; SIMD_WIDTH]], &[Pixel32]) {
+        let (chunks, remainder) = s.as_chunks::<{ SIMD_WIDTH }>();
+        // SAFETY: Pixel32 is #[repr(C, align(4))] with exactly four u8 fields (no padding),
+        // so [Pixel32; SIMD_WIDTH] and [u32; SIMD_WIDTH] have identical size, alignment,
+        // and layout. We cast the slice’s pointer and reconstruct a &[u32; SIMD_WIDTH]
+        // slice with the same length, which is properly aligned.
+        let ptr = chunks.as_ptr() as *const [u32; SIMD_WIDTH];
+        let chunks = unsafe { std::slice::from_raw_parts(ptr, chunks.len()) };
+
+        (chunks, remainder)
+    }
 }
 
 impl From<[u8; 4]> for Pixel32 {
@@ -84,8 +109,49 @@ impl From<[u8; 4]> for Pixel32 {
     }
 }
 
+pub trait Pixel32MapExt: PixelMap<Pixel = Pixel32> {
+    fn simd_eq(&self, other: &impl PixelMap<Pixel = Pixel32>) -> bool {
+        let a = self.as_ndarray();
+        let b = other.as_ndarray();
+        Zip::from(a.rows())
+            .and(b.rows())
+            .fold_while(true, |acc, a, b| {
+                if !acc {
+                    FoldWhile::Done(false)
+                } else if let (Some(a), Some(b)) =
+                    (a.as_slice_memory_order(), b.as_slice_memory_order())
+                {
+                    // Fast-path supporting row-by-row SIMD comparison
+                    let (a_chunks, a_rem) = Pixel32::as_simdable_chunks::<8>(a);
+                    let (b_chunks, b_rem) = Pixel32::as_simdable_chunks::<8>(b);
+                    for (&a_chunk, &b_chunk) in a_chunks.iter().zip(b_chunks) {
+                        if !u32x8::from(a_chunk).cmp_eq(u32x8::from(b_chunk)).all() {
+                            return FoldWhile::Done(false);
+                        }
+                    }
+                    FoldWhile::Continue(a_rem == b_rem)
+                } else {
+                    // Slow-path using element-wise comparison
+                    FoldWhile::Continue(b == a)
+                }
+            })
+            .into_inner()
+    }
+}
+
 /// A 2D array of Pixel32, alias for `Array2<Pixel32>`.
 pub type Pixel32Map = Array2<Pixel32>;
+
+/// Extension trait for 2D pixel maps of `Pixel32` providing
+/// a SIMD-accelerated equality comparison.
+///
+/// The `simd_eq` method returns `true` if every pixel in `self`
+/// equals the corresponding pixel in `other`.  It first tries
+/// a fast‐path by viewing each row as contiguous `u32x8` chunks
+/// and comparing with SIMD; if that isn’t possible (e.g. non‐
+/// contiguous memory), it falls back to a scalar element‐wise
+/// comparison.
+impl<T: PixelMap<Pixel = Pixel32>> Pixel32MapExt for T {}
 
 /// A generic pixel type which can be compared to Pixel32, copied, sent and shared.
 pub trait Pixel: PartialEq<Pixel32> + Copy + Send + Sync {}
@@ -162,6 +228,7 @@ impl<T: PixelMapMut> PixelMapMut for &mut T {
 mod tests {
     use super::*;
     use std::mem::MaybeUninit;
+    use ndarray::Array2;
 
     #[test]
     fn pixel24_eqs_pixel32_when_alpha_is_max() {
@@ -246,5 +313,28 @@ mod tests {
                 alpha: u8::MAX
             }
         );
+    }
+
+    #[test]
+    fn simd_eq_true_large_equal() {
+        // dimensions ≥ 8 columns to trigger at least one SIMD chunk
+        let rows = 4;
+        let cols = 16;
+        let pixel = Pixel32 { blue: 1, green: 2, red: 3, alpha: 4 };
+        let a: Array2<Pixel32> = Array2::from_elem((rows, cols), pixel);
+        let b = a.clone();
+        assert!(a.simd_eq(&b), "simd_eq should return true for identical maps");
+    }
+
+    #[test]
+    fn simd_eq_false_different_pixel() {
+        // two maps that differ by exactly one pixel in the first SIMD chunk
+        let rows = 2;
+        let cols = 16;
+        let a: Array2<Pixel32> = Array2::from_elem((rows, cols), Pixel32::default());
+        let mut b = a.clone();
+        // flip one pixel in row 0, col 5
+        b[(0, 5)] = Pixel32 { blue: 10, green: 11, red: 12, alpha: 13 };
+        assert!(!a.simd_eq(&b), "simd_eq should detect a single-pixel difference");
     }
 }

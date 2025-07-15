@@ -7,20 +7,23 @@ use nshare::*;
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
 
-fn sampled_diff_image(
+fn sampled_diff_image<const SAMPLE_GRID_SIZE: usize>(
     a: impl PixelMap<Pixel = Pixel32> + Sync,
-    b: impl PixelMap + Sync,
-    sample_grid_size: usize,
+    b: impl PixelMap<Pixel = Pixel32> + Sync,
 ) -> GrayImage {
-    let tiles_x = a.as_ndarray().len_of(axis::X).div_ceil(sample_grid_size);
-    let tiles_y = a.as_ndarray().len_of(axis::Y).div_ceil(sample_grid_size);
+    let a: ArrayView2<Pixel32> = a.as_ndarray();
+    let b: ArrayView2<Pixel32> = b.as_ndarray();
+    let (w, h) = (a.len_of(axis::X), a.len_of(axis::Y));
+
+    let tiles_x = w.div_ceil(SAMPLE_GRID_SIZE);
+    let tiles_y = h.div_ceil(SAMPLE_GRID_SIZE);
     GrayImage::from_fn(tiles_x as u32, tiles_y as u32, |x, y| {
-        let (min_x, min_y) = (x as usize * sample_grid_size, y as usize * sample_grid_size);
-        let max_x = min(min_x + sample_grid_size, a.as_ndarray().len_of(axis::X));
-        let max_y = min(min_y + sample_grid_size, a.as_ndarray().len_of(axis::Y));
-        if b.as_ndarray().slice(s![min_y..max_y, min_x..max_x])
-            == a.as_ndarray().slice(s![min_y..max_y, min_x..max_x])
-        {
+        let (min_x, min_y) = (x as usize * SAMPLE_GRID_SIZE, y as usize * SAMPLE_GRID_SIZE);
+        let max_x = min(min_x + SAMPLE_GRID_SIZE, w);
+        let max_y = min(min_y + SAMPLE_GRID_SIZE, h);
+        let a = a.slice(s![min_y..max_y, min_x..max_x]);
+        let b = b.slice(s![min_y..max_y, min_x..max_x]);
+        if a.simd_eq(&b) {
             Luma([0_u8])
         } else {
             Luma([u8::MAX])
@@ -95,13 +98,13 @@ fn region_bounds(labeled_regions: ArrayView2<u32>) -> BTreeMap<u32, Box2D> {
 
 pub fn diff_rectangle_cover(
     a: impl PixelMap<Pixel = Pixel32> + Sync,
-    b: impl PixelMap + Sync,
+    b: impl PixelMap<Pixel = Pixel32> + Sync,
 ) -> BoxSet {
     const SAMPLE_GRID_SIZE: usize = 64;
     assert_eq!(a.as_ndarray().dim(), b.as_ndarray().dim());
     let size = a.size();
 
-    let diff_image = sampled_diff_image(a, b, SAMPLE_GRID_SIZE);
+    let diff_image = sampled_diff_image::<SAMPLE_GRID_SIZE>(a, b);
     let (tiles_x, tiles_y) = diff_image.dimensions();
     if tiles_x == 1 || tiles_y == 1 {
         // True if every sampled tile is identical

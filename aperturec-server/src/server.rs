@@ -19,7 +19,6 @@ use derive_builder::Builder;
 use derive_more::Debug;
 use futures::prelude::*;
 use futures::stream::{FuturesUnordered, Peekable, StreamExt};
-use ndarray::AssignElem;
 use petname::{Generator, Petnames};
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::BTreeMap;
@@ -710,7 +709,7 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
 
 impl<B: Backend + 'static> AsyncTransitionable<SessionTerminated<B>> for Server<SessionActive<B>>
 where
-    for<'p> &'p mut Pixel32: AssignElem<<B::PixelMap as PixelMap>::Pixel>,
+    <B as Backend>::PixelMap: PixelMap<Pixel = Pixel32>,
 {
     type NextStateful = Server<SessionTerminated<B>>;
 

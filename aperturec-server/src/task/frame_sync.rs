@@ -9,7 +9,6 @@ use aperturec_state_machine::*;
 
 use anyhow::{Result, anyhow, bail, ensure};
 use futures::{self, TryFutureExt, future};
-use ndarray::AssignElem;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::runtime::Handle;
@@ -120,7 +119,7 @@ impl Task<Running> {
 
 impl<B: Backend> Transitionable<Running> for Task<Created<B>>
 where
-    for<'p> &'p mut Pixel32: AssignElem<<B::PixelMap as PixelMap>::Pixel>,
+    <B as Backend>::PixelMap: PixelMap<Pixel = Pixel32>,
 {
     type NextStateful = Task<Running>;
 
@@ -445,12 +444,10 @@ impl TrackingBuffer {
             .expect("Failed to send damage watch");
     }
 
-    pub fn update<BackendPixelMap: PixelMap>(
+    pub fn update<BackendPixelMap: PixelMap<Pixel = Pixel32>>(
         &mut self,
         framebuffer_data: &SubframeBuffer<BackendPixelMap>,
-    ) where
-        for<'p> &'p mut Pixel32: AssignElem<BackendPixelMap::Pixel>,
-    {
+    ) {
         if !self.display.is_enabled {
             return;
         }

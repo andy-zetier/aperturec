@@ -7,7 +7,7 @@ use aperturec_protocol::event as em;
 
 use anyhow::{Result, anyhow, bail, ensure};
 use futures::{Future, Stream, StreamExt, TryFutureExt, future, stream};
-use ndarray::{AssignElem, prelude::*};
+use ndarray::prelude::*;
 use scan_fmt::scan_fmt;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -221,27 +221,7 @@ impl Drop for XFrameBuffer {
 }
 
 /// B-G-R-A format
-#[derive(Clone, Copy, Debug, Default)]
-#[repr(C)]
-pub struct XPixel([u8; X_BYTES_PER_PIXEL]);
-
-impl PartialEq<Pixel32> for XPixel {
-    fn eq(&self, rhs: &Pixel32) -> bool {
-        self.0[0] == rhs.blue
-            && self.0[1] == rhs.green
-            && self.0[2] == rhs.red
-            && self.0[3] == rhs.alpha
-    }
-}
-
-impl AssignElem<XPixel> for &mut Pixel32 {
-    fn assign_elem(self, x: XPixel) {
-        self.blue = x.0[0];
-        self.green = x.0[1];
-        self.red = x.0[2];
-        self.alpha = x.0[3];
-    }
-}
+pub type XPixel = Pixel32;
 
 pub struct XPixelMap {
     framebuffer: Arc<XFrameBuffer>,
