@@ -640,7 +640,7 @@ mod signal_handlers {
 
         if let Some(shortcut) = KeyboardShortcut::from_event(key) {
             while let Some(x11key) = workspace.held_keys.borrow_mut().pop_first() {
-                debug!(?x11key, "releasing");
+                debug!(?x11key, "releasing keyboard shortcut");
                 workspace
                     .event_tx
                     .send(EventMessage::KeyEventMessage(
@@ -862,6 +862,19 @@ mod signal_handlers {
     }
 
     pub fn focus_out(workspace: &UiWorkspace) {
+        while let Some(x11key) = workspace.held_keys.borrow_mut().pop_first() {
+            debug!(?x11key, "releasing on focus out");
+            workspace
+                .event_tx
+                .send(EventMessage::KeyEventMessage(
+                    KeyEventMessageBuilder::default()
+                        .key(x11key.into())
+                        .is_pressed(false)
+                        .build()
+                        .expect("GTK failed to build KeyEventMessage!"),
+                ))
+                .unwrap_or_else(|err| warn!("GTK failed to tx KeyEventMessage: {}", err));
+        }
         workspace.lock_state.replace(LockState::get_current());
     }
 

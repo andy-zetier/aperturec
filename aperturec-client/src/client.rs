@@ -1246,7 +1246,11 @@ impl Client {
         thread::spawn(move || {
             debug!("Event channel Tx started");
             for event_msg in notify_event_rx.iter() {
-                debug!(?event_msg);
+                match &event_msg {
+                    EventMessage::PointerEventMessage(_) => trace!(?event_msg),
+                    _ => debug!(?event_msg),
+                }
+
                 let msg = match event_msg {
                     EventMessage::UiClosed => {
                         if let Err(error) = ec_tx.flush() {
@@ -1263,7 +1267,6 @@ impl Client {
                     }
                     EventMessage::KeyEventMessage(kem) => em_c2s::Message::from(kem.to_key_event()),
                     EventMessage::DisplayEventMessage(dem) => {
-                        debug!(?dem);
                         em_c2s::Message::from(dem.to_display_event())
                     }
                 };
