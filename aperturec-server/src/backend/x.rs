@@ -177,6 +177,12 @@ impl XFrameBuffer {
             unsafe { libc::shmdt(shmaddr.as_ptr() as *const _) };
             bail!("shmctl IPC_STAT failed");
         }
+        // SAFETY: IPC_RMID does not dereference its arg pointer
+        if unsafe { libc::shmctl(shmid, libc::IPC_RMID, ptr::null_mut()) } != 0 {
+            // SAFETY: Detach the shared memory on error cleanup; shmaddr is from successful shmat.
+            unsafe { libc::shmdt(shmaddr.as_ptr() as *const _) };
+            bail!("shmctl IPC_RMID failed");
+        }
         // SAFETY: ds has been initialized by the successful shmctl call above.
         let ds = unsafe { ds.assume_init() };
 
