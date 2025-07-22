@@ -160,6 +160,23 @@ pub mod image;
 
 pub const DEFAULT_RESOLUTION: Size = Size::new(800, 600);
 
+const SCROLL_THRESHOLD: f64 = {
+    #[cfg(target_os = "macos")]
+    {
+        10.0
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        0.5
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        1.0
+    }
+};
+
 pub struct ClientSideItcChannels {
     pub ui_tx: glib::Sender<UiMessage>,
     pub notify_event_rx: Receiver<EventMessage>,
@@ -610,6 +627,7 @@ struct UiWorkspace {
     lock_state: Cell<LockState>,
     held_keys: RefCell<BTreeSet<u16>>,
     shutdown_started: Cell<bool>,
+    scroll_accumulator: Cell<(f64, f64)>,
 }
 
 impl UiWorkspace {
@@ -628,6 +646,7 @@ impl UiWorkspace {
             held_keys: RefCell::default(),
             lock_state: Cell::new(LockState::get_current()),
             shutdown_started: false.into(),
+            scroll_accumulator: Cell::new((0.0, 0.0)),
         })
     }
 }
@@ -733,74 +752,73 @@ mod signal_handlers {
     }
 
     pub fn scroll(workspace: &UiWorkspace, event: &gdk::EventScroll) {
-        let (up_mag, down_mag, left_mag, right_mag) = match event.direction() {
-            gdk::ScrollDirection::Up => (1, 0, 0, 0),
-            gdk::ScrollDirection::Down => (0, 1, 0, 0),
-            gdk::ScrollDirection::Left => (0, 0, 1, 0),
-            gdk::ScrollDirection::Right => (0, 0, 0, 1),
+        let (mut up, mut down, mut left, mut right) = (0, 0, 0, 0);
+
+        match event.direction() {
+            gdk::ScrollDirection::Up => up = 1,
+            gdk::ScrollDirection::Down => down = 1,
+            gdk::ScrollDirection::Left => left = 1,
+            gdk::ScrollDirection::Right => right = 1,
             gdk::ScrollDirection::Smooth => {
+                let (mut acc_x, mut acc_y) = workspace.scroll_accumulator.get();
                 let (xdelta, ydelta) = event.delta();
-                let left_mag = if xdelta < 0. {
-                    xdelta.abs().ceil() as usize
+
+                acc_x += xdelta;
+                acc_y += ydelta;
+
+                let steps_x = (acc_x / SCROLL_THRESHOLD).trunc() as i32;
+                let steps_y = (acc_y / SCROLL_THRESHOLD).trunc() as i32;
+
+                if steps_x > 0 {
+                    right += steps_x.try_into().unwrap_or(0);
                 } else {
-                    0
-                };
-                let right_mag = if xdelta > 0. {
-                    xdelta.ceil() as usize
+                    left += (-steps_x).try_into().unwrap_or(0);
+                }
+                if steps_y > 0 {
+                    down += steps_y.try_into().unwrap_or(0);
                 } else {
-                    0
-                };
-                let up_mag = if ydelta < 0. {
-                    ydelta.abs().ceil() as usize
-                } else {
-                    0
-                };
-                let down_mag = if ydelta > 0. {
-                    ydelta.ceil() as usize
-                } else {
-                    0
-                };
-                (up_mag, down_mag, left_mag, right_mag)
+                    up += (-steps_y).try_into().unwrap_or(0);
+                }
+
+                acc_x -= (steps_x as f64) * SCROLL_THRESHOLD;
+                acc_y -= (steps_y as f64) * SCROLL_THRESHOLD;
+
+                workspace.scroll_accumulator.set((acc_x, acc_y));
             }
-            _ => (0, 0, 0, 0),
-        };
-        let buttons = iter::repeat_n(3, up_mag)
-            .chain(iter::repeat_n(4, down_mag))
-            .chain(iter::repeat_n(5, left_mag))
-            .chain(iter::repeat_n(6, right_mag))
-            .collect::<Vec<_>>();
+            _ => {}
+        }
+
         let mouse_pos = workspace.last_mouse_pos.get();
+        let buttons = iter::repeat_n(3, up)
+            .chain(iter::repeat_n(4, down))
+            .chain(iter::repeat_n(5, left))
+            .chain(iter::repeat_n(6, right))
+            .collect::<Vec<_>>();
+
         trace!(
             "GTK ButtonPressEvent: {:?} @ {:?} (scroll)",
-            buttons, mouse_pos
+            buttons, mouse_pos,
         );
 
+        //
+        // Synthesize a press and release event
+        //
         for button in &buttons {
-            //
-            // Synthesize a press and release event
-            //
-            workspace
-                .event_tx
-                .send(EventMessage::MouseButtonEventMessage(
-                    MouseButtonEventMessageBuilder::default()
-                        .button(*button)
-                        .is_pressed(true)
-                        .pos(mouse_pos)
-                        .build()
-                        .expect("GTK failed to build MouseButtonEventMessage!"),
-                ))
-                .unwrap_or_else(|err| warn!("GTK failed to tx MouseButtonEventMessage: {}", err));
-            workspace
-                .event_tx
-                .send(EventMessage::MouseButtonEventMessage(
-                    MouseButtonEventMessageBuilder::default()
-                        .button(*button)
-                        .is_pressed(false)
-                        .pos(mouse_pos)
-                        .build()
-                        .expect("GTK failed to build MouseButtonEventMessage!"),
-                ))
-                .unwrap_or_else(|err| warn!("GTK failed to tx MouseButtonEventMessage: {}", err));
+            for pressed in [true, false] {
+                workspace
+                    .event_tx
+                    .send(EventMessage::MouseButtonEventMessage(
+                        MouseButtonEventMessageBuilder::default()
+                            .button(*button)
+                            .is_pressed(pressed)
+                            .pos(mouse_pos)
+                            .build()
+                            .expect("build MouseButtonEventMessage"),
+                    ))
+                    .unwrap_or_else(|err| {
+                        warn!("GTK failed to tx MouseButtonEventMessage: {}", err)
+                    });
+            }
         }
     }
 
@@ -1024,6 +1042,7 @@ impl WindowInternals {
                         | gdk::EventMask::BUTTON_PRESS_MASK
                         | gdk::EventMask::BUTTON_RELEASE_MASK
                         | gdk::EventMask::SCROLL_MASK
+                        | gdk::EventMask::SMOOTH_SCROLL_MASK
                         | gdk::EventMask::POINTER_MOTION_MASK
                         | gdk::EventMask::FOCUS_CHANGE_MASK,
                 )
