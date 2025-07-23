@@ -25,6 +25,9 @@ pub mod parameters {
 
     /// Distance (quality) for visual losslessness
     pub const DISTANCE: f32 = 1.0;
+
+    /// Do not encode responsive images
+    pub const RESPONSIVE: i64 = 0;
 }
 
 pub const PIXEL_FORMAT: JxlPixelFormat = JxlPixelFormat {

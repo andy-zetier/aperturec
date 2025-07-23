@@ -538,6 +538,13 @@ mod compression {
                     )?;
                     // SAFETY: See above
                     jxl_call!(
+                        JxlEncoderFrameSettingsSetOption,
+                        frame_settings,
+                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_RESPONSIVE,
+                        parameters::RESPONSIVE,
+                    )?;
+                    // SAFETY: See above
+                    jxl_call!(
                         JxlEncoderSetFrameDistance,
                         frame_settings,
                         parameters::DISTANCE
