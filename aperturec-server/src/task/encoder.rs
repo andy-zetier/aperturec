@@ -5,18 +5,19 @@ use aperturec_graphics::prelude::*;
 use aperturec_protocol::common::{Dimension as AcDimension, Location as AcLocation, *};
 use aperturec_protocol::media::{self as mm, server_to_client as mm_s2c};
 use aperturec_state_machine::*;
+use aperturec_utils::cpu_bound;
 
 use anyhow::{Result, anyhow, bail, ensure};
 use flate2::{Compression, write::DeflateEncoder};
 use futures::{prelude::*, stream::FuturesUnordered};
-use ndarray::prelude::*;
+use ndarray::{ArcArray2, prelude::*};
 use std::ffi::c_void;
 use std::io::Write;
 use std::mem::{self, MaybeUninit};
 use std::ptr;
 use std::slice;
-use std::sync::Arc;
-use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -31,18 +32,39 @@ mod compression {
 
     pub enum Scheme {
         Raw,
-        Zlib(zlib::Compressor),
-        Jpegxl(jxl::Compressor),
+        Zlib(Arc<Mutex<zlib::Compressor>>),
+        Jpegxl(Arc<Mutex<jxl::Compressor>>),
     }
 
     impl Scheme {
-        pub async fn compress(&self, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
+        pub async fn compress(&self, raw_data: ArcArray2<Pixel24>, area: Box2D) -> Result<Vec<u8>> {
             match self {
-                Scheme::Raw => Ok(task::block_in_place(move || {
-                    do_compress_optimize_contig(raw_data, |bytes| bytes.to_vec())
-                })),
-                Scheme::Zlib(compressor) => compressor.compress(raw_data).await,
-                Scheme::Jpegxl(compressor) => compressor.compress(raw_data).await,
+                Scheme::Raw => Ok(cpu_bound::spawn(move || {
+                    do_compress_optimize_contig(raw_data.slice(area.as_slice()), |bytes| {
+                        bytes.to_vec()
+                    })
+                })
+                .await),
+                Scheme::Zlib(zlib_compressor) => {
+                    let zlib_compressor = zlib_compressor.clone();
+                    cpu_bound::spawn(move || {
+                        zlib_compressor
+                            .lock()
+                            .expect("poisoned zlib compressor")
+                            .compress(raw_data.slice(area.as_slice()))
+                    })
+                    .await
+                }
+                Scheme::Jpegxl(jxl_compressor) => {
+                    let jxl_compressor = jxl_compressor.clone();
+                    cpu_bound::spawn(move || {
+                        jxl_compressor
+                            .lock()
+                            .expect("poisoned jxl compressor")
+                            .compress(raw_data.slice(area.as_slice()))
+                    })
+                    .await
+                }
             }
         }
 
@@ -61,8 +83,12 @@ mod compression {
         fn try_from(codec: Codec) -> Result<Self, Self::Error> {
             match codec {
                 Codec::Raw => Ok(Scheme::Raw),
-                Codec::Zlib => Ok(Scheme::Zlib(zlib::Compressor::default())),
-                Codec::Jpegxl => Ok(Scheme::Jpegxl(jxl::Compressor::new()?)),
+                Codec::Zlib => Ok(Scheme::Zlib(Arc::new(Mutex::new(
+                    zlib::Compressor::default(),
+                )))),
+                Codec::Jpegxl => Ok(Scheme::Jpegxl(Arc::new(
+                    Mutex::new(jxl::Compressor::new()?),
+                ))),
                 _ => bail!("Unsupported codec"),
             }
         }
@@ -115,26 +141,23 @@ mod compression {
     pub mod zlib {
         use super::*;
         pub struct Compressor {
-            encoder: AsyncMutex<DeflateEncoder<Vec<u8>>>,
+            encoder: DeflateEncoder<Vec<u8>>,
         }
 
         impl Default for Compressor {
             fn default() -> Self {
                 Self {
-                    encoder: AsyncMutex::new(DeflateEncoder::new(Vec::new(), Compression::new(9))),
+                    encoder: DeflateEncoder::new(Vec::new(), Compression::new(9)),
                 }
             }
         }
 
         impl Compressor {
-            pub async fn compress(&self, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
-                let mut encoder = self.encoder.lock().await;
-                task::block_in_place(|| {
-                    do_compress_optimize_contig(raw_data, move |bytes| {
-                        encoder.write_all(bytes)?;
-                        encoder.try_finish()?;
-                        Ok(encoder.reset(vec![])?)
-                    })
+            pub fn compress(&mut self, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
+                do_compress_optimize_contig(raw_data, move |bytes| {
+                    self.encoder.write_all(bytes)?;
+                    self.encoder.try_finish()?;
+                    Ok(self.encoder.reset(vec![])?)
                 })
             }
         }
@@ -361,22 +384,18 @@ mod compression {
         }
 
         pub struct Compressor {
-            encoder: AsyncMutex<&'static mut JxlEncoder>,
-            par_runner_opaque: AsyncMutex<&'static mut c_void>,
+            encoder: &'static mut JxlEncoder,
+            par_runner_opaque: &'static mut c_void,
         }
-        // SAFETY: *mut JxlEncoder can be sent between threads without issue
-        unsafe impl Send for Compressor {}
-        // SAFETY: we only access the *mut JxlEncoder via a mutex to synchronize between threads
-        unsafe impl Sync for Compressor {}
 
         impl Drop for Compressor {
             fn drop(&mut self) {
                 // SAFETY:
                 //   - enc is guaranteed to be non-null as it is a reference
-                unsafe { JxlEncoderDestroy(*self.encoder.get_mut()) }
+                unsafe { JxlEncoderDestroy(self.encoder) }
                 // SAFETY:
                 //   - par_runner_opaque is guaranteed to be non-null as it is a reference
-                unsafe { JxlResizableParallelRunnerDestroy(*self.par_runner_opaque.get_mut()) }
+                unsafe { JxlResizableParallelRunnerDestroy(self.par_runner_opaque) }
             }
         }
 
@@ -409,180 +428,170 @@ mod compression {
                 )?;
 
                 Ok(Compressor {
-                    encoder: AsyncMutex::new(encoder),
-                    par_runner_opaque: AsyncMutex::new(par_runner_opaque),
+                    encoder,
+                    par_runner_opaque,
                 })
             }
 
-            pub async fn compress(&self, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
-                fn do_compress(
-                    enc: &mut JxlEncoder,
-                    par_runner_opaque: &mut c_void,
-                    raw_data: ArrayView2<'_, Pixel24>,
-                ) -> Result<Vec<u8>> {
-                    let width = raw_data.len_of(axis::X);
-                    let height = raw_data.len_of(axis::Y);
-                    let col_stride = raw_data.stride_of(axis::X);
-                    let row_stride = raw_data.stride_of(axis::Y);
-                    if width > 1 {
-                        ensure!(
-                            col_stride == 1,
-                            "Elements in each column are not-adjacent, stride is {}",
-                            col_stride
-                        );
-                    } else {
-                        ensure!(width == 1, "Width <= 0");
-                    }
-
-                    let stride_to_next_row = if height > 1 {
-                        ensure!(
-                            row_stride > 0,
-                            "Rows are traversed in reverse order, stride is {}",
-                            row_stride
-                        );
-                        row_stride as usize - width
-                    } else {
-                        ensure!(height == 1, "Height <= 0");
-                        0
-                    };
-
-                    // SAFETY: We calculate the len of the slice as a function of the width,
-                    // height, stride, and size of an element, so the slice is guaranteed to be
-                    // valid
-                    let bytes = unsafe {
-                        let ptr = raw_data.as_ptr() as *const u8;
-                        let len = (width + stride_to_next_row) * height * mem::size_of::<Pixel24>();
-                        slice::from_raw_parts(ptr, len)
-                    };
-
-                    // SAFETY: JxlResizableParallelRunnerSuggestThreads is only marked unsafe at it
-                    // is an external C++ function. Nothing about the function is inherently unsafe
-                    let num_threads = unsafe {
-                        JxlResizableParallelRunnerSuggestThreads(width as _, height as _)
-                    };
-                    // SAFETY:
-                    //   - par_runner_opaque is guaranteed to be non-null as it is a reference
-                    unsafe {
-                        JxlResizableParallelRunnerSetThreads(
-                            par_runner_opaque,
-                            num_threads.max(1) as _,
-                        )
-                    };
-
-                    let mut output_buffer = OutputBuffer::default();
-                    // SAFETY:
-                    //   - enc is guaranteed to be non-null as it is a reference
-                    //   - output_buffer.as_jxl() produces a non-null reference which is guaranteed
-                    //   to exist for the life of the OutputBuffer
-                    //   - jxl_call! checks the return value of JxlEncoderSetOutputProcessor and
-                    //   bails if it fails
-                    jxl_call!(JxlEncoderSetOutputProcessor, enc, output_buffer.as_jxl())?;
-
-                    // SAFETY: we initialize JxlBasicInfo with a call to JxlEncoderInitBasicInfo,
-                    // which does not fail when passed a valid pointer
-                    let mut bi = unsafe {
-                        let mut uninit: MaybeUninit<JxlBasicInfo> = MaybeUninit::uninit();
-                        JxlEncoderInitBasicInfo(uninit.as_mut_ptr());
-                        uninit.assume_init()
-                    };
-
-                    bi.xsize = width as _;
-                    bi.ysize = height as _;
-                    bi.bits_per_sample = parameters::BITS_PER_SAMPLE;
-                    bi.exponent_bits_per_sample = parameters::EXPONENT_BITS_PER_SAMPLE;
-                    bi.uses_original_profile = parameters::USES_ORIGINAL_PROFILE;
-                    // SAFETY:
-                    //   - enc is guaranteed to be non-null as it is a reference
-                    //   - jxl_call! checks the return value of JxlEncoderSetBasicInfo and bails if
-                    //   it fails
-                    jxl_call!(JxlEncoderSetBasicInfo, enc, &bi)?;
-
-                    // SAFETY:
-                    //   - enc is guaranteed to be non-null as it is a reference
-                    //   - JxlEncoderFrameSettingsCreate can take a null source value
-                    //   - jxl_call! checks the return value of JxlEncoderFrameSettingsCreate and
-                    //   bails if it fails
-                    let frame_settings =
-                        jxl_call!(JxlEncoderFrameSettingsCreate, enc, ptr::null())?;
-
-                    // SAFETY:
-                    //   - frame_settings is null-checked above
-                    //   - jxl_call! checks the return value of JxlEncoderFrameSettingsSetOption
-                    //   and bails if it fails
-                    jxl_call!(
-                        JxlEncoderFrameSettingsSetOption,
-                        frame_settings,
-                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_EFFORT,
-                        parameters::ENCODING_EFFORT,
-                    )?;
-                    // SAFETY: See above
-                    jxl_call!(
-                        JxlEncoderFrameSettingsSetOption,
-                        frame_settings,
-                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_DECODING_SPEED,
-                        parameters::DECODING_SPEED,
-                    )?;
-                    // SAFETY: See above
-                    jxl_call!(
-                        JxlEncoderFrameSettingsSetOption,
-                        frame_settings,
-                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_BUFFERING,
-                        parameters::BUFFERING
-                    )?;
-                    // SAFETY: See above
-                    jxl_call!(
-                        JxlEncoderFrameSettingsSetOption,
-                        frame_settings,
-                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_COLOR_TRANSFORM,
-                        parameters::COLOR_TRANSFORM
-                    )?;
-                    // SAFETY: See above
-                    jxl_call!(
-                        JxlEncoderFrameSettingsSetOption,
-                        frame_settings,
-                        JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_RESPONSIVE,
-                        parameters::RESPONSIVE,
-                    )?;
-                    // SAFETY: See above
-                    jxl_call!(
-                        JxlEncoderSetFrameDistance,
-                        frame_settings,
-                        parameters::DISTANCE
-                    )?;
-
-                    let mut input_source =
-                        InputSource::new(bytes, Size::new(width, height), stride_to_next_row)?;
-                    // SAFETY:
-                    //   - enc is guaranteed to be non-null as it is a reference
-                    //   - input_source.as_jxl() produces a non-null reference which is guaranteed
-                    //   to exist for the life of the InputSource
-                    //   - jxl_call! checks the return value of JxlEncoderAddChunkedFrame and bails
-                    //   if it fails
-                    jxl_call!(
-                        JxlEncoderAddChunkedFrame,
-                        frame_settings,
-                        1, /* is last frame */
-                        input_source.as_jxl()
-                    )?;
-                    // SAFETY:
-                    //   - enc is guaranteed to be non-null as it is a reference
-                    //   - jxl_call! checks the return value of JxlEncoderReset and bails if it
-                    //   fails
-                    jxl_call!(JxlEncoderFlushInput, enc)?;
-
-                    // SAFETY:
-                    //   - enc is guaranteed to be non-null as it is a reference
-                    unsafe { JxlEncoderReset(enc) };
-                    output_buffer.buf.shrink_to_fit();
-                    Ok(output_buffer.buf)
+            pub fn compress(&mut self, raw_data: ArrayView2<'_, Pixel24>) -> Result<Vec<u8>> {
+                let width = raw_data.len_of(axis::X);
+                let height = raw_data.len_of(axis::Y);
+                let col_stride = raw_data.stride_of(axis::X);
+                let row_stride = raw_data.stride_of(axis::Y);
+                if width > 1 {
+                    ensure!(
+                        col_stride == 1,
+                        "Elements in each column are not-adjacent, stride is {}",
+                        col_stride
+                    );
+                } else {
+                    ensure!(width == 1, "Width <= 0");
                 }
-                task::block_in_place(move || {
-                    do_compress(
-                        *self.encoder.blocking_lock(),
-                        *self.par_runner_opaque.blocking_lock(),
-                        raw_data,
+
+                let stride_to_next_row = if height > 1 {
+                    ensure!(
+                        row_stride > 0,
+                        "Rows are traversed in reverse order, stride is {}",
+                        row_stride
+                    );
+                    row_stride as usize - width
+                } else {
+                    ensure!(height == 1, "Height <= 0");
+                    0
+                };
+
+                // SAFETY: We calculate the len of the slice as a function of the width,
+                // height, stride, and size of an element, so the slice is guaranteed to be
+                // valid
+                let bytes = unsafe {
+                    let ptr = raw_data.as_ptr() as *const u8;
+                    let len = (width + stride_to_next_row) * height * mem::size_of::<Pixel24>();
+                    slice::from_raw_parts(ptr, len)
+                };
+
+                // SAFETY: JxlResizableParallelRunnerSuggestThreads is only marked unsafe at it
+                // is an external C++ function. Nothing about the function is inherently unsafe
+                let num_threads =
+                    unsafe { JxlResizableParallelRunnerSuggestThreads(width as _, height as _) };
+                // SAFETY:
+                //   - par_runner_opaque is guaranteed to be non-null as it is a reference
+                unsafe {
+                    JxlResizableParallelRunnerSetThreads(
+                        self.par_runner_opaque,
+                        num_threads.max(1) as _,
                     )
-                })
+                };
+
+                let mut output_buffer = OutputBuffer::default();
+                // SAFETY:
+                //   - enc is guaranteed to be non-null as it is a reference
+                //   - output_buffer.as_jxl() produces a non-null reference which is guaranteed
+                //   to exist for the life of the OutputBuffer
+                //   - jxl_call! checks the return value of JxlEncoderSetOutputProcessor and
+                //   bails if it fails
+                jxl_call!(
+                    JxlEncoderSetOutputProcessor,
+                    self.encoder,
+                    output_buffer.as_jxl()
+                )?;
+
+                // SAFETY: we initialize JxlBasicInfo with a call to JxlEncoderInitBasicInfo,
+                // which does not fail when passed a valid pointer
+                let mut bi = unsafe {
+                    let mut uninit: MaybeUninit<JxlBasicInfo> = MaybeUninit::uninit();
+                    JxlEncoderInitBasicInfo(uninit.as_mut_ptr());
+                    uninit.assume_init()
+                };
+
+                bi.xsize = width as _;
+                bi.ysize = height as _;
+                bi.bits_per_sample = parameters::BITS_PER_SAMPLE;
+                bi.exponent_bits_per_sample = parameters::EXPONENT_BITS_PER_SAMPLE;
+                bi.uses_original_profile = parameters::USES_ORIGINAL_PROFILE;
+                // SAFETY:
+                //   - enc is guaranteed to be non-null as it is a reference
+                //   - jxl_call! checks the return value of JxlEncoderSetBasicInfo and bails if
+                //   it fails
+                jxl_call!(JxlEncoderSetBasicInfo, self.encoder, &bi)?;
+
+                // SAFETY:
+                //   - enc is guaranteed to be non-null as it is a reference
+                //   - JxlEncoderFrameSettingsCreate can take a null source value
+                //   - jxl_call! checks the return value of JxlEncoderFrameSettingsCreate and
+                //   bails if it fails
+                let frame_settings =
+                    jxl_call!(JxlEncoderFrameSettingsCreate, self.encoder, ptr::null())?;
+
+                // SAFETY:
+                //   - frame_settings is null-checked above
+                //   - jxl_call! checks the return value of JxlEncoderFrameSettingsSetOption
+                //   and bails if it fails
+                jxl_call!(
+                    JxlEncoderFrameSettingsSetOption,
+                    frame_settings,
+                    JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_EFFORT,
+                    parameters::ENCODING_EFFORT,
+                )?;
+                // SAFETY: See above
+                jxl_call!(
+                    JxlEncoderFrameSettingsSetOption,
+                    frame_settings,
+                    JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_DECODING_SPEED,
+                    parameters::DECODING_SPEED,
+                )?;
+                // SAFETY: See above
+                jxl_call!(
+                    JxlEncoderFrameSettingsSetOption,
+                    frame_settings,
+                    JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_BUFFERING,
+                    parameters::BUFFERING
+                )?;
+                // SAFETY: See above
+                jxl_call!(
+                    JxlEncoderFrameSettingsSetOption,
+                    frame_settings,
+                    JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_COLOR_TRANSFORM,
+                    parameters::COLOR_TRANSFORM
+                )?;
+                // SAFETY: See above
+                jxl_call!(
+                    JxlEncoderFrameSettingsSetOption,
+                    frame_settings,
+                    JxlEncoderFrameSettingId::JXL_ENC_FRAME_SETTING_RESPONSIVE,
+                    parameters::RESPONSIVE,
+                )?;
+                // SAFETY: See above
+                jxl_call!(
+                    JxlEncoderSetFrameDistance,
+                    frame_settings,
+                    parameters::DISTANCE
+                )?;
+
+                let mut input_source =
+                    InputSource::new(bytes, Size::new(width, height), stride_to_next_row)?;
+                // SAFETY:
+                //   - enc is guaranteed to be non-null as it is a reference
+                //   - input_source.as_jxl() produces a non-null reference which is guaranteed
+                //   to exist for the life of the InputSource
+                //   - jxl_call! checks the return value of JxlEncoderAddChunkedFrame and bails
+                //   if it fails
+                jxl_call!(
+                    JxlEncoderAddChunkedFrame,
+                    frame_settings,
+                    1, /* is last frame */
+                    input_source.as_jxl()
+                )?;
+                // SAFETY:
+                //   - enc is guaranteed to be non-null as it is a reference
+                //   - jxl_call! checks the return value of JxlEncoderReset and bails if it
+                //   fails
+                jxl_call!(JxlEncoderFlushInput, self.encoder)?;
+
+                // SAFETY:
+                //   - enc is guaranteed to be non-null as it is a reference
+                unsafe { JxlEncoderReset(self.encoder) };
+                output_buffer.buf.shrink_to_fit();
+                Ok(output_buffer.buf)
             }
         }
     }
@@ -701,12 +710,9 @@ impl Transitionable<Running> for Task<Created> {
                                         .translate(-self.state.area.min.to_vector().to_i64())
                                         .to_usize();
 
-                                    let pixmap = buffer.pixels.as_ndarray();
-                                    let pixels = pixmap.slice(buffer_relative_area.as_slice());
-
-                                    let size = pixels.size();
+                                    let size = buffer_relative_area.size();
                                     let start = Instant::now();
-                                    let data = self.state.compression_scheme.compress(pixels).await?;
+                                    let data = self.state.compression_scheme.compress(buffer.pixels.clone(), buffer_relative_area).await?;
                                     let end = Instant::now();
                                     TimeInCompression::observe((end - start).as_secs_f64() * 1_000.0);
                                     PixelsCompressed::inc_by(size.area() as f64);
@@ -858,9 +864,11 @@ mod test {
 
     #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn simple_encode_raw() {
-        let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
+        let raw_data = ArrayView2::from_shape((64, 64), &DATA)
+            .expect("create raw_data")
+            .to_shared();
         let enc_data: Vec<_> = compression::Scheme::Raw
-            .compress(raw_data)
+            .compress(raw_data, Box2D::from_size((64, 64).into()))
             .await
             .expect("encode raw");
         assert_eq!(enc_data.len(), 64 * 64 * 3);
@@ -869,10 +877,12 @@ mod test {
 
     #[test(tokio::test(flavor = "multi_thread", worker_threads = 2))]
     async fn simple_encode_zlib() {
-        let raw_data = ArrayView2::from_shape((64, 64), &DATA).expect("create raw_data");
+        let raw_data = ArrayView2::from_shape((64, 64), &DATA)
+            .expect("create raw_data")
+            .to_shared();
         let enc_data: Vec<_> = compression::Scheme::try_from(Codec::Zlib)
             .expect("create zlib scheme")
-            .compress(raw_data)
+            .compress(raw_data, Box2D::from_size((64, 64).into()))
             .await
             .expect("encode zlib");
         let mut decompressor = flate2::Decompress::new(false);

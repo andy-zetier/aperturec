@@ -14,6 +14,7 @@ pub mod prelude {
     pub use super::geometry::{Box2D, Point, Rect, Size, Vector};
     pub use super::ndarray_convert::{AsNdarrayShape as _, AsNdarraySlice as _};
     pub use super::pixel::{
-        Pixel, Pixel24, Pixel24Map, Pixel32, Pixel32Map, Pixel32MapExt, PixelMap, PixelMapMut,
+        Pixel, Pixel24, Pixel24Map, Pixel24MapShared, Pixel32, Pixel32Map, Pixel32MapExt, PixelMap,
+        PixelMapMut,
     };
 }

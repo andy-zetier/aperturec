@@ -6,6 +6,7 @@ use crate::metrics::{
 
 use aperturec_graphics::{display::*, prelude::*, rectangle_cover::diff_rectangle_cover};
 use aperturec_state_machine::*;
+use aperturec_utils::cpu_bound;
 
 use anyhow::{Result, anyhow, bail, ensure};
 use futures::{self, TryFutureExt, future};
@@ -13,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::{self, JoinSet};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
@@ -39,7 +40,7 @@ pub struct Frame {
     pub id: usize,
     pub display_config: usize,
     pub display: usize,
-    pub buffers: Vec<SubframeBuffer<Pixel24Map>>,
+    pub buffers: Vec<SubframeBuffer<Pixel24MapShared>>,
 }
 
 #[derive(Debug)]
@@ -228,10 +229,10 @@ where
                         future::join_all(tracking_buffers.iter().map(|tb| {
                             let tb = tb.clone();
                             let framebuffer_data = framebuffer_data.clone();
-                            task::spawn_blocking(move || {
+                            cpu_bound::spawn(move || {
                                 tb.lock()
                                     .expect("tracking_buffer poisoned")
-                                    .update(&framebuffer_data)
+                                    .update(&framebuffer_data);
                             })
                         }))
                         .await;
@@ -302,7 +303,11 @@ where
                                 permits_revoked = false;
                             }
 
-                            let frame = tb.lock().expect("tracking buffer poisoned").cut_frame();
+                            let tb = tb.clone();
+                            let frame = cpu_bound::spawn(move || {
+                                tb.lock().expect("tracking buffer poisoned").cut_frame()
+                            })
+                            .await;
 
                             if let Some(frame) = frame {
                                 let frame = Arc::new(frame);
@@ -530,7 +535,7 @@ impl TrackingBuffer {
                         // SAFETY: We initialize the Pixel24Map contents in the closure provided to
                         // `build_uninit`, so `assume_init` is safe to call
                         let pixels = unsafe {
-                            Pixel24Map::build_uninit(b.as_shape(), |dst| {
+                            Pixel24MapShared::build_uninit(b.as_shape(), |dst| {
                                 self.data.slice(b.as_slice()).assign_to(dst)
                             })
                             .assume_init()
@@ -547,7 +552,7 @@ impl TrackingBuffer {
                 // SAFETY: We initialize the Pixel24Map in the call to `build_init`, so
                 // `assume_init` is safe to call
                 let pixels = unsafe {
-                    Pixel24Map::build_uninit(self.display.area.size.as_shape(), |dst| {
+                    Pixel24MapShared::build_uninit(self.display.area.size.as_shape(), |dst| {
                         self.data.assign_to(dst)
                     })
                     .assume_init()

@@ -1,7 +1,7 @@
 use crate::axis;
 use crate::geometry::*;
 
-use ndarray::{AssignElem, Data, DataMut, FoldWhile, Zip, prelude::*};
+use ndarray::{ArcArray2, AssignElem, Data, DataMut, FoldWhile, Zip, prelude::*};
 use std::mem;
 use wide::u32x8;
 
@@ -64,9 +64,12 @@ impl AssignElem<Pixel24> for &mut Pixel32 {
 /// A 2D array of Pixel24, alias for `Array2<Pixel24>`.
 pub type Pixel24Map = Array2<Pixel24>;
 
+/// A shared 2D array of Pixel24, alias for `ArcArray2<Pixel24>`.
+pub type Pixel24MapShared = ArcArray2<Pixel24>;
+
 /// A 32-bit pixel in B-G-R-A order, with explicit alpha.
 /// A 32-bit pixel in B-G-R-A order.
-/// 
+///
 /// The `#[repr(C, align(4))]` ensures 4-byte alignment so that
 /// rows of `Pixel32` can be safely reinterpreted as `u32` chunks
 /// for SIMD comparisons.
@@ -227,8 +230,8 @@ impl<T: PixelMapMut> PixelMapMut for &mut T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem::MaybeUninit;
     use ndarray::Array2;
+    use std::mem::MaybeUninit;
 
     #[test]
     fn pixel24_eqs_pixel32_when_alpha_is_max() {
@@ -320,10 +323,18 @@ mod tests {
         // dimensions ≥ 8 columns to trigger at least one SIMD chunk
         let rows = 4;
         let cols = 16;
-        let pixel = Pixel32 { blue: 1, green: 2, red: 3, alpha: 4 };
+        let pixel = Pixel32 {
+            blue: 1,
+            green: 2,
+            red: 3,
+            alpha: 4,
+        };
         let a: Array2<Pixel32> = Array2::from_elem((rows, cols), pixel);
         let b = a.clone();
-        assert!(a.simd_eq(&b), "simd_eq should return true for identical maps");
+        assert!(
+            a.simd_eq(&b),
+            "simd_eq should return true for identical maps"
+        );
     }
 
     #[test]
@@ -334,7 +345,15 @@ mod tests {
         let a: Array2<Pixel32> = Array2::from_elem((rows, cols), Pixel32::default());
         let mut b = a.clone();
         // flip one pixel in row 0, col 5
-        b[(0, 5)] = Pixel32 { blue: 10, green: 11, red: 12, alpha: 13 };
-        assert!(!a.simd_eq(&b), "simd_eq should detect a single-pixel difference");
+        b[(0, 5)] = Pixel32 {
+            blue: 10,
+            green: 11,
+            red: 12,
+            alpha: 13,
+        };
+        assert!(
+            !a.simd_eq(&b),
+            "simd_eq should detect a single-pixel difference"
+        );
     }
 }
