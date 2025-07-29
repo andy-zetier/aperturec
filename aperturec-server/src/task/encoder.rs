@@ -1,4 +1,4 @@
-use crate::metrics::{CompressionRatio, PixelsCompressed, TimeInCompression};
+use crate::metrics::*;
 use crate::task::frame_sync::Frame;
 
 use aperturec_graphics::prelude::*;
@@ -681,6 +681,7 @@ impl Transitionable<Running> for Task<Created> {
                             .collect::<Vec<_>>();
 
                         if relevant.is_empty() {
+                            let start = Instant::now();
                             self.state
                                 .mm_tx
                                 .send(mm_s2c::Message::Terminal(mm::EmptyFrameTerminal {
@@ -690,6 +691,7 @@ impl Transitionable<Running> for Task<Created> {
                                     display: frame.display as u32,
                                 }))
                             .await?;
+                            EncoderDispatchLatency::observe(start.elapsed().as_secs_f64());
                             trace!(
                                 display=%frame.display,
                                 dc=%frame.display_config,
@@ -751,10 +753,12 @@ impl Transitionable<Running> for Task<Created> {
                                             data,
                                         };
 
+                                        let start = Instant::now();
                                         self.state
                                             .mm_tx
                                             .send(mm_s2c::Message::Fragment(frag))
                                             .await?;
+                                        EncoderDispatchLatency::observe(start.elapsed().as_secs_f64() * 1000.);
 
                                         trace!(
                                             display=%frame.display,

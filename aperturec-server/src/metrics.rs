@@ -45,9 +45,33 @@ create_histogram_metric_with_buckets!(
 );
 
 create_histogram_metric_with_buckets!(
+    TrackingBufferUpdateLockLatency,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
+);
+
+create_histogram_metric_with_buckets!(
+    TrackingBufferCutFrameTime,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
+);
+
+create_histogram_metric_with_buckets!(
+    TrackingBufferCutFrameLockLatency,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
+);
+
+create_histogram_metric_with_buckets!(
     TrackingBufferDamageRatio,
     "%",
     prometheus::linear_buckets(10., 10., 10).unwrap()
+);
+
+create_histogram_metric_with_buckets!(
+    EncoderDispatchLatency,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
 );
 
 create_histogram_metric_with_buckets!(
@@ -64,6 +88,7 @@ pub fn setup_server_metrics() {
     FramesCut::register();
     FrameSyncPermitWaitLatency::register();
     EncoderCount::register();
+    EncoderDispatchLatency::register();
     TrackingBufferDisjointAreas::register();
     TrackingBufferUpdates::register();
     BackendEvent::register();
@@ -72,6 +97,9 @@ pub fn setup_server_metrics() {
     DisplayHeight::register();
     CaptureLatency::register();
     TrackingBufferUpdateTime::register();
+    TrackingBufferUpdateLockLatency::register();
+    TrackingBufferCutFrameTime::register();
+    TrackingBufferCutFrameLockLatency::register();
     MediaChannelSendLatency::register();
     RefreshCount::register();
     RateLimitMbps::register();

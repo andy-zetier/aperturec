@@ -1,8 +1,5 @@
 use crate::backend::Backend;
-use crate::metrics::{
-    FrameSyncPermitWaitLatency, FramesCut, TrackingBufferDamageRatio, TrackingBufferDisjointAreas,
-    TrackingBufferUpdateTime, TrackingBufferUpdates,
-};
+use crate::metrics::*;
 
 use aperturec_graphics::{display::*, prelude::*, rectangle_cover::diff_rectangle_cover};
 use aperturec_state_machine::*;
@@ -230,9 +227,12 @@ where
                             let tb = tb.clone();
                             let framebuffer_data = framebuffer_data.clone();
                             cpu_bound::spawn(move || {
-                                tb.lock()
-                                    .expect("tracking_buffer poisoned")
-                                    .update(&framebuffer_data);
+                                let start = Instant::now();
+                                let mut tb = tb.lock().expect("tracking buffer poisoned");
+                                TrackingBufferUpdateLockLatency::observe(
+                                    start.elapsed().as_secs_f64() * 1000.,
+                                );
+                                tb.update(&framebuffer_data);
                             })
                         }))
                         .await;
@@ -305,7 +305,17 @@ where
 
                             let tb = tb.clone();
                             let frame = cpu_bound::spawn(move || {
-                                tb.lock().expect("tracking buffer poisoned").cut_frame()
+                                let start = Instant::now();
+                                let mut tb = tb.lock().expect("tracking buffer poisoned");
+                                TrackingBufferCutFrameLockLatency::observe(
+                                    start.elapsed().as_secs_f64() * 1000.,
+                                );
+                                let start = Instant::now();
+                                let frame = tb.cut_frame();
+                                TrackingBufferCutFrameTime::observe(
+                                    start.elapsed().as_secs_f64() * 1000.,
+                                );
+                                frame
                             })
                             .await;
 
