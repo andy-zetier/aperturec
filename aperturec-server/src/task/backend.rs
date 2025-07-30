@@ -1,11 +1,12 @@
 use crate::backend::{Backend, Event, SwapableBackend};
-use crate::metrics::{CaptureLatency, RefreshCount};
+use crate::metrics::*;
 use crate::task::encoder;
 use crate::task::frame_sync::{NewDisplayConfig, SubframeBuffer};
 
 use aperturec_graphics::{
     display::Display, display::DisplayExtent, partition::partition_displays, prelude::*,
 };
+use aperturec_metrics::time;
 use aperturec_protocol::common::*;
 use aperturec_protocol::event::{self as em, server_to_client as em_s2c};
 use aperturec_state_machine::*;
@@ -15,7 +16,6 @@ use futures::{FutureExt, StreamExt, stream};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -279,17 +279,16 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                             bounding = bounding.union(&area);
                         }
                         if let Some(area) = display_extent.intersection(&bounding) {
-                            let start = Instant::now();
-                            let pixels = match self.state.backend.capture_area(area).await {
-                                Ok(pixels) => {
-                                    CaptureLatency::observe(Instant::now().duration_since(start).as_secs_f64() * 1000.0);
-                                    pixels
-                                },
-                                Err(e) => {
-                                    warn!(error = ?e, ?area, "Failed to capture area");
-                                    continue;
+                            let pixels = time!(
+                                CaptureLatency,
+                                match self.state.backend.capture_area(area).await {
+                                    Ok(pixels) => pixels,
+                                    Err(e) => {
+                                        warn!(error = ?e, ?area, "Failed to capture area");
+                                        continue;
+                                    }
                                 }
-                            };
+                            );
                             let fb_data = SubframeBuffer { origin: area.origin, pixels };
                             if let Err(e) = self.state.damage_tx.send(fb_data) {
                                 break Err(e.into());

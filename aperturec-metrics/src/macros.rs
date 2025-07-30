@@ -43,9 +43,30 @@
 //!     let data = 1.0;
 //!     MyStatsMetric::update_with(move || (data + 7.0) / 4.0);
 //!
-//!     aperturec_metrics::stop();
 //! }
 //!```
+//!
+//! # Time Macro Example
+//!
+//! As timing specific areas of code is a pretty common use-case, we created the `time` macro to
+//! easily time code and export that time to a metric
+//!
+//! ```no_run
+//! use aperturec_metrics::{MetricsInitializer, time};
+//! // define & register a histogram for latencies
+//! aperturec_metrics::create_histogram_metric!(MyLatencyMetric, "ms");
+//!
+//! MetricsInitializer::default()
+//!     .init()
+//!     .expect("init metrics");
+//! MyLatencyMetric::register();
+//!
+//! let value = time!(MyLatencyMetric, {
+//!     // do some work...
+//!     42
+//! });
+//! assert_eq!(value, 42);
+//! ```
 
 ///
 /// Create a [`Metric`](crate::Metric).
@@ -496,10 +517,38 @@ macro_rules! register_default_metric {
     };
 }
 
+/// Measure the execution time of a block (in milliseconds)
+/// and report it via the supplied metric’s `observe(f64)` method.
+///
+/// The metric type must expose an associated function
+/// `fn observe(impl Into<f64>)`.
+///
+/// # Example
+/// ```ignore
+/// // measures the duration of `heavy_work()` and feeds it into LatencyMetric::observe
+/// let result = time!(LatencyMetric, {
+///     heavy_work();
+///     // the block can return a value if you like:
+///     42
+/// });
+/// assert_eq!(result, 42);
+/// ```
+#[macro_export]
+macro_rules! time {
+    ($metric:ident, $($body:tt)+ $(,)?) => {{
+        let __time_start = ::std::time::Instant::now();
+        let __time_result = { $($body)+ };
+        $metric::observe(__time_start.elapsed().as_secs_f64() * 1000.0);
+        __time_result
+    }};
+}
+
 #[cfg(test)]
 mod test {
     use crate::MetricsInitializer;
+    use crate::time;
     use std::sync::Once;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use test_log::test;
 
     //
@@ -542,6 +591,28 @@ mod test {
                 .init()
                 .expect("Failed to init Metrics");
         });
+    }
+
+    // a dummy metric that simply flips a flag when `observe` is called
+    static TIME_CALLED: AtomicBool = AtomicBool::new(false);
+    struct Dummy;
+    impl Dummy {
+        fn observe(_: impl Into<f64>) {
+            TIME_CALLED.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn time_macro_returns_value_and_invokes_observe() {
+        // reset flag
+        TIME_CALLED.store(false, Ordering::SeqCst);
+        // the block returns 123, and should call Dummy::observe(...)
+        let result = time!(Dummy, 123);
+        assert_eq!(result, 123);
+        assert!(
+            TIME_CALLED.load(Ordering::SeqCst),
+            "time! did not call observe"
+        );
     }
 
     #[test]

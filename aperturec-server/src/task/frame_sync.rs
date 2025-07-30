@@ -1,5 +1,6 @@
 use crate::backend::Backend;
 use crate::metrics::*;
+use aperturec_metrics::time;
 
 use aperturec_graphics::{display::*, prelude::*, rectangle_cover::diff_rectangle_cover};
 use aperturec_state_machine::*;
@@ -8,7 +9,6 @@ use aperturec_utils::cpu_bound;
 use anyhow::{Result, anyhow, bail, ensure};
 use futures::{self, TryFutureExt, future};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
@@ -227,10 +227,10 @@ where
                             let tb = tb.clone();
                             let framebuffer_data = framebuffer_data.clone();
                             cpu_bound::spawn(move || {
-                                let start = Instant::now();
-                                let mut tb = tb.lock().expect("tracking buffer poisoned");
-                                TrackingBufferUpdateLockLatency::observe(
-                                    start.elapsed().as_secs_f64() * 1000.,
+                                // measure lock latency
+                                let mut tb = time!(
+                                    TrackingBufferUpdateLockLatency,
+                                    tb.lock().expect("tracking buffer poisoned")
                                 );
                                 tb.update(&framebuffer_data);
                             })
@@ -281,18 +281,17 @@ where
                                 }
                             };
 
-                            let permit_start = Instant::now();
-                            let (permits, _) = future::try_join(
-                                future::try_join_all(
-                                    txs_to_reserve.iter().cloned().map(|tx| tx.reserve_owned()),
+                            // measure channel+damage wait
+                            let (permits, _) = time!(FrameSyncPermitWaitLatency, {
+                                future::try_join(
+                                    future::try_join_all(
+                                        txs_to_reserve.iter().cloned().map(|tx| tx.reserve_owned()),
+                                    )
+                                    .map_err(anyhow::Error::new),
+                                    dh_fut,
                                 )
-                                .map_err(anyhow::Error::new),
-                                dh_fut,
-                            )
-                            .await?;
-                            FrameSyncPermitWaitLatency::observe(
-                                permit_start.elapsed().as_secs_f64() * 1000.0,
-                            );
+                                .await?
+                            });
 
                             if revoke_watch.has_changed().unwrap_or(false) {
                                 let _ = revoke_watch.borrow_and_update();
@@ -305,17 +304,10 @@ where
 
                             let tb = tb.clone();
                             let frame = cpu_bound::spawn(move || {
-                                let start = Instant::now();
-                                let mut tb = tb.lock().expect("tracking buffer poisoned");
-                                TrackingBufferCutFrameLockLatency::observe(
-                                    start.elapsed().as_secs_f64() * 1000.,
-                                );
-                                let start = Instant::now();
-                                let frame = tb.cut_frame();
-                                TrackingBufferCutFrameTime::observe(
-                                    start.elapsed().as_secs_f64() * 1000.,
-                                );
-                                frame
+                                let mut tb = time!(TrackingBufferCutFrameLockLatency, {
+                                    tb.lock().expect("tracking buffer poisoned")
+                                });
+                                time!(TrackingBufferCutFrameTime, tb.cut_frame())
                             })
                             .await;
 
@@ -487,33 +479,32 @@ impl TrackingBuffer {
         let pixmap = framebuffer_data.pixels.as_ndarray();
         let new = pixmap.slice(&fb_relative_area.as_slice());
 
-        let start = Instant::now();
-        match self.damage {
-            Damage::Full => {
-                new.assign_to(self.data.slice_mut(tb_relative_area.as_slice()));
-                TrackingBufferDamageRatio::observe(1.);
-            }
-            _ => {
-                let curr = self.data.slice(tb_relative_area.as_slice());
-                let cover_areas = diff_rectangle_cover(curr, new);
-
-                let mut total_area = 0;
-                for b in &cover_areas {
-                    let dst_area = b.translate(tb_relative_area.origin.to_vector());
-
-                    new.slice(b.as_slice())
-                        .assign_to(self.data.slice_mut(dst_area.as_slice()));
-
-                    total_area += dst_area.area();
-                    self.mark_stale(dst_area);
+        time!(
+            TrackingBufferUpdateTime,
+            match self.damage {
+                Damage::Full => {
+                    new.assign_to(self.data.slice_mut(tb_relative_area.as_slice()));
+                    TrackingBufferDamageRatio::observe(1.);
                 }
-                TrackingBufferDamageRatio::observe(
-                    total_area as f64 / intersection.area() as f64 * 100.,
-                );
+                _ => {
+                    let curr = self.data.slice(tb_relative_area.as_slice());
+                    let cover_areas = diff_rectangle_cover(curr, new);
+
+                    let mut total_area = 0;
+                    for b in &cover_areas {
+                        let dst_area = b.translate(tb_relative_area.origin.to_vector());
+
+                        new.slice(b.as_slice())
+                            .assign_to(self.data.slice_mut(dst_area.as_slice()));
+
+                        total_area += dst_area.area();
+                        self.mark_stale(dst_area);
+                    }
+                    TrackingBufferDamageRatio::observe(
+                        total_area as f64 / intersection.area() as f64 * 100.,
+                    );
+                }
             }
-        }
-        TrackingBufferUpdateTime::observe(
-            Instant::now().duration_since(start).as_secs_f64() * 1000.0,
         );
     }
 

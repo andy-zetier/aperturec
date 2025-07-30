@@ -75,6 +75,12 @@ create_histogram_metric_with_buckets!(
 );
 
 create_histogram_metric_with_buckets!(
+    EncoderLockLatency,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
+);
+
+create_histogram_metric_with_buckets!(
     MediaChannelSendLatency,
     "ms",
     prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
@@ -89,6 +95,7 @@ pub fn setup_server_metrics() {
     FrameSyncPermitWaitLatency::register();
     EncoderCount::register();
     EncoderDispatchLatency::register();
+    EncoderLockLatency::register();
     TrackingBufferDisjointAreas::register();
     TrackingBufferUpdates::register();
     BackendEvent::register();

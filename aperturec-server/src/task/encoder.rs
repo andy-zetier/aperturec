@@ -8,6 +8,7 @@ use aperturec_state_machine::*;
 use aperturec_utils::cpu_bound;
 
 use anyhow::{Result, anyhow, bail, ensure};
+use aperturec_metrics::time;
 use flate2::{Compression, write::DeflateEncoder};
 use futures::{prelude::*, stream::FuturesUnordered};
 use ndarray::{ArcArray2, prelude::*};
@@ -19,7 +20,6 @@ use std::slice;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
 
@@ -40,28 +40,39 @@ mod compression {
         pub async fn compress(&self, raw_data: ArcArray2<Pixel24>, area: Box2D) -> Result<Vec<u8>> {
             match self {
                 Scheme::Raw => Ok(cpu_bound::spawn(move || {
-                    do_compress_optimize_contig(raw_data.slice(area.as_slice()), |bytes| {
-                        bytes.to_vec()
-                    })
+                    time!(
+                        TimeInCompression,
+                        do_compress_optimize_contig(raw_data.slice(area.as_slice()), |bytes| {
+                            bytes.to_vec()
+                        })
+                    )
                 })
                 .await),
                 Scheme::Zlib(zlib_compressor) => {
                     let zlib_compressor = zlib_compressor.clone();
                     cpu_bound::spawn(move || {
-                        zlib_compressor
-                            .lock()
-                            .expect("poisoned zlib compressor")
-                            .compress(raw_data.slice(area.as_slice()))
+                        let mut zlib_compressor = time!(
+                            EncoderLockLatency,
+                            zlib_compressor.lock().expect("poisoned zlib compressor")
+                        );
+                        time!(
+                            TimeInCompression,
+                            zlib_compressor.compress(raw_data.slice(area.as_slice()))
+                        )
                     })
                     .await
                 }
                 Scheme::Jpegxl(jxl_compressor) => {
                     let jxl_compressor = jxl_compressor.clone();
                     cpu_bound::spawn(move || {
-                        jxl_compressor
-                            .lock()
-                            .expect("poisoned jxl compressor")
-                            .compress(raw_data.slice(area.as_slice()))
+                        let mut jxl_compressor = time!(
+                            EncoderLockLatency,
+                            jxl_compressor.lock().expect("poisoned jxl compressor")
+                        );
+                        time!(
+                            TimeInCompression,
+                            jxl_compressor.compress(raw_data.slice(area.as_slice()))
+                        )
                     })
                     .await
                 }
@@ -681,17 +692,20 @@ impl Transitionable<Running> for Task<Created> {
                             .collect::<Vec<_>>();
 
                         if relevant.is_empty() {
-                            let start = Instant::now();
-                            self.state
-                                .mm_tx
-                                .send(mm_s2c::Message::Terminal(mm::EmptyFrameTerminal {
-                                    frame: frame.id as u64,
-                                    encoder: self.id as u32,
-                                    display_config: frame.display_config as u32,
-                                    display: frame.display as u32,
-                                }))
-                            .await?;
-                            EncoderDispatchLatency::observe(start.elapsed().as_secs_f64());
+                            time!(
+                                EncoderDispatchLatency,
+                                {
+                                    self.state
+                                        .mm_tx
+                                        .send(mm_s2c::Message::Terminal(mm::EmptyFrameTerminal {
+                                            frame: frame.id as u64,
+                                            encoder: self.id as u32,
+                                            display_config: frame.display_config as u32,
+                                            display: frame.display as u32,
+                                        }))
+                                        .await?
+                                }
+                            );
                             trace!(
                                 display=%frame.display,
                                 dc=%frame.display_config,
@@ -713,10 +727,7 @@ impl Transitionable<Running> for Task<Created> {
                                         .to_usize();
 
                                     let size = buffer_relative_area.size();
-                                    let start = Instant::now();
                                     let data = self.state.compression_scheme.compress(buffer.pixels.clone(), buffer_relative_area).await?;
-                                    let end = Instant::now();
-                                    TimeInCompression::observe((end - start).as_secs_f64() * 1_000.0);
                                     PixelsCompressed::inc_by(size.area() as f64);
 
                                     let nbytes_produced = data.len();
@@ -753,12 +764,13 @@ impl Transitionable<Running> for Task<Created> {
                                             data,
                                         };
 
-                                        let start = Instant::now();
-                                        self.state
-                                            .mm_tx
-                                            .send(mm_s2c::Message::Fragment(frag))
-                                            .await?;
-                                        EncoderDispatchLatency::observe(start.elapsed().as_secs_f64() * 1000.);
+                                        time!(
+                                            EncoderDispatchLatency,
+                                            self.state
+                                                .mm_tx
+                                                .send(mm_s2c::Message::Fragment(frag))
+                                                .await?
+                                        );
 
                                         trace!(
                                             display=%frame.display,

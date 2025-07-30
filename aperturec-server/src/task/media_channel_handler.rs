@@ -2,9 +2,9 @@ use super::rate_limit::RateLimitHandle;
 
 use crate::metrics::MediaChannelSendLatency;
 use aperturec_channel::{self as channel, AsyncSender, AsyncServerMedia};
+use aperturec_metrics::time;
 use aperturec_protocol::media::server_to_client as mm_s2c;
 use aperturec_state_machine::*;
-use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
 use tokio::sync::mpsc;
@@ -70,11 +70,7 @@ impl Transitionable<Running> for Task<Created> {
                 tokio::select! {
                     biased;
                     Some(msg) = self.state.mm_rx.recv() => {
-                        let start = Instant::now();
-                        self.state.mc.send(msg.into()).await?;
-                        MediaChannelSendLatency::observe(
-                            Instant::now().duration_since(start).as_secs_f64() * 1000.0
-                        );
+                        time!(MediaChannelSendLatency, self.state.mc.send(msg.into()).await?);
                     }
                     _ = tx_ct.cancelled() => {
                         break Ok(());
