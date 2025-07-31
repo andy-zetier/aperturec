@@ -481,7 +481,7 @@ cargo:build-macos-client:
     - protobuf
     - pkgconf
   needs: []
-  stage: check-build-test
+  stage: package
   before_script:
     - export CARGO_ARGS="-p aperturec-client"
   script:
@@ -492,6 +492,7 @@ cargo:build-macos-client:
     - cargo test $CARGO_ARGS -q --no-run --message-format=json | jq -r 'select(.profile.test == true) | .filenames[]' | xargs -I {} cp {} test_executables/
     - cargo build $CARGO_ARGS --release
     - git diff-index --quiet HEAD
-
+    - $CI_PROJECT_DIR/ci/scripts/create-macos-package.sh
   artifacts:
-    paths: [target/release/aperturec-client]
+    paths:
+      - aperturec-client-macos*.tar.gz
