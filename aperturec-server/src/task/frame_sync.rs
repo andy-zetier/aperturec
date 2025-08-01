@@ -443,7 +443,7 @@ impl TrackingBuffer {
         self.display_config = display_config;
         self.display = display;
         self.data = Pixel32Map::default(self.display.area.as_shape());
-        self.clear();
+        self.damage = Damage::Full;
 
         // Notify damage listeners that the Display has been changed
         self.damage_watch_tx

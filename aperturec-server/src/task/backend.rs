@@ -12,7 +12,7 @@ use aperturec_protocol::event::{self as em, server_to_client as em_s2c};
 use aperturec_state_machine::*;
 
 use anyhow::{Result, anyhow, ensure};
-use futures::{FutureExt, StreamExt, stream};
+use futures::{FutureExt, StreamExt};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -140,8 +140,7 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
     async fn try_transition(
         mut self,
     ) -> Result<Self::SuccessStateful, Recovered<Self::FailureStateful, Self::Error>> {
-        let mut damage_stream =
-            try_recover_async!(self.state.backend.damage_stream(), self).boxed();
+        let mut damage_stream = try_recover_async!(self.state.backend.damage_stream(), self);
         let mut cursor_stream = try_recover_async!(self.state.backend.cursor_stream(), self);
 
         let ct = self.state.ct.clone();
@@ -264,11 +263,6 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                                 Ok(extent) => Rect::from_size(extent),
                                 Err(e) => break Err(e.into()),
                             };
-
-                            // Force fullscreen damage for enabled displays
-                            damage_stream = stream::iter(displays.into_iter().filter(|d| d.is_enabled).map(|d| d.area))
-                                .chain(damage_stream)
-                                .boxed();
                         } else if let Err(e) = self.state.backend.notify_event(event).await {
                             break Err(e);
                         }
