@@ -1,10 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="ApertureC Client"
-           Language="1033" Version="$(var.Version)"
+           Language="1033"
+           Version="$(var.Version)"
            Manufacturer="Zetier Inc."
            UpgradeCode="52BFF4AB-690B-4B22-A4DD-33C8B919C725">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"/>
+    <Upgrade Id="52BFF4AB-690B-4B22-A4DD-33C8B919C725">
+        <UpgradeVersion
+            Minimum="0.0.0"
+            IncludeMinimum="yes"
+            Maximum="$(var.Version)"
+            IncludeMaximum="yes"
+            Property="PREVIOUSFOUND" />
+    </Upgrade>
+    <InstallExecuteSequence>
+        <RemoveExistingProducts Before="CostInitialize"/>
+    </InstallExecuteSequence>
     <Media Id="1" Cabinet="cab1.cab" EmbedCab="yes" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">

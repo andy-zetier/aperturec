@@ -39,7 +39,12 @@ find package -maxdepth 1 -type f -exec mingw-strip {} +
     --win64 > files.wxs
 
   # compile MSI
-  wixl -v -D SourceDir="$(pwd)/" -D Win64=yes -D Version="$version" -a x64 -o ../aperturec-client.msi "${ROOT_DIR}/ci/package.wxs" files.wxs
+  wixl -v -a x64 \
+	  -D SourceDir="$(pwd)/" \
+	  -D Win64=yes \
+	  -D Version="${version}" \
+	  -o "../aperturec-client_${version}".msi \
+	  "${ROOT_DIR}/ci/package.wxs" files.wxs
 )
 
 rm -rf package

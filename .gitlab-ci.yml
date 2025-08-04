@@ -351,7 +351,7 @@ package:windows-client:
   artifacts:
     paths:
       - aperturec-client-win.zip
-      - aperturec-client.msi
+      - aperturec-client_*.msi
 
 package:create-deb:
   stage: package
