@@ -411,7 +411,7 @@ package:create-rpm:
     - mv target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE target/release/$CRATES
     - VERSION_ID=$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
     - mkdir -p target/$PKG_CLOUD_ID/$VERSION_ID
-    - cargo generate-rpm $CARGO_ARGS -o ./target/$PKG_CLOUD_ID/$VERSION_ID/ -s "{ release=$CI_PIPELINE_IID }"
+    - cargo generate-rpm $CARGO_ARGS -o ./target/$PKG_CLOUD_ID/$VERSION_ID/ -s "release=$CI_PIPELINE_IID"
   artifacts:
     paths: [target/*/*/$CRATES*.rpm]
   needs:
