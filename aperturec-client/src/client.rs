@@ -1,5 +1,6 @@
 use crate::frame::*;
 use crate::gtk3::{self, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
+use crate::metrics::EventChannelSendLatency;
 
 use aperturec_channel::{self as channel, Flushable, Receiver as _, Sender as _, Unified};
 use aperturec_graphics::{
@@ -7,6 +8,7 @@ use aperturec_graphics::{
     euclid_collections::*,
     geometry::*,
 };
+use aperturec_metrics::time;
 use aperturec_protocol::common::*;
 use aperturec_protocol::control::{
     self as cm, Architecture, Bitness, ClientGoodbye, ClientGoodbyeBuilder, ClientGoodbyeReason,
@@ -1275,7 +1277,8 @@ impl Client {
                     break;
                 }
 
-                if let Err(err) = ec_tx.send(msg) {
+                let send_res = time!(EventChannelSendLatency, ec_tx.send(msg));
+                if let Err(err) = send_res {
                     notify_control_tx
                         .send(ControlMessage::Quit(QuitReason::EventChannelDied))
                         .unwrap_or_else(|error| warn!(%error, "failed to send quit message to control channel thread"));

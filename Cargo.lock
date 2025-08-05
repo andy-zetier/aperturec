@@ -181,6 +181,7 @@ dependencies = [
  "ndarray",
  "openssl",
  "paste",
+ "prometheus",
  "range-set-blaze",
  "regex",
  "rpassword",
