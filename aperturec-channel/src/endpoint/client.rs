@@ -62,6 +62,7 @@ async fn do_connect<P: Into<Option<u16>>>(
     server_port: P,
 ) -> Result<s2n_quic::Connection> {
     let mut connection: Option<s2n_quic::Connection> = None;
+    let mut failure_reason = String::new();
 
     let server_port = server_port
         .into()
@@ -94,15 +95,15 @@ async fn do_connect<P: Into<Option<u16>>>(
                 break;
             }
             Err(error) => {
-                debug!(%error,
-                    "Failed to connect to {} ({})",
-                    server_addr, socket_addr
-                );
+                let reason =
+                    format!("Failed to connect to {server_addr} ({socket_addr}): {error}\n",);
+                debug!(reason);
+                failure_reason.push_str(&reason);
             }
         }
     }
 
-    let mut connection = connection.ok_or(anyhow!("failed connecting to {}", server_addr))?;
+    let mut connection = connection.ok_or(anyhow!(failure_reason))?;
     connection.keep_alive(true)?;
     Ok(connection)
 }

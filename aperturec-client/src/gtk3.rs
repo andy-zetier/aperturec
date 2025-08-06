@@ -156,6 +156,20 @@ static GTK_INIT: LazyLock<()> = LazyLock::new(|| {
     gtk::init().expect("Failed to initialize GTK");
 });
 
+/// Show a blocking modal error and return once it is dismissed.
+pub fn show_blocking_error(title: &str, text: &str) {
+    *GTK_INIT;
+    let dialog = gtk::MessageDialog::builder()
+        .modal(true)
+        .message_type(gtk::MessageType::Error)
+        .buttons(gtk::ButtonsType::Close)
+        .text(title)
+        .secondary_text(text)
+        .build();
+    dialog.run();
+    dialog.close();
+}
+
 pub mod image;
 
 pub const DEFAULT_RESOLUTION: Size = Size::new(800, 600);
@@ -557,17 +571,45 @@ impl GtkUi {
             }),
         );
 
+        let app = self.app.clone();
+
         self.ui_rx.attach(
             None,
-            glib::clone!(@strong windows, @strong workspace => move |msg| {
-                let mut windows = windows.borrow_mut();
-
+            glib::clone!(@strong windows, @strong workspace, @strong app => move |msg| {
                 match msg {
                     UiMessage::Quit(msg) => {
                         debug!("GTK received shutdown notification: {}", msg);
                         workspace.shutdown_started.set(true);
-                        windows.close();
+                        windows.borrow_mut().close();
                         return glib::source::Continue(false);
+                    }
+                    UiMessage::ShowModal { title, text } => {
+                        if let Some(window) = app.active_window() {
+                            let dialog = gtk::MessageDialog::builder()
+                                .transient_for(&window)
+                                .modal(true)
+                                .message_type(gtk::MessageType::Error)
+                                .buttons(gtk::ButtonsType::Ok)
+                                .text(&title)
+                                .secondary_text(&text)
+                                .build();
+                            let dialog_workspace = workspace.clone();
+                            let dialog_windows = windows.clone();
+                            dialog.connect_response(move |dialog, response| {
+                                match response {
+                                    gtk::ResponseType::Ok => dialog.close(),
+                                    gtk::ResponseType::DeleteEvent => {
+                                        if dialog_workspace.shutdown_started.get() {
+                                            dialog_windows.borrow_mut().close();
+                                        }
+                                    }
+                                    _ => debug!(?response, "Unhandled dialog response"),
+                                }
+                            });
+                            dialog.show_all();
+                        } else {
+                            warn!("No active window to show modal error dialog");
+                        }
                     }
                     UiMessage::CursorImage { cursor_data, id } => {
                         let CursorData { data, width, height, x_hot, y_hot } = cursor_data;
@@ -592,21 +634,22 @@ impl GtkUi {
                         let cursor = gdk::Cursor::from_pixbuf(&gdk::Display::default().unwrap(), &pixbuf, x_hot, y_hot);
                         let mut cursor_map = workspace.cursor_map.borrow_mut();
                         cursor_map.insert(id, cursor);
-                        windows.set_cursor(cursor_map.get(&id).unwrap());
+                        windows.borrow_mut().set_cursor(cursor_map.get(&id).unwrap());
                     }
                     UiMessage::CursorChange { id } => {
                         match workspace.cursor_map.borrow_mut().get(&id) {
-                            Some(cursor) => windows.set_cursor(cursor),
+                            Some(cursor) => windows.borrow_mut().set_cursor(cursor),
                             None => warn!("No cursor for ID {}. Ignoring", id),
                         }
                     }
                     UiMessage::DisplayChange { display_config } => {
                         trace!(?display_config);
-                        if let Err(error) = windows.update_display_configuration(display_config) {
+                        if let Err(error) = windows.borrow_mut()
+                                                .update_display_configuration(display_config) {
                             warn!(%error, "GTK did not accept new display configuration");
                         }
                     }
-                    UiMessage::Draw { draw } => windows.draw(draw),
+                    UiMessage::Draw { draw } => windows.borrow().draw(draw),
                 }
                 glib::source::Continue(true)
             }),

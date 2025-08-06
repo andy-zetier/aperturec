@@ -1,4 +1,5 @@
 use crate::frame::*;
+use crate::gtk3::show_blocking_error;
 use crate::gtk3::{self, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
 use crate::metrics::EventChannelSendLatency;
 
@@ -149,6 +150,10 @@ pub enum EventMessage {
 #[derive(Debug)]
 pub enum UiMessage {
     Quit(String),
+    ShowModal {
+        title: String,
+        text: String,
+    },
     CursorImage {
         id: usize,
         cursor_data: CursorData,
@@ -196,6 +201,32 @@ pub struct CursorData {
     pub height: i32,
     pub x_hot: i32,
     pub y_hot: i32,
+}
+
+trait ServerGoodbyeReasonExt {
+    fn friendly_str(&self) -> &'static str;
+}
+
+impl ServerGoodbyeReasonExt for cm::ServerGoodbyeReason {
+    fn friendly_str(&self) -> &'static str {
+        match self {
+            cm::ServerGoodbyeReason::AuthenticationFailure => {
+                "Authentication failure, check auth token"
+            }
+            cm::ServerGoodbyeReason::ClientExecDisallowed => {
+                "Server does not allow client specified applications"
+            }
+            cm::ServerGoodbyeReason::InactiveTimeout => "Client has been inactive for too long",
+            cm::ServerGoodbyeReason::NetworkError => "A network error has occurred",
+            cm::ServerGoodbyeReason::OtherLogin => "Server was logged into elsewhere",
+            cm::ServerGoodbyeReason::ProcessExited => "Remote application has terminated",
+            cm::ServerGoodbyeReason::ProcessLaunchFailed => {
+                "Failed to launch remote application, check server logs"
+            }
+            cm::ServerGoodbyeReason::ShuttingDown => "Server is shutting down",
+            _ => self.as_str_name(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1005,8 +1036,8 @@ impl Client {
         debug!("Client Init sent, waiting for ServerInit...");
         let si = match client_cc_read.receive() {
             Ok(cm_s2c::Message::ServerInit(si)) => si,
-            Ok(cm_s2c::Message::ServerGoodbye(gb)) => panic!("Server sent goodbye: {gb:?}"),
-            Err(other) => panic!("Failed to read ServerInit: {other:?}"),
+            Ok(cm_s2c::Message::ServerGoodbye(gb)) => bail!("{}", gb.reason().friendly_str()),
+            Err(other) => bail!("Failed to read ServerInit: {other:?}"),
         };
 
         debug!("{:#?}", si);
@@ -1049,6 +1080,7 @@ impl Client {
         let (control_rx_tx, control_rx_rx) = unbounded();
 
         let should_stop = self.should_stop.clone();
+        let server_addr = self.config.server_addr.clone();
         thread::spawn(move || {
             loop {
                 if should_stop.load(Ordering::Relaxed) {
@@ -1135,20 +1167,24 @@ impl Client {
                 select! {
                     recv(control_rx_rx) -> msg => match msg {
                         Ok(Ok(cm_s2c::Message::ServerGoodbye(gb))) => {
-                            if let Err(err) =
-                                ui_tx.send(UiMessage::Quit(String::from("Goodbye!")))
-                                {
-                                    warn!("Failed to send QuitMessage: {}", err);
-                                }
-                            if gb.reason() == cm::ServerGoodbyeReason::ShuttingDown {
-                                warn!("Server is shutting down");
-                            } else if gb.reason() == cm::ServerGoodbyeReason::OtherLogin {
-                                info!("Server was logged into elsewhere. Exiting");
-                            } else if gb.reason() == cm::ServerGoodbyeReason::InactiveTimeout {
-                                info!("Client has been inactive for too long. Exiting");
-                            } else {
-                                error!("Server sent goodbye with reason: {}", gb.reason().as_str_name());
-                            }
+                            let reason = gb.reason().friendly_str().to_string();
+
+                            match gb.reason() {
+                                cm::ServerGoodbyeReason::ShuttingDown => warn!("{}", &reason),
+                                cm::ServerGoodbyeReason::OtherLogin => info!("{}. Exiting", &reason),
+                                cm::ServerGoodbyeReason::InactiveTimeout => info!("{}. Exiting", &reason),
+                                _ => error!(reason),
+                            };
+
+                            ui_tx.send(UiMessage::ShowModal {
+                                title: format!("{} disconnected", &server_addr),
+                                text: reason,
+                            })
+                            .unwrap_or_else(|e| warn!(%e, "Failed to send ShowModal"));
+
+                            ui_tx.send(UiMessage::Quit(String::from("Goodbye!")))
+                            .unwrap_or_else(|e| warn!(%e, "Failed to send QuitMessage"));
+
                             break;
                         },
                         Ok(Ok(_)) => {
@@ -1158,8 +1194,11 @@ impl Client {
                             Ok(ioe) => match ioe.kind() {
                                 ErrorKind::WouldBlock | ErrorKind::Interrupted => (),
                                 _ => {
-                                    let _ = ui_tx
-                                        .send(UiMessage::Quit(format!("{ioe:?}")));
+                                    ui_tx.send(UiMessage::ShowModal {
+                                        title: "I/O Error".to_string(),
+                                        text: format!("Couldn't read control message: {ioe:?}")
+                                    })
+                                    .unwrap_or_else(|e| warn!(%e, "failed to send modal error"));
                                     let _ = control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into());
                                     trace!("Sent ClientGoodbye: Terminating");
                                     error!("Fatal I/O error reading control message: {:?}", ioe);
@@ -1167,8 +1206,11 @@ impl Client {
                                 }
                             },
                             Err(other) => {
-                                let _ = ui_tx
-                                    .send(UiMessage::Quit(format!("{other:?}")));
+                                ui_tx.send(UiMessage::ShowModal {
+                                    title: "Error".to_string(),
+                                    text: format!("Fatal error reading control message: {other:?}")
+                                })
+                                .unwrap_or_else(|e| warn!(%e, "failed to send modal error"));
                                 let _ = control_tx_tx.send(ClientGoodbye::new(
                                             client_id,
                                             ClientGoodbyeReason::Terminating.into(),
@@ -1344,9 +1386,18 @@ pub fn run_client(config: Configuration) -> Result<()> {
     let itc = ItcChannels::new();
 
     //
-    // Create Client and start up channels
+    // Try to start the client
     //
-    let client = Client::startup(&config, itc.client_half)?;
+    let client = match Client::startup(&config, itc.client_half) {
+        Ok(c) => c,
+        Err(e) => {
+            show_blocking_error(
+                &format!("Can't connect to {0}!", config.server_addr),
+                &format!("{e}"),
+            );
+            return Err(e);
+        }
+    };
 
     let ui = GtkUi::new(
         itc.gtk_half,
