@@ -457,33 +457,46 @@ package:create-rpm:
         ARCHITECTURE: !reference [.architectures:all]
         PKG_CLOUD_ID: el
 
-package:push:
-  stage: package
+.package_push:
   extends:
     - .runner-arch:independent
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+.package_cloud:
+  extends:
+    - .package_push
   image:
     name: ruby:slim-bookworm
     entrypoint: [""]
-  script:
+  before_script:
     - gem install package_cloud
+
+package:push:
+  stage: package
+  extends:
+    - .package_cloud
+  script:
     - ./ci/scripts/package_upload.sh
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
   needs:
     - job: package:create-deb
     - job: package:create-rpm
 
-cargo:build-macos-client:
+.macos-client:
   tags:
     - macos
     - arm64
     - gtk+3
     - protobuf
     - pkgconf
-  needs: []
-  stage: package
-  before_script:
-    - export CARGO_ARGS="-p aperturec-client"
+  variables:
+    CRATES: aperturec-client
+  
+cargo:check-build-test-macos-client:
+  stage: check-build-test 
+  extends:
+    - .cargo
+    - .macos-client
   script:
     - cargo fmt $CARGO_ARGS -- --check
     - cargo check --benches $CARGO_ARGS
@@ -492,7 +505,53 @@ cargo:build-macos-client:
     - cargo test $CARGO_ARGS -q --no-run --message-format=json | jq -r 'select(.profile.test == true) | .filenames[]' | xargs -I {} cp {} test_executables/
     - cargo build $CARGO_ARGS --release
     - git diff-index --quiet HEAD
+  artifacts:
+    paths:
+      - target/release/aperturec-client
+      - target/release/build
+
+package:macos-client:
+  stage: package
+  extends:
+    - .macos-client
+  script:
     - $CI_PROJECT_DIR/ci/scripts/create-macos-package.sh
+    - $CI_PROJECT_DIR/ci/scripts/package-macos-with-all-deps.sh
   artifacts:
     paths:
       - aperturec-client-macos*.tar.gz
+      - aperturec-client-macos-with-dependencies_*.zip
+  needs:
+    - job: cargo:check-build-test-macos-client
+
+package:push-macos-client:
+  stage: package
+  extends:
+    - .package_cloud
+  script:
+    - package_cloud yank zetier/aperturec-internal/anyfile aperturec-client-macos-with-dependencies_*.zip
+    - package_cloud push zetier/aperturec-internal/anyfile aperturec-client-macos-with-dependencies_*.zip
+  needs:
+    - job: package:macos-client
+
+package:trigger-macos-warpstations-build:
+  stage: package
+  extends:
+    - .package_push
+  image: curlimage/curl:latest
+  needs:
+    - job: package:push-macos-client
+      artifacts: false
+  script:
+    - |
+      curl -X POST \
+        -H "Accept: application/vnd.github.v3+json" \
+        -H "Authorization: Bearer $GITHUB_TRIGGER_TOKEN" \
+        https://api.github.com/repos/zetier/Warpstations-MacOS/dispatches \
+        -d '{
+          "event_type": "zip_uploaded",
+          "client_payload": {
+            "ref": "'"$CI_COMMIT_REF_NAME"'",
+            "pipeline_id": "'"$CI_PIPELINE_ID"'"
+          }
+        }'
