@@ -77,6 +77,6 @@ FROM --platform=${ARCHITECTURE} fips-capable-image as server-image-debian
 RUN $APT_UPDATE && $APT_INSTALL libxcb1-dev ubuntu-session mesa-utils lsb-release && $APT_CLEAN
 
 FROM --platform=${ARCHITECTURE} fips-capable-image as server-image-fedora
-RUN $DNF_INSTALL glx-utils libxcb-devel mesa-dri-drivers && $DNF_CLEAN
+RUN $DNF_INSTALL glx-utils libxcb-devel glx-utils && $DNF_CLEAN
 
 FROM --platform=${ARCHITECTURE} server-image-${OS_VARIANT} as server-image
