@@ -955,7 +955,7 @@ impl Client {
         notify_media_rx: Receiver<display::DisplayConfiguration>,
         ui_tx: glib::Sender<UiMessage>,
     ) -> Result<()> {
-        let (mm_rx_tx, mm_rx_rx) = unbounded();
+        let (mm_rx_tx, mm_rx_rx) = bounded(0);
         let should_stop = self.should_stop.clone();
         thread::spawn::<_, Result<()>>(move || {
             let res = loop {
