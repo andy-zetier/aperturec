@@ -538,7 +538,7 @@ package:trigger-macos-warpstations-build:
   stage: package
   extends:
     - .package_push
-  image: curlimage/curl:latest
+  image: curlimages/curl:latest
   needs:
     - job: package:push-macos-client
       artifacts: false
