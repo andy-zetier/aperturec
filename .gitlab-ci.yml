@@ -520,7 +520,7 @@ package:macos-client:
   artifacts:
     paths:
       - aperturec-client-macos*.tar.gz
-      - aperturec-client-macos-with-dependencies_*.zip
+      - aperturec-client-macos-with-all-dependencies_*.zip
   needs:
     - job: cargo:check-build-test-macos-client
 
@@ -529,8 +529,8 @@ package:push-macos-client:
   extends:
     - .package_cloud
   script:
-    - package_cloud yank zetier/aperturec-internal/anyfile aperturec-client-macos-with-dependencies_*.zip || true
-    - package_cloud push zetier/aperturec-internal/anyfile aperturec-client-macos-with-dependencies_*.zip
+    - package_cloud yank zetier/aperturec-internal/anyfile aperturec-client-macos-with-all-dependencies_*.zip || true
+    - package_cloud push zetier/aperturec-internal/anyfile aperturec-client-macos-with-all-dependencies_*.zip
   needs:
     - job: package:macos-client
 
