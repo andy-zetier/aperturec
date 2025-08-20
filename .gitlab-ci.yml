@@ -491,9 +491,9 @@ package:push:
     - pkgconf
   variables:
     CRATES: aperturec-client
-  
+
 cargo:check-build-test-macos-client:
-  stage: check-build-test 
+  stage: check-build-test
   extends:
     - .cargo
     - .macos-client
@@ -543,15 +543,4 @@ package:trigger-macos-warpstations-build:
     - job: package:push-macos-client
       artifacts: false
   script:
-    - |
-      curl -X POST \
-        -H "Accept: application/vnd.github.v3+json" \
-        -H "Authorization: Bearer $GITHUB_TRIGGER_TOKEN" \
-        https://api.github.com/repos/zetier/Warpstations-MacOS/dispatches \
-        -d '{
-          "event_type": "zip_uploaded",
-          "client_payload": {
-            "ref": "'"$CI_COMMIT_REF_NAME"'",
-            "pipeline_id": "'"$CI_PIPELINE_ID"'"
-          }
-        }'
+    - ci/scripts/trigger-warpstations-build.sh
