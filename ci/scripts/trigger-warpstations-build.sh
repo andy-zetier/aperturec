@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
 if [ -z "$GITHUB_TRIGGER_TOKEN" ]; then
