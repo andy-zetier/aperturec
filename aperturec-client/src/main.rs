@@ -36,11 +36,19 @@ pub struct ResolutionGroup {
     #[arg(short, long, default_value = format!("{:?}", gtk3::DEFAULT_RESOLUTION), value_parser = parse_resolution)]
     resolution: Size,
 
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     /// Set resolution to your displays' current sizes and startup in multi-monitor fullscreen
     /// mode. Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     fullscreen: bool,
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    /// Set resolution to the current display's size and startup in single-monitor fullscreen mode.
+    /// Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
+    #[arg(short, long, action = clap::ArgAction::SetTrue)]
+    fullscreen: bool,
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     /// Set resolution to the current display's size and startup in single-monitor fullscreen mode.
     /// Single-monitor fullscreen mode can be toggled at any time with Ctrl+Alt+Shift+Enter
     #[arg(long, action = clap::ArgAction::SetTrue)]
@@ -48,10 +56,20 @@ pub struct ResolutionGroup {
 }
 
 impl From<ResolutionGroup> for client::DisplayMode {
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     fn from(g: ResolutionGroup) -> Self {
         if g.fullscreen {
             client::DisplayMode::MultiFullscreen
         } else if g.single_fullscreen {
+            client::DisplayMode::SingleFullscreen
+        } else {
+            client::DisplayMode::Windowed { size: g.resolution }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn from(g: ResolutionGroup) -> Self {
+        if g.fullscreen {
             client::DisplayMode::SingleFullscreen
         } else {
             client::DisplayMode::Windowed { size: g.resolution }

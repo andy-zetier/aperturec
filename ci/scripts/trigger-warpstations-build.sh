@@ -6,16 +6,7 @@ if [ -z "$GITHUB_TRIGGER_TOKEN" ]; then
   exit 1
 fi
 
-PAYLOAD=$(cat <<EOF
-{
-  "event_type": "zip_uploaded",
-  "client_payload": {
-    "ref": "$CI_COMMIT_REF_NAME",
-    "pipeline_id": "$CI_PIPELINE_ID"
-  }
-}
-EOF
-)
+PAYLOAD=$(printf '{"event_type":"zip_uploaded","client_payload":{"ref":"%s","pipeline_id":"%s"}}' "$CI_COMMIT_REF_NAME" "$CI_PIPELINE_ID")
 
 echo "Triggering Warpstations build with payload:"
 echo "$PAYLOAD"
