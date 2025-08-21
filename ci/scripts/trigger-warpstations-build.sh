@@ -11,9 +11,10 @@ PAYLOAD=$(printf '{"event_type":"zip_uploaded","client_payload":{"ref":"%s","pip
 echo "Triggering Warpstations build with payload:"
 echo "$PAYLOAD"
 
-RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-  -H "Accept: application/vnd.github.v3+json" \
+RESPONSE=$(curl -L -s -w "\n%{http_code}" -X POST \
+  -H "Accept: application/vnd.github+json" \
   -H "Authorization: Bearer $GITHUB_TRIGGER_TOKEN" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
   -H "Content-Type: application/json" \
   https://api.github.com/repos/zetier/Warpstations-MacOS/dispatches \
   -d "$PAYLOAD")
