@@ -5,7 +5,7 @@ use aperturec_state_machine::*;
 use aperturec_utils::{args, paths};
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use gethostname::gethostname;
 use humantime::Duration;
 use std::path::PathBuf;
@@ -203,7 +203,10 @@ async fn main() -> Result<()> {
     }
     tracing_subscriber::registry().with(layers).init();
 
-    info!("ApertureC Server Startup");
+    info!(
+        "ApertureC Server Startup v{}",
+        Args::command().get_version().expect("get_version"),
+    );
 
     let metrics_exporters = args.metrics.to_exporters(env!("CARGO_CRATE_NAME"));
     if !metrics_exporters.is_empty() {
