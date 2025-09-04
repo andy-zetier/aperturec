@@ -243,7 +243,7 @@ impl XPixelMap {
 impl PixelMap for XPixelMap {
     type Pixel = XPixel;
 
-    fn as_ndarray(&self) -> ArrayView2<Self::Pixel> {
+    fn as_ndarray(&self) -> ArrayView2<'_, Self::Pixel> {
         let xwd_header = self.framebuffer.header();
         let pixel_offset = self.framebuffer.color_offset()
             + self.area.origin.y * xwd_header.bytes_per_line.get() as usize

@@ -165,7 +165,7 @@ impl<P> Pixel for P where P: PartialEq<Pixel32> + Copy + Send + Sync {}
 pub trait PixelMap: Sized {
     type Pixel: Pixel;
 
-    fn as_ndarray(&self) -> ArrayView2<Self::Pixel>;
+    fn as_ndarray(&self) -> ArrayView2<'_, Self::Pixel>;
 
     fn size(&self) -> Size {
         Size::new(
@@ -177,7 +177,7 @@ pub trait PixelMap: Sized {
 
 /// A mutable 2D view into pixel data.
 pub trait PixelMapMut: PixelMap {
-    fn as_ndarray_mut(&mut self) -> ArrayViewMut2<Self::Pixel>;
+    fn as_ndarray_mut(&mut self) -> ArrayViewMut2<'_, Self::Pixel>;
 }
 
 impl<E, P> PixelMap for ArrayBase<E, Ix2>
@@ -187,7 +187,7 @@ where
 {
     type Pixel = P;
 
-    fn as_ndarray(&self) -> ArrayView2<Self::Pixel> {
+    fn as_ndarray(&self) -> ArrayView2<'_, Self::Pixel> {
         self.view()
     }
 }
@@ -195,7 +195,7 @@ where
 impl<T: PixelMap> PixelMap for &T {
     type Pixel = T::Pixel;
 
-    fn as_ndarray(&self) -> ArrayView2<Self::Pixel> {
+    fn as_ndarray(&self) -> ArrayView2<'_, Self::Pixel> {
         <T as PixelMap>::as_ndarray(*self)
     }
 }
@@ -203,7 +203,7 @@ impl<T: PixelMap> PixelMap for &T {
 impl<T: PixelMap> PixelMap for &mut T {
     type Pixel = T::Pixel;
 
-    fn as_ndarray(&self) -> ArrayView2<Self::Pixel> {
+    fn as_ndarray(&self) -> ArrayView2<'_, Self::Pixel> {
         <T as PixelMap>::as_ndarray(*self)
     }
 }
@@ -213,13 +213,13 @@ where
     P: Pixel,
     E: DataMut<Elem = P>,
 {
-    fn as_ndarray_mut(&mut self) -> ArrayViewMut2<Self::Pixel> {
+    fn as_ndarray_mut(&mut self) -> ArrayViewMut2<'_, Self::Pixel> {
         self.view_mut()
     }
 }
 
 impl<T: PixelMapMut> PixelMapMut for &mut T {
-    fn as_ndarray_mut(&mut self) -> ArrayViewMut2<Self::Pixel> {
+    fn as_ndarray_mut(&mut self) -> ArrayViewMut2<'_, Self::Pixel> {
         <T as PixelMapMut>::as_ndarray_mut(*self)
     }
 }
