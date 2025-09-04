@@ -1,7 +1,8 @@
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+use crate::client::MonitorGeometry;
 use crate::client::{
     CursorData, DisplayEventMessage, DisplayMode, EventMessage, KeyEventMessageBuilder,
-    MonitorGeometry, MonitorsGeometry, MouseButtonEventMessageBuilder, PointerEventMessageBuilder,
-    UiMessage,
+    MonitorsGeometry, MouseButtonEventMessageBuilder, PointerEventMessageBuilder, UiMessage,
 };
 use crate::frame::Draw;
 use crate::gtk3::image::Image;
@@ -20,6 +21,7 @@ use std::iter;
 use std::rc::Rc;
 use std::sync::LazyLock;
 use std::time::Duration;
+use strum::{AsRefStr, EnumIter, IntoEnumIterator};
 use tracing::*;
 
 #[cfg(target_os = "windows")]
@@ -305,38 +307,53 @@ pub fn get_monitors_geometry() -> Result<MonitorsGeometry> {
     Ok(MonitorsGeometry { monitors })
 }
 
-#[derive(Debug, Clone, Copy)]
-enum KeyboardShortcut {
-    ToggleFullscreen { multi_monitor: bool },
+#[derive(Debug, Clone, Copy, AsRefStr, EnumIter)]
+enum Action {
     Refresh,
     Disconnect,
+    Window,
+    SingleMonitorFullscreen,
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    MultiMonitorFullscreen,
 }
 
-impl KeyboardShortcut {
-    fn from_event(key_event: &gdk::EventKey) -> Option<Self> {
-        let state = key_event.state() & gdk::ModifierType::MODIFIER_MASK;
+impl Action {
+    fn name(&self) -> &str {
+        self.as_ref()
+    }
 
-        if !state.contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::MOD1_MASK) {
-            None
-        } else if key_event.keyval() == gdk::keys::constants::Return {
-            if state.contains(gdk::ModifierType::SHIFT_MASK) {
-                Some(Self::ToggleFullscreen {
-                    multi_monitor: false,
-                })
-            } else {
-                Some(Self::ToggleFullscreen {
-                    multi_monitor: true,
-                })
-            }
-        // Some DEs will switch TTYs with Ctrl-Alt-F#. These DE's may allow these key-combos to
-        // propagate to the client (wihout a TTY switch) by using Shift (eg. Ctrl-Alt-Shift-F12)
-        } else if key_event.keyval() == gdk::keys::constants::F12 {
-            Some(Self::Disconnect)
-        } else if key_event.keyval() == gdk::keys::constants::F5 {
-            Some(Self::Refresh)
-        } else {
-            None
+    const fn label(&self) -> &'static str {
+        match self {
+            Action::Refresh => "Refresh",
+            Action::Disconnect => "Disconnect",
+            Action::Window => "Windowed Mode",
+            Action::SingleMonitorFullscreen => "Single Monitor Fullscreen Mode",
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            Action::MultiMonitorFullscreen => "Multi-Monitor Fullscreen Mode",
         }
+    }
+
+    const fn shortcut(&self) -> &'static str {
+        #[cfg(target_os = "macos")]
+        match self {
+            Action::Refresh => "<Ctrl><Primary>F5",
+            Action::Disconnect => "<Ctrl><Primary>F12",
+            Action::Window => "<Ctrl><Primary>W",
+            Action::SingleMonitorFullscreen => "<Ctrl><Primary>F",
+        }
+        #[cfg(not(target_os = "macos"))]
+        match self {
+            Action::Refresh => "<Ctrl><Alt><Shift>F5",
+            Action::Disconnect => "<Ctrl><Alt><Shift>F12",
+            Action::Window => "<Ctrl><Alt><Shift>W",
+            Action::SingleMonitorFullscreen => "<Ctrl><Alt>Return",
+            #[cfg(not(target_os = "windows"))]
+            Action::MultiMonitorFullscreen => "<Ctrl><Alt><Shift>Return",
+        }
+    }
+
+    fn qualified_name(&self) -> String {
+        format!("app.{}", self.name())
     }
 }
 
@@ -422,7 +439,7 @@ fn gtk_key_to_x11(key: &gdk::EventKey) -> u16 {
 
 pub struct GtkUi {
     app: Rc<gtk::Application>,
-    keyboard_shortcut_rx: glib::Receiver<KeyboardShortcut>,
+    action_rx: glib::Receiver<Action>,
     ui_rx: glib::Receiver<UiMessage>,
     workspace: Rc<UiWorkspace>,
     windows: Rc<RefCell<Windows>>,
@@ -442,12 +459,48 @@ impl GtkUi {
                 .build(),
         );
 
-        let (keyboard_shortcut_tx, keyboard_shortcut_rx) =
-            glib::MainContext::channel(glib::Priority::default());
+        let (action_tx, action_rx) = glib::MainContext::channel(glib::Priority::default());
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let css_provider = gtk::CssProvider::new();
+            css_provider
+                .load_from_data(
+                    b"
+                        menubar {
+                          background-color: @theme_bg_color;
+                          color: @theme_fg_color;
+                          border-bottom: 1px solid @borders;
+                        }
+                        .arrow-button {
+                          background: rgba(0, 0, 0, 0.6);
+                          color: #fff;
+                          background-image: none;
+                          border: none;
+                          box-shadow: none;
+                          padding: 4px;
+                          min-width: 20px;
+                          min-height: 20px;
+                          border-radius: 4px;
+                        }
+                        .menu-container {
+                          background: transparent;
+                        }
+                    ",
+                )
+                .expect("Failed to load CSS");
+            if let Some(screen) = gdk::Screen::default() {
+                gtk::StyleContext::add_provider_for_screen(
+                    &screen,
+                    &css_provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+        }
 
         let workspace = Rc::new(UiWorkspace::new(
             &itc,
-            keyboard_shortcut_tx,
+            action_tx,
             initial_monitors_geometry,
         )?);
         let windows = Rc::new(RefCell::new(Windows::new(
@@ -457,9 +510,38 @@ impl GtkUi {
             &initial_display_config,
         )?));
 
+        // Set up actions and menu
+        #[cfg(target_os = "macos")]
+        {
+            // On macOS, set up actions and menu in startup handler for proper timing
+            let app_clone = app.clone();
+            let workspace_clone = workspace.clone();
+            let windows_clone = windows.clone();
+            app.connect_startup(move |app| {
+                let manager = ActionManager::new(app_clone.clone(), workspace_clone.clone());
+                manager.register_all_actions();
+                manager.register_accelerators();
+                setup_native_menu_bar(app);
+                windows_clone.borrow().update_display_mode_actions();
+            });
+            // Set up macOS-specific window state tracking for green maximize button integration
+            windows
+                .borrow()
+                .single
+                .setup_macos_state_tracking(Rc::downgrade(&windows));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // On other platforms, set up actions immediately
+            let manager = ActionManager::new(app.clone(), workspace.clone());
+            manager.register_all_actions();
+            manager.register_accelerators();
+            windows.borrow().update_display_mode_actions();
+        }
+
         Ok(Self {
             app,
-            keyboard_shortcut_rx,
+            action_rx,
             ui_rx: itc.ui_rx,
             workspace,
             windows,
@@ -480,6 +562,7 @@ impl GtkUi {
             .connect_activate(glib::clone!(@strong windows => move |_| {
                 let mut windows = windows.borrow_mut();
                 match windows.mode {
+                    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                     WindowMode::Multi => {
                         windows.multi.activate()
                     }
@@ -490,48 +573,25 @@ impl GtkUi {
                 }
             }));
 
-        self.keyboard_shortcut_rx.attach(
+        self.action_rx.attach(
             None,
             glib::clone!(@strong windows, @strong workspace => move |shortcut| {
-                let server_can_multi_monitor = windows.borrow().server_can_multi_monitor;
                 match shortcut {
-                    KeyboardShortcut::ToggleFullscreen { multi_monitor } => {
-                        let curr_mode = windows.borrow().mode;
-                        match (curr_mode, multi_monitor, workspace.monitors_geometry.borrow().is_multi(), server_can_multi_monitor) {
-                            (WindowMode::Single { fullscreen: false }, true, true, true) => {
-                                debug!("windowed -> fullscreen multi-monitor");
-                                windows.borrow_mut().fullscreen_multi()
-                            }
-                            (WindowMode::Single { fullscreen: false }, false, _, _) |
-                                (WindowMode::Single { fullscreen: false }, _, false, _) |
-                                (WindowMode::Single { fullscreen: false }, _, _, false) => {
-                                debug!("windowed -> fullscreen single-monitor");
-                                windows.borrow_mut().fullscreen_single()
-                            }
-                            (WindowMode::Single { fullscreen: true }, true, true, true) => {
-                                debug!("fullscreen single-monitor -> fullscreen multi-monitor");
-                                windows.borrow_mut().fullscreen_multi()
-                            }
-                            (WindowMode::Single { fullscreen: true }, false, _, _) |
-                                (WindowMode::Single { fullscreen: true }, _, false, _) |
-                                (WindowMode::Single { fullscreen: true }, _, _, false) => {
-                                debug!("fullscreen single-monitor -> windowed");
-                                windows.borrow_mut().window()
-                            }
-                            (WindowMode::Multi, true, _, _) => {
-                                debug!("fullscreen multi-monitor -> windowed");
-                                windows.borrow_mut().window()
-                            }
-                            (WindowMode::Multi, false, _, _) => {
-                                debug!("fullscreen multi-monitor -> fullscreen single-monitor");
-                                windows.borrow_mut().fullscreen_single()
-                            }
-                        }
+                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                    Action::MultiMonitorFullscreen => {
+                        debug!("Switching to fullscreen multi-monitor");
+                        windows.borrow_mut().fullscreen_multi();
                     },
-                    KeyboardShortcut::Disconnect => {
+                    Action::SingleMonitorFullscreen  => {
+                        debug!("Switching to fullscreen single-monitor");
+                        windows.borrow_mut().fullscreen_single();
+                    },
+                    Action::Disconnect => {
+                        debug!("Disconnecting from server");
                         windows.borrow_mut().close();
                     },
-                    KeyboardShortcut::Refresh => {
+                    Action::Refresh => {
+                        debug!("Refreshing display");
                         let wins = windows.borrow_mut();
                         let displays: Vec<Display> = match wins.mode {
                             WindowMode::Single { .. } => {
@@ -543,6 +603,7 @@ impl GtkUi {
                                     is_enabled: true,
                                 }]
                             }
+                            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                             WindowMode::Multi => {
                                 wins
                                     .multi
@@ -564,7 +625,10 @@ impl GtkUi {
                                 Ok(_) => RefreshCount::inc(),
                                 Err(err) => warn!(%err, "GTK failed to tx DisplayEventMessage"),
                             }
-
+                    },
+                    Action::Window => {
+                        debug!("Switching to windowed mode");
+                        windows.borrow_mut().window();
                     }
                 }
                 glib::source::Continue(true)
@@ -664,7 +728,7 @@ impl GtkUi {
 struct UiWorkspace {
     event_tx: Sender<EventMessage>,
     monitors_geometry: RefCell<MonitorsGeometry>,
-    keyboard_shortcut_tx: glib::Sender<KeyboardShortcut>,
+    action_tx: glib::Sender<Action>,
     last_mouse_pos: Cell<Point>,
     cursor_map: RefCell<HashMap<usize, gdk::Cursor>>,
     lock_state: Cell<LockState>,
@@ -676,13 +740,13 @@ struct UiWorkspace {
 impl UiWorkspace {
     fn new(
         itc: &GtkSideItcChannels,
-        keyboard_shortcut_tx: glib::Sender<KeyboardShortcut>,
+        action_tx: glib::Sender<Action>,
         initial_monitors_geometry: MonitorsGeometry,
     ) -> Result<Self> {
         debug!(?initial_monitors_geometry);
         Ok(UiWorkspace {
             event_tx: itc.notify_event_tx.clone(),
-            keyboard_shortcut_tx,
+            action_tx,
             monitors_geometry: initial_monitors_geometry.into(),
             last_mouse_pos: Point::zero().into(),
             cursor_map: RefCell::default(),
@@ -694,44 +758,78 @@ impl UiWorkspace {
     }
 }
 
+pub struct ActionManager {
+    app: Rc<gtk::Application>,
+    workspace: Rc<UiWorkspace>,
+}
+
+impl ActionManager {
+    fn new(app: Rc<gtk::Application>, workspace: Rc<UiWorkspace>) -> Self {
+        Self { app, workspace }
+    }
+
+    /// Register all application actions with the GAction system
+    pub fn register_all_actions(&self) {
+        for action in Action::iter() {
+            let simple_action = gio::SimpleAction::new(action.name(), None);
+            let workspace = self.workspace.clone();
+
+            simple_action.connect_activate(move |_, _| {
+                Self::release_held_keys(&workspace);
+                workspace
+                    .action_tx
+                    .send(action)
+                    .unwrap_or_else(|err| warn!(%err, "Failed to send action"));
+            });
+
+            self.app.add_action(&simple_action);
+        }
+    }
+
+    /// Register global accelerators for all actions
+    pub fn register_accelerators(&self) {
+        for action in Action::iter() {
+            self.app
+                .set_accels_for_action(&action.qualified_name(), &[action.shortcut()]);
+        }
+    }
+
+    /// Release all held keys to ensure shortcuts do not alter interior state
+    fn release_held_keys(workspace: &UiWorkspace) {
+        while let Some(x11key) = workspace.held_keys.borrow_mut().pop_first() {
+            workspace
+                .event_tx
+                .send(EventMessage::KeyEventMessage(
+                    KeyEventMessageBuilder::default()
+                        .key(x11key.into())
+                        .is_pressed(false)
+                        .build()
+                        .expect("build KeyEventMessage"),
+                ))
+                .unwrap_or_else(|err| warn!(%err, "Failed to release held key"));
+        }
+    }
+}
+
 mod signal_handlers {
     use super::*;
 
     pub fn key_press(workspace: &UiWorkspace, key: &gdk::EventKey) {
         trace!(value=?key.keyval(), state=?key.state(), "GTK KeyPressEvent");
 
-        if let Some(shortcut) = KeyboardShortcut::from_event(key) {
-            while let Some(x11key) = workspace.held_keys.borrow_mut().pop_first() {
-                debug!(?x11key, "releasing keyboard shortcut");
-                workspace
-                    .event_tx
-                    .send(EventMessage::KeyEventMessage(
-                        KeyEventMessageBuilder::default()
-                            .key(x11key.into())
-                            .is_pressed(false)
-                            .build()
-                            .expect("GTK failed to build KeyEventMessage!"),
-                    ))
-                    .unwrap_or_else(|err| warn!("GTK failed to tx KeyEventMessage: {}", err));
-            }
-            workspace
-                .keyboard_shortcut_tx
-                .send(shortcut)
-                .unwrap_or_else(|error| warn!(%error, "GTK failed to tx KeyboardShortcut"));
-        } else {
-            let x11key = gtk_key_to_x11(key);
-            workspace.held_keys.borrow_mut().insert(x11key);
-            workspace
-                .event_tx
-                .send(EventMessage::KeyEventMessage(
-                    KeyEventMessageBuilder::default()
-                        .key(x11key.into())
-                        .is_pressed(true)
-                        .build()
-                        .expect("GTK failed to build KeyEventMessage!"),
-                ))
-                .unwrap_or_else(|err| warn!("GTK failed to tx KeyEventMessage: {}", err));
-        }
+        // Forward all key presses to the remote system
+        let x11key = gtk_key_to_x11(key);
+        workspace.held_keys.borrow_mut().insert(x11key);
+        workspace
+            .event_tx
+            .send(EventMessage::KeyEventMessage(
+                KeyEventMessageBuilder::default()
+                    .key(x11key.into())
+                    .is_pressed(true)
+                    .build()
+                    .expect("GTK failed to build KeyEventMessage!"),
+            ))
+            .unwrap_or_else(|err| warn!("GTK failed to tx KeyEventMessage: {}", err));
     }
 
     pub fn key_release(workspace: &UiWorkspace, key: &gdk::EventKey) {
@@ -1040,10 +1138,127 @@ mod signal_handlers {
     }
 }
 
+fn create_application_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+
+    let file_menu = gio::Menu::new();
+    file_menu.append(
+        Some(Action::Disconnect.label()),
+        Some(&Action::Disconnect.qualified_name()),
+    );
+    menu.append_submenu(Some("File"), &file_menu);
+
+    let view_menu = gio::Menu::new();
+    view_menu.append(
+        Some(Action::Refresh.label()),
+        Some(&Action::Refresh.qualified_name()),
+    );
+    view_menu.append(
+        Some(Action::Window.label()),
+        Some(&Action::Window.qualified_name()),
+    );
+    view_menu.append(
+        Some(Action::SingleMonitorFullscreen.label()),
+        Some(&Action::SingleMonitorFullscreen.qualified_name()),
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    view_menu.append(
+        Some(Action::MultiMonitorFullscreen.label()),
+        Some(&Action::MultiMonitorFullscreen.qualified_name()),
+    );
+
+    menu.append_submenu(Some("View"), &view_menu);
+    menu
+}
+
+/// Setup native macOS menu bar
+#[cfg(target_os = "macos")]
+fn setup_native_menu_bar(app: &gtk::Application) {
+    let menu = create_application_menu();
+    app.set_menubar(Some(&menu));
+}
+
+/// Setup overlay menu for non-macOS platforms
+#[cfg(not(target_os = "macos"))]
+fn setup_overlay_menu(overlay: &gtk::Overlay) -> Rc<gtk::Button> {
+    let menu_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    menu_container.set_halign(gtk::Align::Fill);
+    menu_container.set_valign(gtk::Align::Start);
+
+    let menu_revealer = Rc::new(gtk::Revealer::new());
+
+    let menu_bar = {
+        let app_menu = create_application_menu();
+        let menu_bar = gtk::MenuBar::from_model(&app_menu);
+        menu_bar.show_all();
+        Rc::new(menu_bar)
+    };
+
+    menu_revealer.add(&*menu_bar);
+    menu_revealer.set_reveal_child(false);
+    menu_revealer.set_halign(gtk::Align::Fill);
+    menu_revealer.set_valign(gtk::Align::Start);
+    menu_revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+    menu_revealer.set_transition_duration(250);
+    menu_revealer.show();
+
+    let toggle_arrow = Rc::new(gtk::Button::with_label("▼"));
+    toggle_arrow.set_size_request(10, 10);
+    toggle_arrow.set_relief(gtk::ReliefStyle::None);
+    toggle_arrow.set_halign(gtk::Align::Center);
+    toggle_arrow.set_valign(gtk::Align::Start);
+    toggle_arrow.set_margin_top(2);
+    toggle_arrow.set_can_focus(false);
+    toggle_arrow.set_focus_on_click(false);
+
+    // Apply CSS classes (styling is applied globally)
+    let context = toggle_arrow.style_context();
+    context.add_class("arrow-button");
+
+    let container_context = menu_container.style_context();
+    container_context.add_class("menu-container");
+
+    toggle_arrow.add_events(gdk::EventMask::ENTER_NOTIFY_MASK | gdk::EventMask::LEAVE_NOTIFY_MASK);
+    toggle_arrow.connect_enter_notify_event(|button, _| {
+        if let Some(window) = button.window() {
+            let display = window.display();
+            if let Some(hand_cursor) = gdk::Cursor::for_display(&display, gdk::CursorType::Hand2) {
+                window.set_cursor(Some(&hand_cursor));
+            }
+        }
+        gtk::Inhibit(false)
+    });
+
+    toggle_arrow.connect_leave_notify_event(|button, _| {
+        if let Some(window) = button.window() {
+            window.set_cursor(None);
+        }
+        gtk::Inhibit(false)
+    });
+
+    menu_container.pack_start(&*menu_revealer, false, false, 0);
+    menu_container.pack_start(&*toggle_arrow, false, false, 0);
+    menu_container.show();
+
+    overlay.add_overlay(&menu_container);
+    overlay.set_overlay_pass_through(&menu_container, true);
+
+    let revealer_ref = menu_revealer.clone();
+    toggle_arrow.connect_clicked(move |button| {
+        let revealed = revealer_ref.reveals_child();
+        revealer_ref.set_reveal_child(!revealed);
+        button.set_label(if revealed { "▼" } else { "▲" });
+    });
+
+    toggle_arrow
+}
+
 struct WindowInternals {
     app_window: Rc<gtk::ApplicationWindow>,
     drawing_area: Rc<gtk::Layout>,
     image: Rc<RefCell<Image>>,
+    #[cfg(not(target_os = "macos"))]
+    toggle_arrow: Rc<gtk::Button>,
 }
 
 impl WindowInternals {
@@ -1140,7 +1355,20 @@ impl WindowInternals {
             }),
         );
 
+        // Platform-specific window setup
+        #[cfg(not(target_os = "macos"))]
+        let toggle_arrow = {
+            let overlay = gtk::Overlay::new();
+            let toggle_arrow = setup_overlay_menu(&overlay);
+            overlay.set_child(Some(&*drawing_area));
+            overlay.show();
+            app_window.add(&overlay);
+            toggle_arrow
+        };
+
+        #[cfg(target_os = "macos")]
         app_window.add(&*drawing_area);
+
         app.connect_activate(glib::clone!(@strong app_window => move |app| {
             app.add_window(&*app_window)
         }));
@@ -1149,6 +1377,8 @@ impl WindowInternals {
             app_window,
             drawing_area,
             image,
+            #[cfg(not(target_os = "macos"))]
+            toggle_arrow,
         }
     }
 
@@ -1189,8 +1419,9 @@ impl WindowInternals {
 
 struct SingleDisplayWindow {
     internals: Rc<WindowInternals>,
-    needs_dm_on_map: Rc<Cell<bool>>,
     windowed_mode_size: Rc<Cell<Size>>,
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    needs_dm_on_map: Rc<Cell<bool>>,
 }
 
 impl SingleDisplayWindow {
@@ -1241,8 +1472,9 @@ impl SingleDisplayWindow {
         );
         SingleDisplayWindow {
             internals,
-            needs_dm_on_map,
             windowed_mode_size,
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            needs_dm_on_map,
         }
     }
 
@@ -1263,18 +1495,47 @@ impl SingleDisplayWindow {
     }
 
     fn activate(&mut self) {
-        self.internals.app_window.show_all();
+        self.internals.app_window.show();
+        self.internals.drawing_area.show();
+        #[cfg(not(target_os = "macos"))]
+        self.internals.toggle_arrow.show();
     }
 
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     fn deactivate(&mut self) {
         self.internals.app_window.hide();
     }
+
+    /// Sets up macOS-specific window state tracking to sync with green maximize button
+    #[cfg(target_os = "macos")]
+    fn setup_macos_state_tracking(&self, windows_ref: std::rc::Weak<RefCell<Windows>>) {
+        use glib::signal::Inhibit;
+
+        let windows_weak = windows_ref.clone();
+        self.internals
+            .app_window
+            .connect_window_state_event(move |_, event| {
+                if event.changed_mask().contains(gdk::WindowState::FULLSCREEN) {
+                    if let Some(windows) = windows_weak.upgrade() {
+                        let is_fullscreen = event
+                            .new_window_state()
+                            .contains(gdk::WindowState::FULLSCREEN);
+                        windows
+                            .borrow_mut()
+                            .sync_mode_from_window_state(is_fullscreen);
+                    }
+                }
+                Inhibit(false)
+            });
+    }
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 struct MultiDisplayWindowMapStatuses {
     mapped: EuclidMap<bool>,
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl MultiDisplayWindowMapStatuses {
     fn new(monitors_geometry: &MonitorsGeometry) -> Self {
         MultiDisplayWindowMapStatuses {
@@ -1316,10 +1577,12 @@ impl MultiDisplayWindowMapStatuses {
     }
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 struct MultiDisplayWindow {
     internals: Rc<WindowInternals>,
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl MultiDisplayWindow {
     fn new(
         app: Rc<gtk::Application>,
@@ -1369,11 +1632,13 @@ impl MultiDisplayWindow {
     }
 }
 
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 struct MultiDisplayWindows {
     windows: EuclidMap<MultiDisplayWindow>,
     needs_dm_on_configure: Rc<Cell<bool>>,
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl MultiDisplayWindows {
     fn new(app: Rc<gtk::Application>, workspace: Rc<UiWorkspace>) -> Self {
         let statuses = Rc::new(RefCell::new(MultiDisplayWindowMapStatuses::new(
@@ -1405,7 +1670,10 @@ impl MultiDisplayWindows {
 
     fn activate(&mut self) {
         for (_, window) in &self.windows {
-            window.internals.app_window.show_all();
+            window.internals.app_window.show();
+            window.internals.drawing_area.show();
+            #[cfg(not(target_os = "macos"))]
+            window.internals.toggle_arrow.show();
         }
     }
 
@@ -1416,9 +1684,12 @@ impl MultiDisplayWindows {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum WindowMode {
-    Single { fullscreen: bool },
+    Single {
+        fullscreen: bool,
+    },
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     Multi,
 }
 
@@ -1447,6 +1718,7 @@ impl WindowMode {
                 WindowMode::Single { fullscreen: false } => {
                     Ok(WindowMode::Single { fullscreen: false })
                 }
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                 WindowMode::Multi => {
                     warn!(
                         "Server provided single-monitor display configuration in multi-monitor mode"
@@ -1464,7 +1736,17 @@ impl WindowMode {
                     "Server provided multi-monitor initial display configuration which does not match monitors geometry on client"
                 );
             }
-            Ok(WindowMode::Multi)
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            {
+                Ok(WindowMode::Multi)
+            }
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            {
+                warn!(
+                    "Multi-monitor not supported on this platform, falling back to single-monitor fullscreen"
+                );
+                Ok(WindowMode::Single { fullscreen: true })
+            }
         }
     }
 }
@@ -1494,8 +1776,12 @@ struct Windows {
     display_config_id: usize,
     mode: WindowMode,
     workspace: Rc<UiWorkspace>,
+    app: Rc<gtk::Application>,
     single: SingleDisplayWindow,
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     multi: MultiDisplayWindows,
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     server_can_multi_monitor: bool,
 }
 
@@ -1518,6 +1804,7 @@ impl Windows {
             .area
             .size;
         let initial_windowed_size = match initial_window_mode {
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             WindowMode::Multi => DEFAULT_RESOLUTION,
             WindowMode::Single { fullscreen } => {
                 if fullscreen {
@@ -1528,6 +1815,7 @@ impl Windows {
             }
         };
 
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         let server_can_multi_monitor = !matches!(
             (initial_display_mode, initial_window_mode),
             (DisplayMode::MultiFullscreen, WindowMode::Single { .. })
@@ -1539,16 +1827,23 @@ impl Windows {
             dc_size,
             initial_windowed_size,
         );
+
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         let multi = MultiDisplayWindows::new(app.clone(), workspace.clone());
 
-        Ok(Windows {
+        let windows = Windows {
             mode: initial_window_mode,
             display_config_id: initial_display_config.id,
             workspace: workspace.clone(),
+            app: app.clone(),
             single,
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             multi,
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             server_can_multi_monitor,
-        })
+        };
+
+        Ok(windows)
     }
 
     fn update_display_configuration(&mut self, display_config: DisplayConfiguration) -> Result<()> {
@@ -1557,16 +1852,27 @@ impl Windows {
             bail!("out-of-date display configuration");
         }
 
-        let next_window_mode = WindowMode::derive_next(
-            self.mode,
-            &display_config,
-            &self.workspace.monitors_geometry.borrow(),
-        )?;
-        if let (WindowMode::Multi, WindowMode::Single { fullscreen }) =
-            (self.mode, next_window_mode)
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
-            self.single(fullscreen);
-            self.server_can_multi_monitor = false;
+            let next_window_mode = WindowMode::derive_next(
+                self.mode,
+                &display_config,
+                &self.workspace.monitors_geometry.borrow(),
+            )?;
+            if let (WindowMode::Multi, WindowMode::Single { fullscreen }) =
+                (self.mode, next_window_mode)
+            {
+                self.single(fullscreen);
+                self.server_can_multi_monitor = false;
+            }
+        }
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            WindowMode::derive_next(
+                self.mode,
+                &display_config,
+                &self.workspace.monitors_geometry.borrow(),
+            )?;
         }
         Ok(())
     }
@@ -1576,6 +1882,7 @@ impl Windows {
             WindowMode::Single { .. } => {
                 self.single.internals.draw(&draw, Point::zero());
             }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             WindowMode::Multi => {
                 for (area, window) in &self.multi.windows {
                     window.internals.draw(&draw, area.origin);
@@ -1585,8 +1892,15 @@ impl Windows {
     }
 
     fn all_windows(&self) -> impl Iterator<Item = &WindowInternals> {
-        iter::once(&*self.single.internals)
-            .chain(self.multi.windows.values().map(|w| &*w.internals))
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            iter::once(&*self.single.internals)
+                .chain(self.multi.windows.values().map(|w| &*w.internals))
+        }
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            iter::once(&*self.single.internals)
+        }
     }
 
     fn close(&mut self) {
@@ -1603,12 +1917,14 @@ impl Windows {
         }
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     fn fullscreen_multi(&mut self) {
         if !matches!(self.mode, WindowMode::Multi) {
             self.multi.needs_dm_on_configure.set(true);
             self.multi.activate();
             self.single.deactivate();
             self.mode = WindowMode::Multi;
+            self.update_display_mode_actions();
         }
     }
 
@@ -1622,6 +1938,7 @@ impl Windows {
 
     fn single(&mut self, fullscreen: bool) {
         match self.mode {
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
             WindowMode::Multi => {
                 self.single.set_fullscreen(fullscreen);
                 self.single.needs_dm_on_map.set(true);
@@ -1637,5 +1954,56 @@ impl Windows {
             }
         }
         self.mode = WindowMode::Single { fullscreen };
+        self.update_display_mode_actions();
+    }
+
+    /// Updates the enabled state of display mode actions based on the current mode
+    /// Disables the action corresponding to the current mode and enables others
+    fn update_display_mode_actions(&self) {
+        use gio::prelude::ActionMapExt;
+
+        if let Some(action) = self.app.lookup_action(Action::Window.as_ref()) {
+            if let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
+                let enabled = !matches!(self.mode, WindowMode::Single { fullscreen: false });
+                simple_action.set_enabled(enabled);
+            }
+        }
+
+        if let Some(action) = self
+            .app
+            .lookup_action(Action::SingleMonitorFullscreen.as_ref())
+        {
+            if let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
+                let enabled = !matches!(self.mode, WindowMode::Single { fullscreen: true });
+                simple_action.set_enabled(enabled);
+            }
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        if let Some(action) = self
+            .app
+            .lookup_action(Action::MultiMonitorFullscreen.as_ref())
+        {
+            if let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
+                let enabled = !matches!(self.mode, WindowMode::Multi);
+                simple_action.set_enabled(enabled);
+            }
+        }
+    }
+
+    /// Synchronizes the internal mode state with the actual window fullscreen state (macOS only)
+    /// This is used when the window state changes due to external events like the green maximize button
+    #[cfg(target_os = "macos")]
+    fn sync_mode_from_window_state(&mut self, is_fullscreen: bool) {
+        let new_mode = if is_fullscreen {
+            WindowMode::Single { fullscreen: true }
+        } else {
+            WindowMode::Single { fullscreen: false }
+        };
+
+        if self.mode != new_mode {
+            self.mode = new_mode;
+            self.update_display_mode_actions();
+        }
     }
 }
