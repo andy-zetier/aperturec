@@ -1,11 +1,14 @@
 [package]
 name = "aperturec-client"
-description = "ApertureC Client"
+description = "ApertureC Client library"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
-build = "../common_build.rs"
+build = "build.rs"
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
 aperturec-channel = { path = "../aperturec-channel" }
@@ -24,6 +27,7 @@ gethostname = "1.0"
 gtk = "0.17.1"
 jxl-sys = "0.1"
 keycode = "0.4.0"
+libc = { version = "0.2", optional = true }
 ndarray = "0.16"
 openssl = "0.10.64"
 paste = "1.0.14"
@@ -41,6 +45,9 @@ url = "2.5"
 [dev-dependencies]
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
 
+[build-dependencies]
+cbindgen = { version = "0.29", optional = true }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.59", features = [
     "Win32_Foundation",
@@ -55,19 +62,4 @@ aperturec-metrics = { path = "../aperturec-metrics", features = ["heap"] }
 
 [features]
 draw-debug = []
-
-[package.metadata.deb]
-copyright = "2024, Zetier Inc."
-maintainer = "ApertureC Team <aperturec@zetier.com>"
-section = "x11"
-assets = [
-  ["target/release/aperturec-client", "/usr/bin/aperturec-client", "755"],
-  ["packaging/aperturec-client.desktop", "/usr/share/applications/aperturec-client.desktop", "644"],
-]
-
-[package.metadata.generate-rpm]
-assets = [
-  { source = "target/release/aperturec-client", dest = "/usr/bin/aperturec-client", mode = "755" },
-  { source = "packaging/aperturec-client.desktop", dest = "/usr/share/applications/aperturec-client.desktop", mode = "644" }
-]
- 
+ffi-lib = ["cbindgen", "libc"]

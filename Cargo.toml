@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "aperturec-channel",
+  "aperturec-client-gtk3",
   "aperturec-client",
   "aperturec-graphics",
   "aperturec-protocol",

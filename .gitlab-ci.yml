@@ -9,12 +9,12 @@ stages:
   - arm64
 
 .crates:package:
-  - aperturec-client
+  - aperturec-client-gtk3
   - aperturec-server
 .crates:no-extra-dependencies: "aperturec-metrics,aperturec-protocol,aperturec-state-machine,aperturec-utils"
 .crates:fips-dependencies: "aperturec-channel"
 .crates:server-dependencies: "aperturec-server"
-.crates:client-dependencies: "aperturec-client"
+.crates:client-dependencies: "aperturec-client-gtk3"
 
 .ubuntu-22: &ubuntu-22
   IMAGE_UPSTREAM: docker.io/library/ubuntu:22.04
@@ -212,8 +212,8 @@ cargo:check-build-test:
     - RUST_BACKTRACE=1 cargo test $CARGO_ARGS
     - cargo build $CARGO_ARGS --release
     - |-
-      if [[ -f target/release/$CRATES ]]; then
-        mv target/release/$CRATES target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE
+      if [[ -v BIN_NAME && -f target/release/$BIN_NAME ]]; then
+        mv target/release/$BIN_NAME target/release/$BIN_NAME-$IMAGE_NAME-$ARCHITECTURE
       fi
     - git diff-index --quiet HEAD
   parallel:
@@ -252,41 +252,49 @@ cargo:check-build-test:
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *ubuntu-22
         CRATES: aperturec-server
+        BIN_NAME: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *ubuntu-24
         CRATES: aperturec-server
+        BIN_NAME: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *fedora-41
         CRATES: aperturec-server
+        BIN_NAME: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *centos-stream9
         CRATES: aperturec-server
+        BIN_NAME: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *ubuntu-22
-        CRATES: aperturec-client
+        CRATES: aperturec-client-gtk3
+        BIN_NAME: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *ubuntu-24
-        CRATES: aperturec-client
+        CRATES: aperturec-client-gtk3
+        BIN_NAME: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *fedora-41
-        CRATES: aperturec-client
+        CRATES: aperturec-client-gtk3
+        BIN_NAME: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *centos-stream9
-        CRATES: aperturec-client
+        CRATES: aperturec-client-gtk3
+        BIN_NAME: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
   needs:
     - job: create-images:deploy-manifest
       optional: true
   artifacts:
-    paths: [target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE]
+    paths: [target/release/$BIN_NAME-$IMAGE_NAME-$ARCHITECTURE]
 
 cargo:check-build-windows-client:
   stage: check-build-test
@@ -300,18 +308,18 @@ cargo:check-build-windows-client:
     - mkdir test_executables
     - cargo test $CARGO_ARGS -q --no-run --message-format=json | jq -r 'select(.profile.test == true) | .filenames[]' | xargs -I {} cp {} test_executables/
     - cargo build $CARGO_ARGS --release
-    - mv target/x86_64-pc-windows-gnu/release/$CRATES.exe .
+    - mv target/x86_64-pc-windows-gnu/release/aperturec-client.exe .
     - git diff-index --quiet HEAD
   variables:
     <<: *fedora-40
-    CRATES: aperturec-client
+    CRATES: aperturec-client-gtk3
     IMAGE_TARGET: client-image-windows
     ARCHITECTURE: amd64
   needs:
     - job: create-images:deploy-manifest
       optional: true
   artifacts:
-    paths: [test_executables, $CRATES.exe]
+    paths: [test_executables, aperturec-client.exe]
 
 cargo:doc:
   stage: doc
@@ -343,7 +351,7 @@ package:windows-client:
     - $CI_PROJECT_DIR/ci/scripts/create-windows-package.sh
   variables:
     <<: *fedora-40
-    CRATES: aperturec-client
+    CRATES: aperturec-client-gtk3
     IMAGE_TARGET: client-image-windows
     ARCHITECTURE: amd64
   needs:
@@ -359,7 +367,7 @@ package:create-deb:
     - .cargo
     - .runner-arch:dependent
   script:
-    - mv target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE target/release/$CRATES
+    - mv target/release/$BIN_NAME-$IMAGE_NAME-$ARCHITECTURE target/release/$BIN_NAME
     - cargo deb $CARGO_ARGS -o ./target/$(lsb_release -i -s | tr "A-Z" "a-z")/$(lsb_release -c -s)/ --deb-revision="$CI_PIPELINE_IID" --no-build -- --release
   artifacts:
     paths: [target/*/*/$CRATES_*_*.deb]
@@ -369,36 +377,44 @@ package:create-deb:
         matrix:
           - <<: *ubuntu-22
             CRATES: aperturec-server
+            BIN_NAME: aperturec-server
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
           - <<: *ubuntu-24
             CRATES: aperturec-server
+            BIN_NAME: aperturec-server
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
           - <<: *ubuntu-22
-            CRATES: aperturec-client
+            CRATES: aperturec-client-gtk3
+            BIN_NAME: aperturec-client
             IMAGE_TARGET: client-image
             ARCHIECTURE: !reference [.architectures:all]
           - <<: *ubuntu-24
-            CRATES: aperturec-client
+            CRATES: aperturec-client-gtk3
+            BIN_NAME: aperturec-client
             IMAGE_TARGET: client-image
             ARCHIECTURE: !reference [.architectures:all]
   parallel:
     matrix:
       - <<: *ubuntu-22
         CRATES: aperturec-server
+        BIN_NAME: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *ubuntu-24
         CRATES: aperturec-server
+        BIN_NAME: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *ubuntu-22
-        CRATES: aperturec-client
+        CRATES: aperturec-client-gtk3
+        BIN_NAME: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
       - <<: *ubuntu-24
-        CRATES: aperturec-client
+        CRATES: aperturec-client-gtk3
+        BIN_NAME: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
 
@@ -408,7 +424,7 @@ package:create-rpm:
     - .cargo
     - .runner-arch:dependent
   script:
-    - mv target/release/$CRATES-$IMAGE_NAME-$ARCHITECTURE target/release/$CRATES
+    - mv target/release/$BIN_NAME-$IMAGE_NAME-$ARCHITECTURE target/release/$BIN_NAME
     - VERSION_ID=$(grep '^VERSION_ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
     - mkdir -p target/$PKG_CLOUD_ID/$VERSION_ID
     - cargo generate-rpm $CARGO_ARGS -o ./target/$PKG_CLOUD_ID/$VERSION_ID/ -s "release=$CI_PIPELINE_IID"
@@ -420,39 +436,47 @@ package:create-rpm:
         matrix:
           - <<: *fedora-41
             CRATES: aperturec-server
+            BIN_NAME: aperturec-server
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
           - <<: *centos-stream9
             CRATES: aperturec-server
+            BIN_NAME: aperturec-server
             IMAGE_TARGET: server-image
             ARCHIECTURE: !reference [.architectures:all]
           - <<: *fedora-41
-            CRATES: aperturec-client
+            CRATES: aperturec-client-gtk3
+            BIN_NAME: aperturec-client
             IMAGE_TARGET: client-image
             ARCHIECTURE: !reference [.architectures:all]
           - <<: *centos-stream9
-            CRATES: aperturec-client
+            CRATES: aperturec-client-gtk3
+            BIN_NAME: aperturec-client
             IMAGE_TARGET: client-image
             ARCHIECTURE: !reference [.architectures:all]
   parallel:
     matrix:
       - <<: *fedora-41
         CRATES: aperturec-server
+        BIN_NAME: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
         PKG_CLOUD_ID: fedora
       - <<: *centos-stream9
         CRATES: aperturec-server
+        BIN_NAME: aperturec-server
         IMAGE_TARGET: server-image
         ARCHITECTURE: !reference [.architectures:all]
         PKG_CLOUD_ID: el
       - <<: *fedora-41
-        CRATES: aperturec-client
+        CRATES: aperturec-client-gtk3
+        BIN_NAME: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
         PKG_CLOUD_ID: fedora
       - <<: *centos-stream9
-        CRATES: aperturec-client
+        CRATES: aperturec-client-gtk3
+        BIN_NAME: aperturec-client
         IMAGE_TARGET: client-image
         ARCHITECTURE: !reference [.architectures:all]
         PKG_CLOUD_ID: el
@@ -490,7 +514,7 @@ package:push:
     - protobuf
     - pkgconf
   variables:
-    CRATES: aperturec-client
+    CRATES: aperturec-client-gtk3
 
 cargo:check-build-test-macos-client:
   stage: check-build-test

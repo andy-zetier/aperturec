@@ -1,0 +1,33 @@
+[package]
+name = "aperturec-client-gtk3"
+description = "GTK3 implementation of the ApertureC Client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+build = "../common_build.rs"
+
+[[bin]]
+name = "aperturec-client"
+path = "src/main.rs"
+
+[dependencies]
+aperturec-client = { path = "../aperturec-client" }
+
+anyhow = "1.0"
+
+[package.metadata.deb]
+copyright = "2024, Zetier Inc."
+maintainer = "ApertureC Team <aperturec@zetier.com>"
+section = "x11"
+assets = [
+  ["target/release/aperturec-client", "/usr/bin/aperturec-client", "755"],
+  ["packaging/aperturec-client.desktop", "/usr/share/applications/aperturec-client.desktop", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+  { source = "target/release/aperturec-client", dest = "/usr/bin/aperturec-client", mode = "755" },
+  { source = "packaging/aperturec-client.desktop", dest = "/usr/share/applications/aperturec-client.desktop", mode = "644" }
+]
+ 

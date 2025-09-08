@@ -169,6 +169,7 @@ dependencies = [
  "aperturec-metrics",
  "aperturec-protocol",
  "aperturec-utils",
+ "cbindgen",
  "clap",
  "crossbeam",
  "ctrlc",
@@ -178,6 +179,7 @@ dependencies = [
  "gtk",
  "jxl-sys",
  "keycode",
+ "libc",
  "ndarray",
  "openssl",
  "paste",
@@ -193,6 +195,14 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "windows 0.59.0",
+]
+
+[[package]]
+name = "aperturec-client-gtk3"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aperturec-client",
 ]
 
 [[package]]
@@ -680,6 +690,25 @@ name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
+
+[[package]]
+name = "cbindgen"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "975982cdb7ad6a142be15bdf84aea7ec6a9e5d4d797c004d43185b24cfe4e684"
+dependencies = [
+ "clap",
+ "heck 0.5.0",
+ "indexmap 2.9.0",
+ "log",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 2.0.103",
+ "tempfile",
+ "toml",
+]
 
 [[package]]
 name = "cc"
@@ -4600,8 +4629,15 @@ dependencies = [
  "serde",
  "serde_spanned",
  "toml_datetime",
+ "toml_write",
  "winnow 0.7.11",
 ]
+
+[[package]]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tonic"
