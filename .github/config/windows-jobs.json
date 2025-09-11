@@ -1,0 +1,53 @@
+{
+  "crate_groups": [
+    {
+      "name": "client",
+      "crates": ["aperturec-client-gtk3", "aperturec-client"],
+      "package_crate": "aperturec-client-gtk3",
+      "package_types": ["msi", "zip"],
+      "image": "client-image-windows",
+      "target": "x86_64-pc-windows-gnu",
+      "needs_display": false
+    }
+  ],
+  "platforms": [
+    {"arch": "amd64", "runner": "ubuntu-latest"}
+  ],
+  "os_variants": ["fedora-40"],
+  "jobs": {
+    "test": {
+      "artifacts": {
+        "client": [
+          {
+            "name-prefix": "tests",
+            "path": "test_executables/"
+          }
+        ]
+      }
+    },
+    "build": {
+      "artifacts": {
+        "client": [
+          {
+            "name-prefix": "client",
+            "path": "target/x86_64-pc-windows-gnu/release/aperturec-client.exe"
+          }
+        ]
+      }
+    },
+    "package": {
+      "artifacts": {
+        "client": [
+          {
+            "name-prefix": "client-zip",
+            "path": "aperturec-client-win.zip"
+          },
+          {
+            "name-prefix": "client-msi",
+            "path": "aperturec-client_*.msi"
+          }
+        ]
+      }
+    }
+  }
+}

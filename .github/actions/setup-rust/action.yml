@@ -1,0 +1,41 @@
+name: 'Setup Rust'
+description: 'Performs some common steps to setup a Rust environment on images already containing rustup'
+inputs:
+  toolchain:
+    description: 'Toolchain to target'
+    default: 'stable'
+    required: false
+  components:
+    description: 'Comma-separated list of Rust components to install (e.g., rustfmt,clippy)'
+    required: false
+  cargo-packages:
+    description:  'Comma-separated list of Cargo packages to install (e.g., cargo-deny)'
+    required: false
+  os-image:
+    description: 'OS image name for cache key differentiation (e.g., ubuntu-22, ubuntu-24)'
+    required: false
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Rust environment
+      shell: bash
+      run: |
+        echo "RUSTUP_HOME=/root/.rustup" >> $GITHUB_ENV
+        echo "CARGO_HOME=/root/.cargo" >> $GITHUB_ENV
+        echo "/root/.cargo/bin" >> $GITHUB_PATH
+    - name: Default toolchain
+      shell: bash
+      run: rustup default ${{ inputs.toolchain }}
+    - name: Add Rustup components
+      if: inputs.components
+      shell: bash
+      run: rustup component add ${{ inputs.components }}
+    - name: Install Cargo packages
+      if: inputs.cargo-packages
+      shell: bash
+      run: cargo install ${{ inputs.cargo-packages }}
+    - name: Cache Rust dependencies
+      uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0
+      with:
+        cache-on-failure: true
+        prefix-key: ${{ inputs.os-image && format('v0-rust-{0}', inputs.os-image) || 'v0-rust' }}

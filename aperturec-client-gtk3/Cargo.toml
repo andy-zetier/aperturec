@@ -17,6 +17,7 @@ aperturec-client = { path = "../aperturec-client" }
 anyhow = "1.0"
 
 [package.metadata.deb]
+name = "aperturec-client"
 copyright = "2024, Zetier Inc."
 maintainer = "ApertureC Team <aperturec@zetier.com>"
 section = "x11"
@@ -26,6 +27,7 @@ assets = [
 ]
 
 [package.metadata.generate-rpm]
+name = "aperturec-client"
 assets = [
   { source = "target/release/aperturec-client", dest = "/usr/bin/aperturec-client", mode = "755" },
   { source = "packaging/aperturec-client.desktop", dest = "/usr/share/applications/aperturec-client.desktop", mode = "644" }

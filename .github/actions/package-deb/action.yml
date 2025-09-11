@@ -1,0 +1,23 @@
+name: 'Build Debian Package'
+description: 'Create a .deb package using cargo-deb'
+inputs:
+  crate:
+    description: 'Crate name to package'
+    required: true
+  output_dir:
+    description: 'Output directory for .deb file'
+    required: true
+    default: 'target/debian'
+runs:
+  using: composite
+  steps:
+    - name: Build package
+      shell: bash
+      run: |
+        mkdir -p ${{ inputs.output_dir }}
+        if ! cargo deb -p ${{ inputs.crate }} \
+          -o ${{ inputs.output_dir }} \
+          --no-build; then
+          echo "::error::Failed to build .deb package for ${{ inputs.crate }}"
+          exit 1
+        fi

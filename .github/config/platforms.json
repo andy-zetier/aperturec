@@ -1,0 +1,34 @@
+{
+  "runners": {
+    "linux": {
+      "amd64": "ubuntu-latest",
+      "arm64": "ubuntu-2404-l-arm"
+    },
+    "macos": {
+      "default": "macos-15"
+    },
+    "windows": {
+      "default": "ubuntu-latest"
+    }
+  },
+  "os_images": {
+    "linux": {
+      "default": "ubuntu-24",
+      "variants": ["ubuntu-22", "ubuntu-24", "fedora-41", "centos-stream9"]
+    },
+    "windows": {
+      "default": "fedora-40",
+      "variants": ["fedora-40"]
+    }
+  },
+  "architectures": {
+    "linux": ["amd64", "arm64"],
+    "macos": ["arm64"],
+    "windows": ["amd64"]
+  },
+  "targets": {
+    "windows": {
+      "default": "x86_64-pc-windows-gnu"
+    }
+  }
+}

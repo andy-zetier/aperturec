@@ -1,0 +1,525 @@
+name: Continuous Integration
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+################################################################################
+#                                Common Jobs                                   #
+################################################################################
+  common-setup:
+    runs-on: ubuntu-latest
+    outputs: 
+      container-repo: ${{ steps.setup.outputs.container-repo }}
+      global-config: ${{ steps.global-config.outputs.config }}
+      platforms-config: ${{ steps.platforms-config.outputs.config }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - id: global-config
+        run: |
+          config=$(jq -c < ./.github/config/global.json)
+          echo "config=$config" >> $GITHUB_OUTPUT
+      - id: platforms-config
+        run: |
+          config=$(jq -c < ./.github/config/platforms.json)
+          echo "config=$config" >> $GITHUB_OUTPUT
+      - id: setup 
+        run: |
+          repo_normalized=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          registry=$(echo '${{ steps.global-config.outputs.config }}' | jq -r '.registry')
+          echo "container-repo=${registry}/${repo_normalized}/build-images" >> $GITHUB_OUTPUT
+
+  check-format:
+    runs-on: ubuntu-latest
+    needs: [common-setup, linux-images-create]
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', 'rust-image', fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default, 'amd64')] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ${{ fromJson(needs.common-setup.outputs.global-config).rust.components.format }}
+          os-image: ${{ fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default }}
+      - run: cargo fmt --all -- --check
+
+  generate-docs:
+    runs-on: ubuntu-latest
+    needs: [common-setup, linux-config, linux-images-create]
+    strategy:
+      fail-fast: false
+      matrix:
+        crate_group: ${{ fromJson(needs.linux-config.outputs.crate-groups) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default, 'amd64')] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ${{ fromJson(needs.common-setup.outputs.global-config).rust.components.docs }}
+          os-image: ${{ fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: doc --no-deps
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+      - uses: ./.github/actions/upload-artifacts
+        if: fromJson(needs.linux-config.outputs.config).jobs.generate-docs.artifacts[matrix.crate_group.name]
+        with:
+          artifacts: ${{ toJson(fromJson(needs.linux-config.outputs.config).jobs.generate-docs.artifacts[matrix.crate_group.name]) }}
+
+################################################################################
+#                                Linux Jobs                                    #
+################################################################################
+  linux-images-create:
+    needs: common-setup
+    uses: ./.github/workflows/create-images.yml
+    with:
+      config-path: ./.github/config/linux-images.json
+      container-repo: ${{ needs.common-setup.outputs.container-repo }}
+
+  linux-config:
+    runs-on: ubuntu-latest
+    outputs:
+      config: ${{ steps.load.outputs.config }}
+      crate-groups: ${{ steps.config.outputs.crate-groups }}
+      package-crate-groups: ${{ steps.config.outputs.package-crate-groups }}
+      platforms: ${{ steps.config.outputs.platforms }}
+      os-list: ${{ steps.config.outputs.os-list }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - id: load
+        run: |
+          config=$(jq -c < ./.github/config/linux-jobs.json)
+          echo "config=$config" >> $GITHUB_OUTPUT
+      - id: config
+        run: |
+          echo "crate-groups=$(echo '${{ steps.load.outputs.config }}' | jq -c '.crate_groups')" >> $GITHUB_OUTPUT
+          echo "package-crate-groups=$(echo '${{ steps.load.outputs.config }}' | jq -c '.crate_groups | map(select(.package_crate))')" >> $GITHUB_OUTPUT
+          echo "platforms=$(echo '${{ steps.load.outputs.config }}' | jq -c '.platforms')" >> $GITHUB_OUTPUT
+          
+          # Output OS list from linux-images.json
+          os_list=$(jq -c '.os' ./.github/config/linux-images.json)
+          echo "os-list=$os_list" >> $GITHUB_OUTPUT
+ 
+  linux-check-audit:
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [common-setup, linux-config, linux-images-create]
+    strategy:
+      matrix:
+        platform: ${{ fromJson(needs.linux-config.outputs.platforms) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', 'rust-image', 'ubuntu-24', matrix.platform.arch)] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          cargo-packages: ${{ fromJson(needs.common-setup.outputs.global-config).rust.cargo_packages.audit }}
+          os-image: ${{ fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default }}
+      - run: cargo deny check licenses
+      - run: |
+          if ! cargo deny check advisories; then
+            echo "::warning title=Security Advisories Found::The security audit found vulnerabilities"
+            exit 0
+          fi
+  linux-check-clippy:
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [common-setup, linux-config, linux-images-create]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJson(needs.linux-config.outputs.platforms) }}
+        crate_group: ${{ fromJson(needs.linux-config.outputs.crate-groups) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default, matrix.platform.arch)] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ${{ fromJson(needs.common-setup.outputs.global-config).rust.components.lint }}
+          os-image: ${{ fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default }}
+      - run: |
+          HAS_ERRORS=false
+          for crate in ${{ join(matrix.crate_group.crates, ' ') }}; do
+            if ! cargo clippy --no-deps -p "$crate" --all-targets --all-features; then
+              echo "::error title=Clippy Error in $crate::Clippy found issues in crate $crate"
+              HAS_ERRORS=true
+            fi
+          done
+          if [ "$HAS_ERRORS" = true ]; then
+            exit 1
+          fi
+  linux-test:
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [common-setup, linux-config, linux-images-create]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJson(needs.linux-config.outputs.platforms) }}
+        crate_group: ${{ fromJson(needs.linux-config.outputs.crate-groups) }}
+        os: ${{ fromJson(needs.linux-config.outputs.os-list) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, matrix.os.image_name, matrix.platform.arch)] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          os-image: ${{ matrix.os.image_name }}
+      - if: matrix.crate_group.needs_display
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: check --benches
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: build
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: test
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+  linux-build:
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [common-setup, linux-config, linux-images-create]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJson(needs.linux-config.outputs.platforms) }}
+        crate_group: ${{ fromJson(needs.linux-config.outputs.package-crate-groups) }}
+        os: ${{ fromJson(needs.linux-config.outputs.os-list) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, matrix.os.image_name, matrix.platform.arch)] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          os-image: ${{ matrix.os.image_name }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: build --release
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+      - uses: ./.github/actions/upload-artifacts
+        if: fromJson(needs.linux-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
+        with:
+          artifacts: ${{ toJson(fromJson(needs.linux-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]) }}
+          os: ${{ matrix.os.image_name }}
+          arch: ${{ matrix.platform.arch }}
+  linux-package:
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [common-setup, linux-config, linux-images-create, linux-build]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJson(needs.linux-config.outputs.platforms) }}
+        crate_group: ${{ fromJson(needs.linux-config.outputs.package-crate-groups) }}
+        os: ${{ fromJson(needs.linux-config.outputs.os-list) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, matrix.os.image_name, matrix.platform.arch)] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          os-image: ${{ matrix.os.image_name }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: ${{ matrix.crate_group.package_crate == 'aperturec-client-gtk3' && 'client' || 'server' }}-${{ matrix.os.image_name }}-${{ matrix.platform.arch }}
+          path: ./target/release
+      - uses: ./.github/actions/package-deb
+        if: matrix.os.os_variant == 'debian'
+        with:
+          crate: ${{ matrix.crate_group.package_crate }}
+          output_dir: target/debian
+      - uses: ./.github/actions/package-rpm
+        if: matrix.os.os_variant == 'fedora'
+        with:
+          crate: ${{ matrix.crate_group.package_crate }}
+          output_dir: target/rpm
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.crate_group.name }}-${{ matrix.os.image_name }}-${{ matrix.platform.arch }}-pkg
+          path: |
+            target/debian/*.deb
+            target/rpm/*.rpm
+          if-no-files-found: error
+################################################################################
+#                                macOS Jobs                                    #
+################################################################################
+  macos-config:
+    runs-on: ubuntu-latest
+    outputs:
+      config: ${{ steps.load.outputs.config }}
+      crate-groups: ${{ steps.config.outputs.crate-groups }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - id: load
+        run: |
+          config=$(jq -c < ./.github/config/macos-jobs.json)
+          echo "config=$config" >> $GITHUB_OUTPUT
+      - id: config
+        run: |
+          echo "crate-groups=$(echo '${{ steps.load.outputs.config }}' | jq -c '.crate_groups')" >> $GITHUB_OUTPUT
+  macos-check-audit:
+    runs-on: ${{ fromJson(needs.common-setup.outputs.platforms-config).runners.macos.default }}
+    needs: [common-setup, macos-config]
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-macos-build-environment
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check licenses
+      - run: |
+          if ! cargo deny check advisories; then
+            echo "::warning title=Security Advisories Found::The security audit found vulnerabilities"
+            exit 0
+          fi
+  macos-check-clippy:
+    runs-on: ${{ fromJson(needs.common-setup.outputs.platforms-config).runners.macos.default }}
+    needs: [common-setup, macos-config]
+    strategy:
+      matrix:
+        crate_group: ${{ fromJson(needs.macos-config.outputs.crate-groups) }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-macos-build-environment
+        with:
+          rust-components: clippy
+      - run: |
+          HAS_ERRORS=false
+          for crate in ${{ join(matrix.crate_group.crates, ' ') }}; do
+            if ! cargo clippy --no-deps -p "$crate" --all-targets --all-features; then
+              echo "::error title=Clippy Error in $crate (macOS)::Clippy found issues in crate $crate"
+              HAS_ERRORS=true
+            fi
+          done
+          if [ "$HAS_ERRORS" = true ]; then
+            exit 1
+          fi
+  macos-test:
+    runs-on: ${{ fromJson(needs.common-setup.outputs.platforms-config).runners.macos.default }}
+    needs: [common-setup, macos-config]
+    continue-on-error: true
+    strategy:
+      matrix:
+        crate_group: ${{ fromJson(needs.macos-config.outputs.crate-groups) }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-macos-build-environment
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: check --benches
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: build
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: test
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+  macos-build:
+    runs-on: ${{ fromJson(needs.common-setup.outputs.platforms-config).runners.macos.default }}
+    needs: [common-setup, macos-config]
+    strategy:
+      matrix:
+        crate_group: ${{ fromJson(needs.macos-config.outputs.crate-groups) }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-macos-build-environment
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: check --benches
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: build
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: build --release
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+      - uses: ./.github/actions/upload-artifacts
+        if: fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
+        with:
+          artifacts: ${{ toJson(fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]) }}
+          os: macos
+  macos-package:
+    runs-on: ${{ fromJson(needs.common-setup.outputs.platforms-config).runners.macos.default }}
+    needs: [common-setup, macos-config, macos-build]
+    strategy:
+      matrix:
+        crate_group: ${{ fromJson(needs.macos-config.outputs.crate-groups) }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-macos-build-environment
+      - run: |
+          mkdir -p target/release
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: client-macos
+          path: target/release/
+      - run: |
+          chmod +x target/release/aperturec-client
+          chmod +x ci/scripts/create-macos-package.sh
+          ci/scripts/create-macos-package.sh
+      - run: |
+          if [ -f ci/scripts/package-macos-with-all-deps.sh ]; then
+            chmod +x ci/scripts/package-macos-with-all-deps.sh
+            ci/scripts/package-macos-with-all-deps.sh
+          fi
+      - uses: ./.github/actions/upload-artifacts
+        if: fromJson(needs.macos-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]
+        with:
+          artifacts: ${{ toJson(fromJson(needs.macos-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]) }}
+          os: macos
+
+################################################################################
+#                               Windows Jobs                                   #
+################################################################################
+  windows-images-create:
+    needs: common-setup
+    uses: ./.github/workflows/create-images.yml
+    with:
+      config-path: ./.github/config/windows-images.json
+      container-repo: ${{ needs.common-setup.outputs.container-repo }}
+
+  windows-config:
+    runs-on: ubuntu-latest
+    outputs:
+      config: ${{ steps.load.outputs.config }}
+      crate-groups: ${{ steps.config.outputs.crate-groups }}
+      platforms: ${{ steps.config.outputs.platforms }}
+      os-variants: ${{ steps.config.outputs.os-variants }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - id: load
+        run: |
+          config=$(jq -c < ./.github/config/windows-jobs.json)
+          echo "config=$config" >> $GITHUB_OUTPUT
+      - id: config
+        run: |
+          echo "crate-groups=$(echo '${{ steps.load.outputs.config }}' | jq -c '.crate_groups')" >> $GITHUB_OUTPUT
+          echo "platforms=$(echo '${{ steps.load.outputs.config }}' | jq -c '.platforms')" >> $GITHUB_OUTPUT
+          echo "os-variants=$(echo '${{ steps.load.outputs.config }}' | jq -c '.os_variants')" >> $GITHUB_OUTPUT
+
+  windows-check-clippy:
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [common-setup, windows-config, windows-images-create]
+    strategy:
+      matrix:
+        platform: ${{ fromJson(needs.windows-config.outputs.platforms) }}
+        crate_group: ${{ fromJson(needs.windows-config.outputs.crate-groups) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.windows-images-create.outputs.digests)[format('{0}-{1}-{2}', 'client-image-windows', fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default, matrix.platform.arch)] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ${{ fromJson(needs.common-setup.outputs.global-config).rust.components.lint }}
+          os-image: ${{ fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default }}
+      - run: |
+          HAS_ERRORS=false
+          for crate in ${{ join(matrix.crate_group.crates, ' ') }}; do
+            if ! cargo clippy --no-deps -p "$crate" --target ${{ matrix.crate_group.target }} --all-targets --all-features; then
+              echo "::error title=Clippy Error in $crate (Windows)::Clippy found issues in crate $crate"
+              HAS_ERRORS=true
+            fi
+          done
+          if [ "$HAS_ERRORS" = true ]; then
+            exit 1
+          fi
+  
+  windows-test:
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [common-setup, windows-config, windows-images-create]
+    strategy:
+      matrix:
+        platform: ${{ fromJson(needs.windows-config.outputs.platforms) }}
+        crate_group: ${{ fromJson(needs.windows-config.outputs.crate-groups) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.windows-images-create.outputs.digests)[format('{0}-{1}-{2}', 'client-image-windows', fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default, matrix.platform.arch)] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          os-image: ${{ fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default }}
+      - run: |
+          mkdir -p test_executables
+          for crate in ${{ join(matrix.crate_group.crates, ' ') }}; do
+            cargo test -p "$crate" --target ${{ matrix.crate_group.target }} -q --no-run --message-format=json | \
+              jq -r 'select(.profile.test == true) | .filenames[]' | \
+              xargs -I {} cp {} test_executables/ 2>/dev/null || true
+          done
+      - uses: ./.github/actions/upload-artifacts
+        if: fromJson(needs.windows-config.outputs.config).jobs.test.artifacts[matrix.crate_group.name]
+        with:
+          artifacts: ${{ toJson(fromJson(needs.windows-config.outputs.config).jobs.test.artifacts[matrix.crate_group.name]) }}
+          os: windows
+          arch: ${{ matrix.platform.arch }}
+  windows-build:
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [common-setup, windows-config, windows-images-create]
+    strategy:
+      matrix:
+        platform: ${{ fromJson(needs.windows-config.outputs.platforms) }}
+        crate_group: ${{ fromJson(needs.windows-config.outputs.crate-groups) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.windows-images-create.outputs.digests)[format('{0}-{1}-{2}', 'client-image-windows', fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default, matrix.platform.arch)] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: ./.github/actions/setup-rust
+        with:
+          os-image: ${{ fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: build
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+          args: --target ${{ matrix.crate_group.target }}
+      - uses: ./.github/actions/cargo-workspace
+        with:
+          command: build --release
+          packages: ${{ join(matrix.crate_group.crates, ' ') }}
+          args: --target ${{ matrix.crate_group.target }}
+      - uses: ./.github/actions/upload-artifacts
+        if: fromJson(needs.windows-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
+        with:
+          artifacts: ${{ toJson(fromJson(needs.windows-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]) }}
+          os: windows
+          arch: ${{ matrix.platform.arch }}
+  windows-package:
+    runs-on: ${{ matrix.platform.runner }}
+    needs: [common-setup, windows-config, windows-images-create, windows-build]
+    strategy:
+      matrix:
+        platform: ${{ fromJson(needs.windows-config.outputs.platforms) }}
+        crate_group: ${{ fromJson(needs.windows-config.outputs.crate-groups) }}
+    container:
+      image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.windows-images-create.outputs.digests)[format('{0}-{1}-{2}', 'client-image-windows', fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default, matrix.platform.arch)] }}"
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: client-windows-${{ matrix.platform.arch }}
+          path: ./
+      - run: |
+          chmod +x ci/scripts/create-windows-package.sh
+          ci/scripts/create-windows-package.sh
+      - uses: ./.github/actions/upload-artifacts
+        if: fromJson(needs.windows-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]
+        with:
+          artifacts: ${{ toJson(fromJson(needs.windows-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]) }}
+          os: windows
+          arch: ${{ matrix.platform.arch }}

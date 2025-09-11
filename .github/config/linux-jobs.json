@@ -1,0 +1,86 @@
+{
+  "crate_groups": [
+    {
+      "name": "client",
+      "crates": ["aperturec-client-gtk3", "aperturec-client"],
+      "package_crate": "aperturec-client-gtk3",
+      "package_types": ["deb", "rpm"],
+      "image": "client-image",
+      "needs_display": true
+    },
+    {
+      "name": "server",
+      "crates": ["aperturec-server"],
+      "package_crate": "aperturec-server",
+      "package_types": ["deb", "rpm"],
+      "image": "server-image",
+      "needs_display": true
+    },
+    {
+      "name": "channel",
+      "crates": ["aperturec-channel"],
+      "package_types": [],
+      "image": "fips-capable-image",
+      "needs_display": false
+    },
+    {
+      "name": "common",
+      "crates": ["aperturec-protocol", "aperturec-graphics", "aperturec-state-machine", "aperturec-utils"],
+      "package_types": [],
+      "image": "rust-image",
+      "needs_display": false
+    }
+  ],
+  "platforms": [
+    {"arch": "amd64", "runner": "ubuntu-latest"},
+    {"arch": "arm64", "runner": "ubuntu-2404-l-arm"}
+  ],
+  "jobs": {
+    "audit": {"image": "rust-image", "groups": ["all"]},
+    "format": {"image": "rust-image", "groups": ["all"]},
+    "generate-docs": {
+      "artifacts": {
+        "client": [
+          {
+            "name-prefix": "docs-client",
+            "path": "target/doc"
+          }
+        ],
+        "server": [
+          {
+            "name-prefix": "docs-server",
+            "path": "target/doc"
+          }
+        ],
+        "channel": [
+          {
+            "name-prefix": "docs-channel",
+            "path": "target/doc"
+          }
+        ],
+        "common": [
+          {
+            "name-prefix": "docs-common",
+            "path": "target/doc"
+          }
+        ]
+      }
+    },
+    "build": {
+      "artifacts": {
+        "client": [
+          {
+            "name-prefix": "client",
+            "path": "target/release/aperturec-client"
+          }
+        ],
+        "server": [
+          {
+            "name-prefix": "server",
+            "path": "target/release/aperturec-server"
+          }
+        ]
+      }
+    }
+  }
+}

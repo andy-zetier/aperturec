@@ -1,0 +1,38 @@
+{
+  "crate_groups": [
+    {
+      "name": "client",
+      "crates": ["aperturec-client-gtk3", "aperturec-client"],
+      "package_crate": "aperturec-client-gtk3",
+      "package_types": ["dmg", "tar.gz"],
+      "runner": "macos-15",
+      "needs_display": false
+    }
+  ],
+  "jobs": {
+    "build": {
+      "artifacts": {
+        "client": [
+          {
+            "name-prefix": "client",
+            "path": "target/release/aperturec-client"
+          }
+        ]
+      }
+    },
+    "package": {
+      "artifacts": {
+        "client": [
+          {
+            "name-prefix": "client-tarball",
+            "path": "aperturec-client-macos*.tar.gz"
+          },
+          {
+            "name-prefix": "client-all-deps",
+            "path": "aperturec-client-macos-with-all-dependencies_*.zip"
+          }
+        ]
+      }
+    }
+  }
+}

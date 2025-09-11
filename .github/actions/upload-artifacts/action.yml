@@ -1,0 +1,56 @@
+name: 'Upload Multiple Artifacts'
+description: 'Upload multiple artifacts based on JSON configuration'
+inputs:
+  artifacts:
+    description: 'JSON array of artifacts to upload'
+    required: true
+  os:
+    description: 'OS name for artifact naming'
+    required: false
+    default: ''
+  arch:
+    description: 'Architecture for artifact naming'
+    required: false
+    default: ''
+runs:
+  using: 'composite'
+  steps:
+    - name: Upload artifact 1
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: fromJson(inputs.artifacts)[0]
+      with:
+        name: ${{ fromJson(inputs.artifacts)[0]['name-prefix'] }}${{ inputs.os && format('-{0}', inputs.os) || '' }}${{ inputs.arch && format('-{0}', inputs.arch) || '' }}
+        path: ${{ fromJson(inputs.artifacts)[0].path }}
+        if-no-files-found: error
+    
+    - name: Upload artifact 2
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: fromJson(inputs.artifacts)[1]
+      with:
+        name: ${{ fromJson(inputs.artifacts)[1]['name-prefix'] }}${{ inputs.os && format('-{0}', inputs.os) || '' }}${{ inputs.arch && format('-{0}', inputs.arch) || '' }}
+        path: ${{ fromJson(inputs.artifacts)[1].path }}
+        if-no-files-found: error
+    
+    - name: Upload artifact 3
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: fromJson(inputs.artifacts)[2]
+      with:
+        name: ${{ fromJson(inputs.artifacts)[2]['name-prefix'] }}${{ inputs.os && format('-{0}', inputs.os) || '' }}${{ inputs.arch && format('-{0}', inputs.arch) || '' }}
+        path: ${{ fromJson(inputs.artifacts)[2].path }}
+        if-no-files-found: error
+    
+    - name: Upload artifact 4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: fromJson(inputs.artifacts)[3]
+      with:
+        name: ${{ fromJson(inputs.artifacts)[3]['name-prefix'] }}${{ inputs.os && format('-{0}', inputs.os) || '' }}${{ inputs.arch && format('-{0}', inputs.arch) || '' }}
+        path: ${{ fromJson(inputs.artifacts)[3].path }}
+        if-no-files-found: error
+    
+    - name: Upload artifact 5
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: fromJson(inputs.artifacts)[4]
+      with:
+        name: ${{ fromJson(inputs.artifacts)[4]['name-prefix'] }}${{ inputs.os && format('-{0}', inputs.os) || '' }}${{ inputs.arch && format('-{0}', inputs.arch) || '' }}
+        path: ${{ fromJson(inputs.artifacts)[4].path }}
+        if-no-files-found: error
