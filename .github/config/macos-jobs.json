@@ -12,26 +12,21 @@
   "jobs": {
     "build": {
       "artifacts": {
-        "client": [
-          {
-            "name-prefix": "client",
-            "path": "target/release/aperturec-client"
-          }
-        ]
+        "client": {
+          "name": "client",
+          "paths": ["target/release/aperturec-client"]
+        }
       }
     },
     "package": {
       "artifacts": {
-        "client": [
-          {
-            "name-prefix": "client-tarball",
-            "path": "aperturec-client-macos*.tar.gz"
-          },
-          {
-            "name-prefix": "client-all-deps",
-            "path": "aperturec-client-macos-with-all-dependencies_*.zip"
-          }
-        ]
+        "client": {
+          "name": "client-package",
+          "paths": [
+            "aperturec-client-macos*.tar.gz",
+            "aperturec-client-macos-with-all-dependencies_*.zip"
+          ]
+        }
       }
     }
   }

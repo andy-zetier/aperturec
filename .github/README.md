@@ -1,6 +1,6 @@
 # ApertureC CI/CD Pipeline
 
-This directory contains GitHub Actions workflows, composite actions, and 
+This directory contains GitHub Actions workflows, composite actions, and
 configuration files that implement ApertureC's continuous integration system.
 
 ## Architecture Overview
@@ -9,7 +9,7 @@ The CI uses a **two-phase approach**:
 1. **Image Creation**: Build Docker images with all dependencies pre-installed
 2. **CI Execution**: Run jobs using the pre-built images for consistency and speed
 
-This design ensures all jobs use identical environments and eliminates 
+This design ensures all jobs use identical environments and eliminates
 dependency setup time during CI runs.
 
 ## Workflows
@@ -24,7 +24,7 @@ The primary workflow that runs on pushes and pull requests. It:
 ### `create-images.yml` - Reusable Image Builder
 A reusable workflow that builds Docker images and returns a digest index:
 - Takes an image configuration JSON as input
-- Builds images for multiple OS/architecture combinations  
+- Builds images for multiple OS/architecture combinations
 - Returns SHA256 digests indexed by `"{target}-{os}-{arch}"` keys
 - Used by the main CI to ensure consistent environments
 
@@ -52,7 +52,7 @@ A reusable workflow that builds Docker images and returns a digest index:
 Located in `.github/actions/`, these reusable components include:
 
 - **`cargo-workspace`**: Execute cargo commands on multiple workspace packages
-- **`package-deb`**: Create Debian (.deb) packages using cargo-deb  
+- **`package-deb`**: Create Debian (.deb) packages using cargo-deb
 - **`package-rpm`**: Create RPM packages using cargo-generate-rpm
 - **`setup-rust`**: Configure Rust environment in containers
 - **`setup-macos-build-environment`**: Install macOS dependencies (GTK, protobuf)

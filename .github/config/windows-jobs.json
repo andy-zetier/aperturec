@@ -17,36 +17,29 @@
   "jobs": {
     "test": {
       "artifacts": {
-        "client": [
-          {
-            "name-prefix": "tests",
-            "path": "test_executables/"
-          }
-        ]
+        "client": {
+          "name": "tests",
+          "paths": ["test_executables/"]
+        }
       }
     },
     "build": {
       "artifacts": {
-        "client": [
-          {
-            "name-prefix": "client",
-            "path": "target/x86_64-pc-windows-gnu/release/aperturec-client.exe"
-          }
-        ]
+        "client": {
+          "name": "client",
+          "paths": ["target/x86_64-pc-windows-gnu/release/aperturec-client.exe"]
+        }
       }
     },
     "package": {
       "artifacts": {
-        "client": [
-          {
-            "name-prefix": "client-zip",
-            "path": "aperturec-client-win.zip"
-          },
-          {
-            "name-prefix": "client-msi",
-            "path": "aperturec-client_*.msi"
-          }
-        ]
+        "client": {
+          "name": "client-package",
+          "paths": [
+            "aperturec-client-win.zip",
+            "aperturec-client_*.msi"
+          ]
+        }
       }
     }
   }

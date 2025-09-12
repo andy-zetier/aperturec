@@ -40,46 +40,34 @@
     "format": {"image": "rust-image", "groups": ["all"]},
     "generate-docs": {
       "artifacts": {
-        "client": [
-          {
-            "name-prefix": "docs-client",
-            "path": "target/doc"
-          }
-        ],
-        "server": [
-          {
-            "name-prefix": "docs-server",
-            "path": "target/doc"
-          }
-        ],
-        "channel": [
-          {
-            "name-prefix": "docs-channel",
-            "path": "target/doc"
-          }
-        ],
-        "common": [
-          {
-            "name-prefix": "docs-common",
-            "path": "target/doc"
-          }
-        ]
+        "client": {
+          "name": "docs-client",
+          "paths": ["target/doc"]
+        },
+        "server": {
+          "name": "docs-server",
+          "paths": ["target/doc"]
+        },
+        "channel": {
+          "name": "docs-channel",
+          "paths": ["target/doc"]
+        },
+        "common": {
+          "name": "docs-common",
+          "paths": ["target/doc"]
+        }
       }
     },
     "build": {
       "artifacts": {
-        "client": [
-          {
-            "name-prefix": "client",
-            "path": "target/release/aperturec-client"
-          }
-        ],
-        "server": [
-          {
-            "name-prefix": "server",
-            "path": "target/release/aperturec-server"
-          }
-        ]
+        "client": {
+          "name": "client",
+          "paths": ["target/release/aperturec-client"]
+        },
+        "server": {
+          "name": "server",
+          "paths": ["target/release/aperturec-server"]
+        }
       }
     }
   }

@@ -23,7 +23,7 @@ jobs:
 ################################################################################
   common-setup:
     runs-on: ubuntu-latest
-    outputs: 
+    outputs:
       container-repo: ${{ steps.setup.outputs.container-repo }}
       global-config: ${{ steps.global-config.outputs.config }}
       platforms-config: ${{ steps.platforms-config.outputs.config }}
@@ -37,7 +37,7 @@ jobs:
         run: |
           config=$(jq -c < ./.github/config/platforms.json)
           echo "config=$config" >> $GITHUB_OUTPUT
-      - id: setup 
+      - id: setup
         run: |
           repo_normalized=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
           registry=$(echo '${{ steps.global-config.outputs.config }}' | jq -r '.registry')
@@ -75,10 +75,13 @@ jobs:
         with:
           command: doc --no-deps
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
-      - uses: ./.github/actions/upload-artifacts
+      - uses: actions/upload-artifact@v4
         if: fromJson(needs.linux-config.outputs.config).jobs.generate-docs.artifacts[matrix.crate_group.name]
         with:
-          artifacts: ${{ toJson(fromJson(needs.linux-config.outputs.config).jobs.generate-docs.artifacts[matrix.crate_group.name]) }}
+          name: ${{ fromJson(needs.linux-config.outputs.config).jobs.generate-docs.artifacts[matrix.crate_group.name].name }}
+          path: |
+            ${{ join(fromJson(needs.linux-config.outputs.config).jobs.generate-docs.artifacts[matrix.crate_group.name].paths, '
+            ') }}
 
 ################################################################################
 #                                Linux Jobs                                    #
@@ -109,11 +112,11 @@ jobs:
           echo "crate-groups=$(echo '${{ steps.load.outputs.config }}' | jq -c '.crate_groups')" >> $GITHUB_OUTPUT
           echo "package-crate-groups=$(echo '${{ steps.load.outputs.config }}' | jq -c '.crate_groups | map(select(.package_crate))')" >> $GITHUB_OUTPUT
           echo "platforms=$(echo '${{ steps.load.outputs.config }}' | jq -c '.platforms')" >> $GITHUB_OUTPUT
-          
+
           # Output OS list from linux-images.json
           os_list=$(jq -c '.os' ./.github/config/linux-images.json)
           echo "os-list=$os_list" >> $GITHUB_OUTPUT
- 
+
   linux-check-audit:
     runs-on: ${{ matrix.platform.runner }}
     needs: [common-setup, linux-config, linux-images-create]
@@ -213,12 +216,13 @@ jobs:
         with:
           command: build --release
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
-      - uses: ./.github/actions/upload-artifacts
+      - uses: actions/upload-artifact@v4
         if: fromJson(needs.linux-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
         with:
-          artifacts: ${{ toJson(fromJson(needs.linux-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]) }}
-          os: ${{ matrix.os.image_name }}
-          arch: ${{ matrix.platform.arch }}
+          name: ${{ fromJson(needs.linux-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].name }}-${{ matrix.os.image_name }}-${{ matrix.platform.arch }}
+          path: |
+            ${{ join(fromJson(needs.linux-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].paths, '
+            ') }}
   linux-package:
     runs-on: ${{ matrix.platform.runner }}
     needs: [common-setup, linux-config, linux-images-create, linux-build]
@@ -351,11 +355,13 @@ jobs:
         with:
           command: build --release
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
-      - uses: ./.github/actions/upload-artifacts
+      - uses: actions/upload-artifact@v4
         if: fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
         with:
-          artifacts: ${{ toJson(fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]) }}
-          os: macos
+          name: ${{ fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].name }}-macos
+          path: |
+            ${{ join(fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].paths, '
+            ') }}
   macos-package:
     runs-on: ${{ fromJson(needs.common-setup.outputs.platforms-config).runners.macos.default }}
     needs: [common-setup, macos-config, macos-build]
@@ -380,11 +386,13 @@ jobs:
             chmod +x ci/scripts/package-macos-with-all-deps.sh
             ci/scripts/package-macos-with-all-deps.sh
           fi
-      - uses: ./.github/actions/upload-artifacts
+      - uses: actions/upload-artifact@v4
         if: fromJson(needs.macos-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]
         with:
-          artifacts: ${{ toJson(fromJson(needs.macos-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]) }}
-          os: macos
+          name: ${{ fromJson(needs.macos-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name].name }}-macos
+          path: |
+            ${{ join(fromJson(needs.macos-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name].paths, '
+            ') }}
 
 ################################################################################
 #                               Windows Jobs                                   #
@@ -441,7 +449,7 @@ jobs:
           if [ "$HAS_ERRORS" = true ]; then
             exit 1
           fi
-  
+
   windows-test:
     runs-on: ${{ matrix.platform.runner }}
     needs: [common-setup, windows-config, windows-images-create]
@@ -463,12 +471,13 @@ jobs:
               jq -r 'select(.profile.test == true) | .filenames[]' | \
               xargs -I {} cp {} test_executables/ 2>/dev/null || true
           done
-      - uses: ./.github/actions/upload-artifacts
+      - uses: actions/upload-artifact@v4
         if: fromJson(needs.windows-config.outputs.config).jobs.test.artifacts[matrix.crate_group.name]
         with:
-          artifacts: ${{ toJson(fromJson(needs.windows-config.outputs.config).jobs.test.artifacts[matrix.crate_group.name]) }}
-          os: windows
-          arch: ${{ matrix.platform.arch }}
+          name: ${{ fromJson(needs.windows-config.outputs.config).jobs.test.artifacts[matrix.crate_group.name].name }}-windows-${{ matrix.platform.arch }}
+          path: |
+            ${{ join(fromJson(needs.windows-config.outputs.config).jobs.test.artifacts[matrix.crate_group.name].paths, '
+            ') }}
   windows-build:
     runs-on: ${{ matrix.platform.runner }}
     needs: [common-setup, windows-config, windows-images-create]
@@ -493,12 +502,13 @@ jobs:
           command: build --release
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
           args: --target ${{ matrix.crate_group.target }}
-      - uses: ./.github/actions/upload-artifacts
+      - uses: actions/upload-artifact@v4
         if: fromJson(needs.windows-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
         with:
-          artifacts: ${{ toJson(fromJson(needs.windows-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]) }}
-          os: windows
-          arch: ${{ matrix.platform.arch }}
+          name: ${{ fromJson(needs.windows-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].name }}-windows-${{ matrix.platform.arch }}
+          path: |
+            ${{ join(fromJson(needs.windows-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].paths, '
+            ') }}
   windows-package:
     runs-on: ${{ matrix.platform.runner }}
     needs: [common-setup, windows-config, windows-images-create, windows-build]
@@ -517,9 +527,10 @@ jobs:
       - run: |
           chmod +x ci/scripts/create-windows-package.sh
           ci/scripts/create-windows-package.sh
-      - uses: ./.github/actions/upload-artifacts
+      - uses: actions/upload-artifact@v4
         if: fromJson(needs.windows-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]
         with:
-          artifacts: ${{ toJson(fromJson(needs.windows-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]) }}
-          os: windows
-          arch: ${{ matrix.platform.arch }}
+          name: ${{ fromJson(needs.windows-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name].name }}-windows-${{ matrix.platform.arch }}
+          path: |
+            ${{ join(fromJson(needs.windows-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name].paths, '
+            ') }}
