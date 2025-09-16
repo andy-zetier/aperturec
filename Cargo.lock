@@ -136,7 +136,6 @@ name = "aperturec-channel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aperturec-channel",
  "aperturec-metrics",
  "aperturec-protocol",
  "aperturec-utils",

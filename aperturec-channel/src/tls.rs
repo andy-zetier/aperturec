@@ -232,7 +232,7 @@ impl Material {
     }
 }
 
-#[cfg(feature = "test-tls-material")]
+#[cfg(test)]
 pub mod test_material {
     use super::*;
 
