@@ -3,32 +3,14 @@
   "plugins": ["cargo-workspace", "sentence-case"],
   "release-type": "rust",
   "packages": {
-    "aperturec-server": {
-      "release-as": "1.0.0"
-    },
-    "aperturec-client-gtk3": {
-      "release-as": "1.0.0"
-    },
-    "aperturec-channel": {
-      "release-as": "0.1.0"
-    },
-    "aperturec-client": {
-      "release-as": "0.1.0"
-    },
-    "aperturec-graphics": {
-      "release-as": "0.1.0"
-    },
-    "aperturec-metrics": {
-      "release-as": "0.1.0"
-    },
-    "aperturec-protocol": {
-      "release-as": "0.1.0"
-    },
-    "aperturec-state-machine": {
-      "release-as": "0.1.0"
-    },
-    "aperturec-utils": {
-      "release-as": "0.1.0"
-    }
+    "aperturec-server": {},
+    "aperturec-client-gtk3": {},
+    "aperturec-channel": {},
+    "aperturec-client": {},
+    "aperturec-graphics": {},
+    "aperturec-metrics": {},
+    "aperturec-protocol": {},
+    "aperturec-state-machine": {},
+    "aperturec-utils": {}
   }
 }
