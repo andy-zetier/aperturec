@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "aperturec-client-gtk3"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "aperturec-client",
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "aperturec-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "aperturec-channel",

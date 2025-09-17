@@ -5,8 +5,9 @@ set -euxo pipefail
 PKG_DIR="package/aperturec-client"
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT_DIR=$(dirname "$(dirname "$SCRIPT_DIR")")
+SRC_DIR="${ROOT_DIR}/aperturec-client-gtk3"
 version=$(
-  grep -m1 '^version *= *"' "$ROOT_DIR/Cargo.toml" \
+  grep -m1 '^version *= *"' "$SRC_DIR/Cargo.toml" \
     | sed -E 's/.*version *= *"([^"]+)".*/\1/'
 )
 
