@@ -1063,9 +1063,10 @@ mod signal_handlers {
                 debug!(?new_size, "resized");
 
                 if let Some(gdk_window) = internals.app_window.window()
-                    && !gdk_window.state().contains(gdk::WindowState::FULLSCREEN) {
-                        windowed_mode_size.set(new_size);
-                    }
+                    && !gdk_window.state().contains(gdk::WindowState::FULLSCREEN)
+                {
+                    windowed_mode_size.set(new_size);
+                }
 
                 internals.blank_with_size(new_size);
                 internals
@@ -1961,27 +1962,30 @@ impl Windows {
         use gio::prelude::ActionMapExt;
 
         if let Some(action) = self.app.lookup_action(Action::Window.as_ref())
-            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
-                let enabled = !matches!(self.mode, WindowMode::Single { fullscreen: false });
-                simple_action.set_enabled(enabled);
-            }
+            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>()
+        {
+            let enabled = !matches!(self.mode, WindowMode::Single { fullscreen: false });
+            simple_action.set_enabled(enabled);
+        }
 
         if let Some(action) = self
             .app
             .lookup_action(Action::SingleMonitorFullscreen.as_ref())
-            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
-                let enabled = !matches!(self.mode, WindowMode::Single { fullscreen: true });
-                simple_action.set_enabled(enabled);
-            }
+            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>()
+        {
+            let enabled = !matches!(self.mode, WindowMode::Single { fullscreen: true });
+            simple_action.set_enabled(enabled);
+        }
 
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         if let Some(action) = self
             .app
             .lookup_action(Action::MultiMonitorFullscreen.as_ref())
-            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
-                let enabled = !matches!(self.mode, WindowMode::Multi);
-                simple_action.set_enabled(enabled);
-            }
+            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>()
+        {
+            let enabled = !matches!(self.mode, WindowMode::Multi);
+            simple_action.set_enabled(enabled);
+        }
     }
 
     /// Synchronizes the internal mode state with the actual window fullscreen state (macOS only)

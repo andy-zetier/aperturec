@@ -185,9 +185,10 @@ impl CsvExporter {
         let path = Path::new(path_str);
 
         if let Ok(f) = OpenOptions::new().write(true).open(path)
-            && f.metadata()?.len() == 0 {
-                return Ok(f);
-            }
+            && f.metadata()?.len() == 0
+        {
+            return Ok(f);
+        }
 
         let mut last_error = None;
         for count in 0..1000 {
