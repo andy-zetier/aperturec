@@ -105,3 +105,11 @@ Docker image build matrix configuration:
   "platform_runner": [{ "platform": "linux/amd64", "runner": "ubuntu-latest" }]
 }
 ```
+
+## Dependency Updates
+
+Dependabot is configured via `.github/dependabot.yml` to:
+- Update Rust (Cargo) workspace dependencies weekly
+- Update GitHub Actions references weekly
+- Attempt Docker base image updates for `ci/images/` weekly
+All PRs are labeled `dependencies` and use `chore(deps)`-style commit messages.

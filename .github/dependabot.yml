@@ -1,0 +1,50 @@
+version: 2
+updates:
+  # Rust workspace dependencies
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: sunday
+      time: "05:00"
+      timezone: UTC
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "rust", "cargo"]
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      cargo-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions used in workflows
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: sunday
+      time: "05:30"
+      timezone: UTC
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "ci", "github-actions"]
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions-all:
+        patterns:
+          - "*"
+
+  # Docker base images (if identifiable from Dockerfiles)
+  - package-ecosystem: docker
+    directory: "/ci/images"
+    schedule:
+      interval: weekly
+      day: sunday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: chore
+      include: scope
