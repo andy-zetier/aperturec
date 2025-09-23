@@ -789,13 +789,17 @@ impl Backend for X {
             }
         }
 
+        if changed && let Err(e) = self.resize_screen_if(&final_displays, Ordering::Less).await {
+            warn!("Failed to trim screen size: {:?}", e);
+        }
+
         if let Ok(extent) = final_displays.derive_extent() {
             DisplayWidth::update(extent.width as f64);
             DisplayHeight::update(extent.height as f64);
-        }
 
-        if changed && let Err(e) = self.resize_screen_if(&final_displays, Ordering::Less).await {
-            warn!("Failed to trim screen size: {:?}", e);
+            if let Err(e) = self.damage_add(extent).await {
+                warn!("Failed to damage full display extent: {:?}", e);
+            }
         }
 
         if errors {
@@ -1277,6 +1281,35 @@ impl X {
         }
 
         Ok(SetDisplaySuccess::Updated)
+    }
+
+    async fn damage_add(&self, extent: Size) -> Result<()> {
+        let region = self.connection.inner.generate_id();
+
+        let rect = x::Rectangle {
+            x: 0,
+            y: 0,
+            width: extent.width as u16,
+            height: extent.height as u16,
+        };
+
+        self.connection
+            .checked_void_request(xfixes::CreateRegion {
+                region,
+                rectangles: &[rect],
+            })
+            .await?;
+
+        self.connection
+            .checked_void_request(damage::Add {
+                drawable: x::Drawable::Window(self.root_window),
+                region,
+            })
+            .await?;
+
+        self.connection
+            .checked_void_request(xfixes::DestroyRegion { region })
+            .await
     }
 }
 
