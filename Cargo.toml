@@ -4,6 +4,7 @@ members = [
   "aperturec-client-gtk3",
   "aperturec-client",
   "aperturec-graphics",
+  "aperturec-metrics",
   "aperturec-protocol",
   "aperturec-server",
   "aperturec-state-machine",
