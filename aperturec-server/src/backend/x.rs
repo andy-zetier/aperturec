@@ -270,6 +270,33 @@ impl From<&xfixes::CursorNotifyEvent> for CursorChange {
     }
 }
 
+struct ServerGrabGuard {
+    connection: Arc<xcb::Connection>,
+}
+
+impl ServerGrabGuard {
+    async fn new(conn: &XConnection) -> Result<Self> {
+        conn.checked_void_request(x::GrabServer {})
+            .await
+            .inspect_err(|e| warn!("Failed to grab server: {e:?}"))?;
+
+        debug!("Server grabbed");
+        Ok(Self {
+            connection: conn.inner.clone(),
+        })
+    }
+}
+
+impl Drop for ServerGrabGuard {
+    fn drop(&mut self) {
+        if let Err(e) = self.connection.send_and_check_request(&x::UngrabServer {}) {
+            error!("Failed to ungrab server: {:?}", e);
+        } else {
+            debug!("Server Ungrabbed");
+        }
+    }
+}
+
 impl Backend for X {
     type PixelMap = XPixelMap;
 
@@ -708,6 +735,7 @@ impl Backend for X {
         &mut self,
         mut requested_displays: Vec<Display>,
     ) -> Result<SetDisplaysSuccess, Vec<Display>> {
+        let _guard = ServerGrabGuard::new(&self.connection).await;
         let mut errors = false;
         let mut changed = false;
 
