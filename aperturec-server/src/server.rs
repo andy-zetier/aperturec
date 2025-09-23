@@ -905,14 +905,13 @@ where
                 }
                 Some(res) = task_results.next() => {
                     trace!("Task finished");
-                    if task_error.is_none() && !cleanup_started {
-                        if let Err(error) = res {
+                    if task_error.is_none() && !cleanup_started
+                        && let Err(error) = res {
                             task_error = Some(anyhow!("task error: {}", error));
                             if gb_reason.is_none() {
                                 gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
                             }
                         }
-                    }
                     ct.cancel();
                 }
                 Some(res) = backend_stream.next(), if backend_result.is_none() => {

@@ -184,11 +184,10 @@ impl CsvExporter {
     fn open_file(path_str: &str) -> Result<std::fs::File> {
         let path = Path::new(path_str);
 
-        if let Ok(f) = OpenOptions::new().write(true).open(path) {
-            if f.metadata()?.len() == 0 {
+        if let Ok(f) = OpenOptions::new().write(true).open(path)
+            && f.metadata()?.len() == 0 {
                 return Ok(f);
             }
-        }
 
         let mut last_error = None;
         for count in 0..1000 {

@@ -328,12 +328,11 @@ async fn main() -> Result<()> {
         }
     };
 
-    if !handle.is_stopped() {
-        if let Err(e) = res {
+    if !handle.is_stopped()
+        && let Err(e) = res {
             error!(%e, "server exiting with error");
             panic!("server error: {e:#?}");
         }
-    }
     info!("ApertureC Server exiting");
     Ok(())
 }

@@ -43,14 +43,13 @@ fn warn_once(msg: &str) {
 /// Register a new [`Metric`](crate::Metric) for tracking
 ///
 pub fn register(create: impl FnOnce() -> Box<dyn Metric> + Send + 'static) {
-    if let Some(mc) = METRIC_COMS.get() {
-        if let Some(tx) = &mc.lock().unwrap().tx {
+    if let Some(mc) = METRIC_COMS.get()
+        && let Some(tx) = &mc.lock().unwrap().tx {
             match tx.send(MetricsMsg::Register(Box::new(create))) {
                 Err(e) => warn!("Failed to register metric: {}", e),
                 _ => return,
             }
         }
-    }
 
     warn_once("Metrics not initialized");
 }
@@ -59,14 +58,13 @@ pub fn register(create: impl FnOnce() -> Box<dyn Metric> + Send + 'static) {
 /// Send a [`MetricUpdate`](crate::MetricUpdate) to a previously registered [`Metric`](crate::Metric)
 ///
 pub fn update(update: impl MetricUpdate + Send) {
-    if let Some(mc) = METRIC_COMS.get() {
-        if let Some(tx) = &mc.lock().unwrap().tx {
+    if let Some(mc) = METRIC_COMS.get()
+        && let Some(tx) = &mc.lock().unwrap().tx {
             match tx.send(MetricsMsg::Update(update.to_boxed_any())) {
                 Err(e) => warn!("Failed to update metric: {}", e),
                 _ => return,
             }
         }
-    }
 
     warn_once("Metrics not initialized");
 }
@@ -78,22 +76,20 @@ pub fn update(update: impl MetricUpdate + Send) {
 /// [`Exporter`](crate::exporters::Exporter) is shut down properly.
 ///
 pub fn stop() {
-    if let Some(mc) = METRIC_COMS.get() {
-        if let Ok(mut mg) = mc.lock() {
-            if let Some(tx) = mg.tx.take() {
-                match tx.send(MetricsMsg::Stop) {
-                    Err(e) => warn!("Failed to stop metrics: {}", e),
-                    Ok(_) => match mg.stop_rx.take() {
-                        Some(rx) => {
-                            let _ = rx.recv();
-                            return;
-                        }
-                        None => panic!("stop_rx is None"),
-                    },
-                }
+    if let Some(mc) = METRIC_COMS.get()
+        && let Ok(mut mg) = mc.lock()
+        && let Some(tx) = mg.tx.take() {
+            match tx.send(MetricsMsg::Stop) {
+                Err(e) => warn!("Failed to stop metrics: {}", e),
+                Ok(_) => match mg.stop_rx.take() {
+                    Some(rx) => {
+                        let _ = rx.recv();
+                        return;
+                    }
+                    None => panic!("stop_rx is None"),
+                },
             }
         }
-    }
 
     warn_once("Metrics not initialized");
 }

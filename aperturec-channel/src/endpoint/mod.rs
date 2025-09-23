@@ -94,13 +94,15 @@ pub mod test {
         (c, s)
     }
 
-    fn test_messages() -> (
+    type TestMessages = (
         (control::client_to_server::Message, usize),
         (control::server_to_client::Message, usize),
         (event::client_to_server::Message, usize),
         media::ServerToClient,
         tunnel::Message,
-    ) {
+    );
+
+    fn test_messages() -> TestMessages {
         let ci: control::client_to_server::Message = control::ClientInit::default().into();
         let si: control::server_to_client::Message = control::ServerInit::default().into();
         let ke: event::client_to_server::Message = event::KeyEvent::default().into();

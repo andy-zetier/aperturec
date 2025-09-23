@@ -1062,11 +1062,10 @@ mod signal_handlers {
                 }
                 debug!(?new_size, "resized");
 
-                if let Some(gdk_window) = internals.app_window.window() {
-                    if !gdk_window.state().contains(gdk::WindowState::FULLSCREEN) {
+                if let Some(gdk_window) = internals.app_window.window()
+                    && !gdk_window.state().contains(gdk::WindowState::FULLSCREEN) {
                         windowed_mode_size.set(new_size);
                     }
-                }
 
                 internals.blank_with_size(new_size);
                 internals
@@ -1618,12 +1617,11 @@ impl MultiDisplayWindow {
                 let new_area = Rect::new(moved_location, new_size);
                 if area == new_area {
                     window_statuses.borrow_mut().mark_updated(new_area);
-                    if let Some(dm) = window_statuses.borrow_mut().get_display_message() {
-                        if needs_dm_on_configure.take() {
+                    if let Some(dm) = window_statuses.borrow_mut().get_display_message()
+                        && needs_dm_on_configure.take() {
                             workspace.event_tx.send(EventMessage::DisplayEventMessage(dm))
                                 .unwrap_or_else(|err| warn!(%err, "GTK failed to tx DisplayEventMessage"));
                         }
-                    }
                 }
                 false
             }),
@@ -1962,33 +1960,28 @@ impl Windows {
     fn update_display_mode_actions(&self) {
         use gio::prelude::ActionMapExt;
 
-        if let Some(action) = self.app.lookup_action(Action::Window.as_ref()) {
-            if let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
+        if let Some(action) = self.app.lookup_action(Action::Window.as_ref())
+            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
                 let enabled = !matches!(self.mode, WindowMode::Single { fullscreen: false });
                 simple_action.set_enabled(enabled);
             }
-        }
 
         if let Some(action) = self
             .app
             .lookup_action(Action::SingleMonitorFullscreen.as_ref())
-        {
-            if let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
+            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
                 let enabled = !matches!(self.mode, WindowMode::Single { fullscreen: true });
                 simple_action.set_enabled(enabled);
             }
-        }
 
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         if let Some(action) = self
             .app
             .lookup_action(Action::MultiMonitorFullscreen.as_ref())
-        {
-            if let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
+            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>() {
                 let enabled = !matches!(self.mode, WindowMode::Multi);
                 simple_action.set_enabled(enabled);
             }
-        }
     }
 
     /// Synchronizes the internal mode state with the actual window fullscreen state (macOS only)

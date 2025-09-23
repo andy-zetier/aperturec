@@ -766,11 +766,10 @@ impl Backend for X {
             DisplayHeight::update(extent.height as f64);
         }
 
-        if changed {
-            if let Err(e) = self.resize_screen_if(&final_displays, Ordering::Less).await {
+        if changed
+            && let Err(e) = self.resize_screen_if(&final_displays, Ordering::Less).await {
                 warn!("Failed to trim screen size: {:?}", e);
             }
-        }
 
         if errors {
             Err(final_displays)
@@ -1065,8 +1064,8 @@ impl X {
             if offset + len <= sr.names().len() {
                 let bytes = &sr.names()[offset..offset + len];
 
-                if let Ok(name) = std::str::from_utf8(bytes) {
-                    if name == target_name {
+                if let Ok(name) = std::str::from_utf8(bytes)
+                    && name == target_name {
                         //
                         // Safety: XCB advises against calling new() directly, as it can create
                         // XIDs that have not been allocated by the X server. However, the
@@ -1077,7 +1076,6 @@ impl X {
                         //
                         return Ok(Some(unsafe { randr::Mode::new(mode.id) }));
                     }
-                }
             }
 
             offset += len;
