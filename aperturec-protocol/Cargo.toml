@@ -10,7 +10,7 @@ aperturec-graphics = { path = "../aperturec-graphics" }
 derive_builder = "0.20"
 derive_more = { version = "2.0", features = ["from"] }
 derive-new = "0.7"
-prost = "0.13"
+prost = "0.14"
 semver = "1.0"
 thiserror = "2.0"
 
@@ -18,5 +18,5 @@ thiserror = "2.0"
 anyhow = "1.0"
 glob = "0.3"
 prettyplease = "0.2"
-prost-build = "0.13"
+prost-build = "0.14"
 syn = { version = "2.0", features = ["visit-mut"] }

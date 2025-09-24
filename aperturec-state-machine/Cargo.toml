@@ -10,5 +10,5 @@ aperturec-state-machine-derive = { path = "derive" }
 trait-variant = "0.1"
 
 [dev-dependencies]
-tokio = { version = "1.29.1", features = ["full"] }
+tokio = { version = "1.47.1", features = ["full"] }
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }

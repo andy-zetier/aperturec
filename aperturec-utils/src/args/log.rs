@@ -143,7 +143,6 @@ where
         AppendTimestamp::default(FileLimit::MaxFiles(MAX_FILES)),
         ContentLimit::BytesSurpassed(MAX_BYTES),
         Compression::OnRotate(0),
-        #[cfg(unix)]
         None,
     );
     let (writer, guard) = tracing_appender::non_blocking(writer);
