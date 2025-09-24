@@ -484,7 +484,7 @@ impl TrackingBuffer {
             match self.damage {
                 Damage::Full => {
                     new.assign_to(self.data.slice_mut(tb_relative_area.as_slice()));
-                    TrackingBufferDamageRatio::observe(1.);
+                    TrackingBufferDamageRatio::observe(100.);
                 }
                 _ => {
                     let curr = self.data.slice(tb_relative_area.as_slice());
