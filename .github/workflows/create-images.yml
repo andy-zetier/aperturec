@@ -11,6 +11,11 @@ on:
         description: 'Path to images configuration JSON'
         required: true
         type: string
+      skip-cache-from:
+        description: 'Skip importing cache (for scheduled builds to force fresh pulls)'
+        required: false
+        default: false
+        type: boolean
     outputs:
       digests:
         description: 'Map of image digests keyed by "{target}-{os}-{arch}"'
@@ -65,10 +70,10 @@ jobs:
             IMAGE_UPSTREAM=${{ matrix.os.image_upstream }}
             OS_VARIANT=${{ matrix.os.os_variant }}
           outputs: type=registry,name=${{ steps.build-vars.outputs.image }}
-          cache-from: |
-            type=registry,ref=${{ steps.build-vars.outputs.image }},mode=max
+          cache-from: ${{ inputs.skip-cache-from && '' || format('type=registry,ref=%s,mode=max', steps.build-vars.outputs.image) }}
           cache-to: |
             type=registry,ref=${{ steps.build-vars.outputs.image }}
+          pull: ${{ inputs.skip-cache-from }}
       - uses: cloudposse/github-action-matrix-outputs-write@ed06cf3a6bf23b8dce36d1cf0d63123885bb8375
         with:
           matrix-step-name: ${{ github.job }}
