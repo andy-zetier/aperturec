@@ -30,7 +30,7 @@ jobs:
       global-config: ${{ steps.global-config.outputs.config }}
       platforms-config: ${{ steps.platforms-config.outputs.config }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - id: global-config
         run: |
           config=$(jq -c < ./.github/config/global.json)
@@ -51,7 +51,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', 'rust-image', fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default, 'amd64')] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           components: ${{ fromJson(needs.common-setup.outputs.global-config).rust.components.format }}
@@ -68,7 +68,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default, 'amd64')] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           components: ${{ fromJson(needs.common-setup.outputs.global-config).rust.components.docs }}
@@ -104,7 +104,7 @@ jobs:
       platforms: ${{ steps.config.outputs.platforms }}
       os-list: ${{ steps.config.outputs.os-list }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - id: load
         run: |
           config=$(jq -c < ./.github/config/linux-jobs.json)
@@ -128,7 +128,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', 'rust-image', 'ubuntu-24', matrix.platform.arch)] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           cargo-packages: ${{ fromJson(needs.common-setup.outputs.global-config).rust.cargo_packages.audit }}
@@ -150,7 +150,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, fromJson(needs.common-setup.outputs.platforms-config).os_images.linux.default, matrix.platform.arch)] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           components: ${{ fromJson(needs.common-setup.outputs.global-config).rust.components.lint }}
@@ -178,7 +178,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, matrix.os.image_name, matrix.platform.arch)] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           os-image: ${{ matrix.os.image_name }}
@@ -210,7 +210,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, matrix.os.image_name, matrix.platform.arch)] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           os-image: ${{ matrix.os.image_name }}
@@ -237,7 +237,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.linux-images-create.outputs.digests)[format('{0}-{1}-{2}', matrix.crate_group.image, matrix.os.image_name, matrix.platform.arch)] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           os-image: ${{ matrix.os.image_name }}
@@ -271,7 +271,7 @@ jobs:
       config: ${{ steps.load.outputs.config }}
       crate-groups: ${{ steps.config.outputs.crate-groups }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - id: load
         run: |
           config=$(jq -c < ./.github/config/macos-jobs.json)
@@ -283,7 +283,7 @@ jobs:
     runs-on: ${{ fromJson(needs.common-setup.outputs.platforms-config).runners.macos.default }}
     needs: [common-setup, macos-config]
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-macos-build-environment
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check licenses
@@ -299,7 +299,7 @@ jobs:
       matrix:
         crate_group: ${{ fromJson(needs.macos-config.outputs.crate-groups) }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-macos-build-environment
         with:
           rust-components: clippy
@@ -322,7 +322,7 @@ jobs:
       matrix:
         crate_group: ${{ fromJson(needs.macos-config.outputs.crate-groups) }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-macos-build-environment
       - uses: ./.github/actions/cargo-workspace
         with:
@@ -343,7 +343,7 @@ jobs:
       matrix:
         crate_group: ${{ fromJson(needs.macos-config.outputs.crate-groups) }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-macos-build-environment
       - uses: ./.github/actions/cargo-workspace
         with:
@@ -371,7 +371,7 @@ jobs:
       matrix:
         crate_group: ${{ fromJson(needs.macos-config.outputs.crate-groups) }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-macos-build-environment
       - run: |
           mkdir -p target/release
@@ -414,7 +414,7 @@ jobs:
       platforms: ${{ steps.config.outputs.platforms }}
       os-variants: ${{ steps.config.outputs.os-variants }}
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - id: load
         run: |
           config=$(jq -c < ./.github/config/windows-jobs.json)
@@ -435,7 +435,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.windows-images-create.outputs.digests)[format('{0}-{1}-{2}', 'client-image-windows', fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default, matrix.platform.arch)] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           components: ${{ fromJson(needs.common-setup.outputs.global-config).rust.components.lint }}
@@ -462,7 +462,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.windows-images-create.outputs.digests)[format('{0}-{1}-{2}', 'client-image-windows', fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default, matrix.platform.arch)] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           os-image: ${{ fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default }}
@@ -490,7 +490,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.windows-images-create.outputs.digests)[format('{0}-{1}-{2}', 'client-image-windows', fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default, matrix.platform.arch)] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: ./.github/actions/setup-rust
         with:
           os-image: ${{ fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default }}
@@ -521,7 +521,7 @@ jobs:
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.windows-images-create.outputs.digests)[format('{0}-{1}-{2}', 'client-image-windows', fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default, matrix.platform.arch)] }}"
     steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           name: client-windows-${{ matrix.platform.arch }}
