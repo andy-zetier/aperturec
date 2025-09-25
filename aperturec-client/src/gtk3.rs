@@ -333,22 +333,22 @@ impl Action {
         }
     }
 
-    const fn shortcut(&self) -> &'static str {
+    const fn shortcuts(&self) -> &'static [&'static str] {
         #[cfg(target_os = "macos")]
         match self {
-            Action::Refresh => "<Ctrl><Primary>F5",
-            Action::Disconnect => "<Ctrl><Primary>F12",
-            Action::Window => "<Ctrl><Primary>W",
-            Action::SingleMonitorFullscreen => "<Ctrl><Primary>F",
+            Action::Refresh => &["<Ctrl><Primary>F5"],
+            Action::Disconnect => &["<Ctrl><Primary>F12"],
+            Action::Window => &["<Ctrl><Primary>W"],
+            Action::SingleMonitorFullscreen => &["<Ctrl><Primary>F"],
         }
         #[cfg(not(target_os = "macos"))]
         match self {
-            Action::Refresh => "<Ctrl><Alt><Shift>F5",
-            Action::Disconnect => "<Ctrl><Alt><Shift>F12",
-            Action::Window => "<Ctrl><Alt><Shift>W",
-            Action::SingleMonitorFullscreen => "<Ctrl><Alt>Return",
+            Action::Refresh => &["<Ctrl><Alt>F5", "<Ctrl><Alt><Shift>F5"],
+            Action::Disconnect => &["<Ctrl><Alt>F12", "<Ctrl><Alt><Shift>F12"],
+            Action::Window => &["<Ctrl><Alt>W", "<Ctrl><Alt><Shift>W"],
+            Action::SingleMonitorFullscreen => &["<Ctrl><Alt>Return"],
             #[cfg(not(target_os = "windows"))]
-            Action::MultiMonitorFullscreen => "<Ctrl><Alt><Shift>Return",
+            Action::MultiMonitorFullscreen => &["<Ctrl><Alt><Shift>Return"],
         }
     }
 
@@ -790,7 +790,7 @@ impl ActionManager {
     pub fn register_accelerators(&self) {
         for action in Action::iter() {
             self.app
-                .set_accels_for_action(&action.qualified_name(), &[action.shortcut()]);
+                .set_accels_for_action(&action.qualified_name(), action.shortcuts());
         }
     }
 
