@@ -1,22 +1,67 @@
+name: Release Pull Requests
+
 on:
   push:
-    branches:
-      - main
-
+    branches: [main]
 
 permissions:
+  actions: read
   contents: write
   issues: write
   pull-requests: write
-
-name: Release Pull Requests
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      - uses: googleapis/release-please-action@4cd397a333e5500c1683589c277f56a3c10990e6
+      - uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42
+        id: app-token
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: googleapis/release-please-action@4cd397a333e5500c1683589c277f56a3c10990e6
+        id: release
+        with:
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+
+      - name: Find PR CI run
+        if: ${{ steps.release.outputs.releases_created == 'true' }}
+        id: find-ci-run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          CI_RUN_ID=$(ci/scripts/find-pr-ci-run.sh "${{ github.sha }}")
+          echo "run_id=$CI_RUN_ID" >> $GITHUB_OUTPUT
+
+      - uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11
+        if: ${{ steps.release.outputs.releases_created == 'true' && steps.find-ci-run.outputs.run_id }}
+        with:
+          run_id: ${{ steps.find-ci-run.outputs.run_id }}
+          path: ./artifacts
+
+      - name: Upload aperturec-server artifacts
+        if: ${{ steps.release.outputs['aperturec-server--release_created'] }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ci/scripts/attach-release-artifacts.sh \
+            "aperturec-server" \
+            "${{ steps.release.outputs['aperturec-server--tag_name'] }}" \
+            "./artifacts"
+
+      - name: Upload aperturec-client-gtk3 artifacts
+        if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ci/scripts/attach-release-artifacts.sh \
+            "aperturec-client-gtk3" \
+            "${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}" \
+            "./artifacts"

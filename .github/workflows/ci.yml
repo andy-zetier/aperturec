@@ -77,7 +77,7 @@ jobs:
         with:
           command: doc --no-deps
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: fromJson(needs.linux-config.outputs.config).jobs.generate-docs.artifacts[matrix.crate_group.name]
         with:
           name: ${{ fromJson(needs.linux-config.outputs.config).jobs.generate-docs.artifacts[matrix.crate_group.name].name }}
@@ -218,7 +218,7 @@ jobs:
         with:
           command: build --release
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: fromJson(needs.linux-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
         with:
           name: ${{ fromJson(needs.linux-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].name }}-${{ matrix.os.image_name }}-${{ matrix.platform.arch }}
@@ -357,7 +357,7 @@ jobs:
         with:
           command: build --release
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
         with:
           name: ${{ fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].name }}-macos
@@ -388,7 +388,7 @@ jobs:
             chmod +x ci/scripts/package-macos-with-all-deps.sh
             ci/scripts/package-macos-with-all-deps.sh
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: fromJson(needs.macos-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]
         with:
           name: ${{ fromJson(needs.macos-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name].name }}-macos
@@ -473,7 +473,7 @@ jobs:
               jq -r 'select(.profile.test == true) | .filenames[]' | \
               xargs -I {} cp {} test_executables/ 2>/dev/null || true
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: fromJson(needs.windows-config.outputs.config).jobs.test.artifacts[matrix.crate_group.name]
         with:
           name: ${{ fromJson(needs.windows-config.outputs.config).jobs.test.artifacts[matrix.crate_group.name].name }}-windows-${{ matrix.platform.arch }}
@@ -504,7 +504,7 @@ jobs:
           command: build --release
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
           args: --target ${{ matrix.crate_group.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: fromJson(needs.windows-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
         with:
           name: ${{ fromJson(needs.windows-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].name }}-windows-${{ matrix.platform.arch }}
@@ -529,7 +529,7 @@ jobs:
       - run: |
           chmod +x ci/scripts/create-windows-package.sh
           ci/scripts/create-windows-package.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: fromJson(needs.windows-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]
         with:
           name: ${{ fromJson(needs.windows-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name].name }}-windows-${{ matrix.platform.arch }}
