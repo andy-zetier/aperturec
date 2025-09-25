@@ -70,7 +70,7 @@ jobs:
             IMAGE_UPSTREAM=${{ matrix.os.image_upstream }}
             OS_VARIANT=${{ matrix.os.os_variant }}
           outputs: type=registry,name=${{ steps.build-vars.outputs.image }}
-          cache-from: ${{ inputs.skip-cache-from && '' || format('type=registry,ref=%s,mode=max', steps.build-vars.outputs.image) }}
+          cache-from: ${{ inputs.skip-cache-from && '' || format('type=registry,ref={0},mode=max', steps.build-vars.outputs.image) }}
           cache-to: |
             type=registry,ref=${{ steps.build-vars.outputs.image }}
           pull: ${{ inputs.skip-cache-from }}
