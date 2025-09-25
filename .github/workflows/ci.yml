@@ -520,6 +520,11 @@ jobs:
         crate_group: ${{ fromJson(needs.windows-config.outputs.crate-groups) }}
     container:
       image: "${{ needs.common-setup.outputs.container-repo }}@${{ fromJson(needs.windows-images-create.outputs.digests)[format('{0}-{1}-{2}', 'client-image-windows', fromJson(needs.common-setup.outputs.platforms-config).os_images.windows.default, matrix.platform.arch)] }}"
+    env:
+      AZURE_APP_ID: ${{ secrets.AZURE_APP_ID }}
+      AZURE_APP_SECRET: ${{ secrets.AZURE_APP_SECRET }}
+      AZURE_CERT_ALIAS: ${{ secrets.AZURE_CERT_ALIAS }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0

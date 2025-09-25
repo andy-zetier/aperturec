@@ -78,7 +78,7 @@ RUN make
 FROM --platform=${ARCHITECTURE} fips-capable-image AS client-image-windows
 COPY --from=pe-util-build-windows /root/pe-util/build/peldd /usr/bin/peldd
 RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
-    $DNF_INSTALL mingw64-gcc mingw64-gcc-c++ mingw64-freetype mingw64-cairo mingw64-harfbuzz mingw64-pango mingw64-poppler mingw64-gtk3 mingw64-winpthreads-static mingw64-glib2-static mingw64-openssl boost zip jq nasm bindgen util-linux msitools && $DNF_CLEAN
+    $DNF_INSTALL mingw64-gcc mingw64-gcc-c++ mingw64-freetype mingw64-cairo mingw64-harfbuzz mingw64-pango mingw64-poppler mingw64-gtk3 mingw64-winpthreads-static mingw64-glib2-static mingw64-openssl boost zip jq nasm bindgen util-linux msitools jq java-1.8.0-openjdk azure-cli && $DNF_CLEAN
 
 ENV PKG_CONFIG_ALLOW_CROSS=1
 ENV PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/sys-root/mingw/lib/pkgconfig/
