@@ -23,7 +23,7 @@ for run_id in $RUN_IDS; do
         artifact_name=$(echo "$artifact_json" | jq -r '.name')
 
         gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
-            --output "artifact_${artifact_id}.zip" || exit 1
+            > "artifact_${artifact_id}.zip" || exit 1
 
         mkdir -p "$OUTPUT_DIR/${artifact_name}"
         unzip -q -o "artifact_${artifact_id}.zip" -d "$OUTPUT_DIR/${artifact_name}"
