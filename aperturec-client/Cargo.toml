@@ -3,7 +3,8 @@ name = "aperturec-client"
 description = "ApertureC Client library"
 edition.workspace = true
 version = "0.1.0"
-license.workspace = true
+license-file.workspace = true
+publish = false
 
 build = "build.rs"
 

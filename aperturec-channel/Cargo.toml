@@ -2,7 +2,8 @@
 name = "aperturec-channel"
 edition.workspace = true
 version = "0.1.0"
-license.workspace = true
+license-file.workspace = true
+publish = false
 
 [dependencies]
 aperturec-protocol = { path = "../aperturec-protocol" }

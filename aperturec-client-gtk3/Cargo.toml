@@ -3,7 +3,8 @@ name = "aperturec-client-gtk3"
 description = "GTK3 implementation of the ApertureC Client"
 version = "1.0.0"
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+publish = false
 
 build = "../common_build.rs"
 
@@ -28,6 +29,7 @@ assets = [
 
 [package.metadata.generate-rpm]
 name = "aperturec-client"
+license = "Commercial License for ApertureC"
 assets = [
   { source = "target/release/aperturec-client", dest = "/usr/bin/aperturec-client", mode = "755" },
   { source = "packaging/aperturec-client.desktop", dest = "/usr/share/applications/aperturec-client.desktop", mode = "644" }

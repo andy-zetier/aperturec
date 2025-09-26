@@ -3,7 +3,8 @@ name = "aperturec-server"
 version = "1.0.0"
 description = "ApertureC Server"
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
+publish = false
 
 build = "../common_build.rs"
 
@@ -74,6 +75,7 @@ maintainer = "ApertureC Team <aperturec@zetier.com>"
 section = "x11"
 
 [package.metadata.generate-rpm]
+license = "Commercial License for ApertureC"
 assets = [
   { source = "target/release/aperturec-server", dest = "/usr/bin/aperturec-server", mode = "755" }
 ]
