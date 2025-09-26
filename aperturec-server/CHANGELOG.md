@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.0...aperturec-server-v1.1.1) (2025-09-26)
+
+
+### Bug Fixes
+
+* Force releases and bump semver patch ([a45bf7c](https://github.com/Zetier/aperturec/commit/a45bf7c9b74be5a316edcb61fed60fbe07a5ef95))
+
 ## [1.1.0](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.0.0...aperturec-server-v1.1.0) (2025-09-26)
 
 

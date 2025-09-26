@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.1...aperturec-client-gtk3-v1.0.2) (2025-09-26)
+
+
+### Bug Fixes
+
+* Force releases and bump semver patch ([a45bf7c](https://github.com/Zetier/aperturec/commit/a45bf7c9b74be5a316edcb61fed60fbe07a5ef95))
+
 ## [1.0.1](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.0...aperturec-client-gtk3-v1.0.1) (2025-09-26)
 
 ## 1.0.0 (2025-09-17)
