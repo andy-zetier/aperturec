@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/Zetier/aperturec/compare/aperturec-channel-v0.1.0...aperturec-channel-v0.2.0) (2025-09-26)
+
+
+### Features
+
+* Set up Copilot instructions with comprehensive build guide and linting fixes ([#597](https://github.com/Zetier/aperturec/issues/597)) ([56e4969](https://github.com/Zetier/aperturec/commit/56e4969e218d12be6c178b42c2088ee317318119))
+
 ## 0.1.0 (2025-09-17)
 
 
