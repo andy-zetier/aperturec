@@ -1,9 +1,6 @@
 #!/bin/bash
 set -euox pipefail
 
-# Script to find the PR that was merged and get its CI run ID
-# Usage: find-pr-ci-run.sh <commit_sha>
-
 COMMIT_SHA="${1:-}"
 
 if [[ -z "$COMMIT_SHA" ]]; then
@@ -11,27 +8,38 @@ if [[ -z "$COMMIT_SHA" ]]; then
     exit 1
 fi
 
-# Find PR number and head SHA associated with this commit
-read -r PR_NUMBER PR_HEAD_SHA < <(gh api \
-    -H "Accept: application/vnd.github+json" \
-    "/repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/pulls" \
+PR_DATA=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/pulls" \
     --jq '.[0] | "\(.number) \(.head.sha)"')
 
-if [[ -z "$PR_NUMBER" ]]; then
+if [[ -z "$PR_DATA" ]]; then
     echo "Error: No PR found for commit ${COMMIT_SHA}" >&2
     exit 1
 fi
 
-# Find the successful CI workflow run for this PR
-RUN_ID=$(gh api \
-    -H "Accept: application/vnd.github+json" \
-    "/repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&status=success" \
-    --jq ".workflow_runs[] | select(.head_sha == \"${PR_HEAD_SHA}\" and .name == \"Continuous Integration\") | .id" \
-    | head -1)
+PR_NUMBER="${PR_DATA%% *}"
+PR_HEAD_SHA="${PR_DATA#* }"
 
-if [[ -z "$RUN_ID" ]]; then
-    echo "Error: No successful CI run found for PR #${PR_NUMBER}" >&2
+RUN_IDS=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&per_page=100" \
+    --jq "[.workflow_runs[] | select(.head_sha == \"${PR_HEAD_SHA}\" and .name == \"Continuous Integration\")] | sort_by(.created_at) | reverse | .[].id")
+
+if [[ -z "$RUN_IDS" ]]; then
+    echo "Error: No CI runs found" >&2
     exit 1
 fi
 
-echo "$RUN_ID"
+RUNS_WITH_ARTIFACTS=""
+for run_id in $RUN_IDS; do
+    artifact_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --jq '.total_count')
+    if [[ "$artifact_count" -gt 0 ]]; then
+        RUNS_WITH_ARTIFACTS="$RUNS_WITH_ARTIFACTS $run_id"
+    fi
+done
+
+RUNS_WITH_ARTIFACTS=$(echo "$RUNS_WITH_ARTIFACTS" | xargs)
+
+if [[ -z "$RUNS_WITH_ARTIFACTS" ]]; then
+    echo "Error: No CI runs with artifacts found for PR #${PR_NUMBER}" >&2
+    exit 1
+fi
+
+echo "$RUNS_WITH_ARTIFACTS"

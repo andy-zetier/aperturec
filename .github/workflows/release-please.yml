@@ -37,17 +37,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          CI_RUN_ID=$(ci/scripts/find-pr-ci-run.sh "${{ github.sha }}")
-          echo "run_id=$CI_RUN_ID" >> $GITHUB_OUTPUT
+          CI_RUN_IDS=$(ci/scripts/find-pr-ci-run.sh "${{ github.sha }}")
+          echo "run_ids=$CI_RUN_IDS" >> $GITHUB_OUTPUT
 
-      - uses: dawidd6/action-download-artifact@bf251b5aa9c2f7eeb574a96ee720e24f801b7c11
-        if: ${{ steps.release.outputs.releases_created == 'true' && steps.find-ci-run.outputs.run_id }}
-        with:
-          run_id: ${{ steps.find-ci-run.outputs.run_id }}
-          path: ./artifacts
+      - name: Download artifacts
+        if: ${{ steps.release.outputs.releases_created == 'true' && steps.find-ci-run.outputs.run_ids }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          ci/scripts/download-pr-artifacts.sh "${{ steps.find-ci-run.outputs.run_ids }}" "./artifacts"
 
-      - name: Upload aperturec-server artifacts
-        if: ${{ steps.release.outputs['aperturec-server--release_created'] }}
+      - if: ${{ steps.release.outputs['aperturec-server--release_created'] }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -56,8 +57,7 @@ jobs:
             "${{ steps.release.outputs['aperturec-server--tag_name'] }}" \
             "./artifacts"
 
-      - name: Upload aperturec-client-gtk3 artifacts
-        if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+      - if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
