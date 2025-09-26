@@ -61,6 +61,11 @@ upload_linux_packages() {
         local os_label
         os_label=$(get_os_label "$dir_basename")
 
+        if [[ -z "$os_label" ]]; then
+            echo "Warning: Unrecognized OS for directory '$dir_basename', skipping." >&2
+            continue
+        fi
+
         for pkg in "$pkg_dir"/{debian/*.deb,rpm/*.rpm}; do
             [[ -f "$pkg" ]] || continue
             local new_name

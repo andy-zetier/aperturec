@@ -65,3 +65,24 @@ jobs:
             "aperturec-client-gtk3" \
             "${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}" \
             "./artifacts"
+
+      - if: ${{ steps.release.outputs.releases_created == 'true' }}
+        run: gem install package_cloud
+
+      - if: ${{ steps.release.outputs['aperturec-server--release_created'] }}
+        env:
+          PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
+        run: |
+          ci/scripts/push-to-packagecloud.sh \
+            "aperturec-server" \
+            "${{ steps.release.outputs['aperturec-server--tag_name'] }}" \
+            "./artifacts"
+
+      - if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+        env:
+          PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
+        run: |
+          ci/scripts/push-to-packagecloud.sh \
+            "aperturec-client-gtk3" \
+            "${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}" \
+            "./artifacts"
