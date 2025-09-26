@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.1...aperturec-server-v1.1.2) (2025-09-26)
+
+
+### Bug Fixes
+
+* Handle multiple CI runs better and force release ([817b1b2](https://github.com/Zetier/aperturec/commit/817b1b21aa58f06446334311b4dc5a1c21be7b6b))
+
 ## [1.1.1](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.0...aperturec-server-v1.1.1) (2025-09-26)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.2...aperturec-client-gtk3-v1.0.3) (2025-09-26)
+
+
+### Bug Fixes
+
+* Handle multiple CI runs better and force release ([817b1b2](https://github.com/Zetier/aperturec/commit/817b1b21aa58f06446334311b4dc5a1c21be7b6b))
+
 ## [1.0.2](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.1...aperturec-client-gtk3-v1.0.2) (2025-09-26)
 
 
