@@ -53,7 +53,7 @@ upload_linux_packages() {
     temp_dir=$(mktemp -d)
     trap "rm -rf '$temp_dir'" EXIT
 
-    for pkg_dir in "$ARTIFACTS_DIR/${prefix}-*-pkg/"; do
+    for pkg_dir in "$ARTIFACTS_DIR"/"${prefix}"-*-pkg/; do
         [[ -d "$pkg_dir" ]] || continue
 
         local dir_basename
