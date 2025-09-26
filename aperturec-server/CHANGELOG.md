@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.2...aperturec-server-v1.1.3) (2025-09-26)
+
+
+### Bug Fixes
+
+* Repair gh api command ([3c8b45d](https://github.com/Zetier/aperturec/commit/3c8b45dd50d05f20b8319bb5aa5193965b3a0ada))
+
 ## [1.1.2](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.1...aperturec-server-v1.1.2) (2025-09-26)
 
 

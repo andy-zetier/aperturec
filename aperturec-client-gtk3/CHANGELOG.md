@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.4](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.3...aperturec-client-gtk3-v1.0.4) (2025-09-26)
+
+
+### Bug Fixes
+
+* Repair gh api command ([3c8b45d](https://github.com/Zetier/aperturec/commit/3c8b45dd50d05f20b8319bb5aa5193965b3a0ada))
+
 ## [1.0.3](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.2...aperturec-client-gtk3-v1.0.3) (2025-09-26)
 
 
