@@ -67,7 +67,9 @@ jobs:
             "./artifacts"
 
       - if: ${{ steps.release.outputs.releases_created == 'true' }}
-        run: gem install package_cloud
+        run: |
+          gem install --user-install package_cloud
+          echo "$(ruby -e 'puts Gem.user_dir')/bin" >> $GITHUB_PATH
 
       - if: ${{ steps.release.outputs['aperturec-server--release_created'] }}
         env:
