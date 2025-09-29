@@ -22,11 +22,23 @@ use s2n_quic::provider::tls::rustls::rustls;
 pub const SSLKEYLOGFILE_VAR: &str = "SSLKEYLOGFILE";
 
 /// Custom certificate verifier allowing built-in and user-provided certificates
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct CertVerifier {
     pub(crate) user_provided: Option<Arc<dyn ServerCertVerifier>>,
     pub(crate) allow_insecure_connection: bool,
     platform: rustls_platform_verifier::Verifier,
+}
+
+impl CertVerifier {
+    pub fn new() -> Result<Self> {
+        let arc_crypto_provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let platform = rustls_platform_verifier::Verifier::new(arc_crypto_provider)?;
+        Ok(Self {
+            user_provided: Option::default(),
+            allow_insecure_connection: bool::default(),
+            platform,
+        })
+    }
 }
 
 impl ServerCertVerifier for CertVerifier {

@@ -139,7 +139,7 @@ impl Builder {
 
         let _guard = async_rt.as_ref().map(TokioRuntime::enter);
 
-        let mut cert_verifier = tls::CertVerifier::default();
+        let mut cert_verifier = tls::CertVerifier::new()?;
         if !self.additional_pem_certs.is_empty() {
             let mut roots = rustls::RootCertStore::empty();
             for pem in self.additional_pem_certs {
