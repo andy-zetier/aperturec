@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.8](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.7...aperturec-client-gtk3-v1.0.8) (2025-09-29)
+
+
+### Bug Fixes
+
+* Trigger warpstations macos app build via GitHub ([43f288a](https://github.com/Zetier/aperturec/commit/43f288a92cec0bd33e34f6b7732a70ff00becae5))
+
 ## [1.0.7](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.6...aperturec-client-gtk3-v1.0.7) (2025-09-29)
 
 
