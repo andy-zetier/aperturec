@@ -88,3 +88,20 @@ jobs:
             "aperturec-client-gtk3" \
             "${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}" \
             "./artifacts"
+
+      - if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          RELEASE_TAG="${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}"
+          VERSION="${{ steps.release.outputs['aperturec-client-gtk3--version'] }}"
+          ZIP_NAME="aperturec-client-macos-with-all-dependencies_${VERSION}.zip"
+
+          gh api repos/Zetier/Warpstations-MacOS/dispatches \
+            --field event_type=aperturec_release \
+            --raw-field client_payload="{
+              \"release_tag\":\"$RELEASE_TAG\",
+              \"zip_name\":\"$ZIP_NAME\",
+              \"aperturec_version\":\"$VERSION\",
+              \"repository\":\"${{ github.repository }}\"
+            }"
