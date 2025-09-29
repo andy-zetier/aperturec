@@ -12,7 +12,7 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 for run_id in $RUN_IDS; do
-    artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --jq '.artifacts')
+    artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --paginate --jq '.artifacts')
 
     if [[ "$artifacts" == "[]" ]] || [[ -z "$artifacts" ]]; then
         continue
