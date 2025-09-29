@@ -66,7 +66,7 @@ upload_linux_packages() {
             continue
         fi
 
-        for pkg in "$pkg_dir"/target/{debian/*.deb,rpm/*.rpm}; do
+        for pkg in "$pkg_dir"/{debian/*.deb,rpm/*.rpm}; do
             [[ -f "$pkg" ]] || continue
             local new_name
             new_name=$(rename_package "$pkg" "$os_label")

@@ -131,7 +131,7 @@ upload_linux_packages() {
         echo "Processing packages from $dir_basename (→ $distro)..."
 
         # Process .deb and .rpm packages
-        for pkg in "$pkg_dir"target/debian/*.deb "$pkg_dir"target/rpm/*.rpm; do
+        for pkg in "$pkg_dir"debian/*.deb "$pkg_dir"rpm/*.rpm; do
             [[ -f "$pkg" ]] || continue
             if push_package "$pkg" "$distro" "$repo"; then
                 total_pushed=$((total_pushed + 1))
