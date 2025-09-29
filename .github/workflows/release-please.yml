@@ -100,9 +100,22 @@ jobs:
 
           gh api repos/Zetier/Warpstations-MacOS/dispatches \
             --field event_type=aperturec_release \
-            --raw-field client_payload="{
-              \"release_tag\":\"$RELEASE_TAG\",
-              \"zip_name\":\"$ZIP_NAME\",
-              \"aperturec_version\":\"$VERSION\",
-              \"repository\":\"${{ github.repository }}\"
-            }"
+            --field 'client_payload[release_tag]='"$RELEASE_TAG" \
+            --field 'client_payload[zip_name]='"$ZIP_NAME" \
+            --field 'client_payload[aperturec_version]='"$VERSION" \
+            --field 'client_payload[repository]='"${{ github.repository }}"
+
+      - if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+        run: |
+          mkdir -p site
+          VERSION="${{ steps.release.outputs['aperturec-client-gtk3--version'] }}"
+          cp "./artifacts/client-package-windows-amd64/aperturec-client_${VERSION}.msi" site/aperturec-client.msi
+          echo "Successfully prepared MSI for GitHub Pages deployment"
+
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b
+        if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+        with:
+          path: site
+
+      - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e
+        if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}

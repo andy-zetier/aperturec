@@ -20,7 +20,7 @@ for dylib in \
 		| awk '{print $1}')
 do
 	dylib="${dylib##*/}"
-	find "${ROOT_DIR}"/target/release \
+	find "${ROOT_DIR}"/target/release "${ROOT_DIR}"/target/release/deps \
 		-type f \
 		-name "${dylib}" \
 		-exec cp {} ./"${PKG_DIR}"/ \; \
