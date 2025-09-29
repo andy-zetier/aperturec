@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.4](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.3...aperturec-server-v1.1.4) (2025-09-29)
+
+
+### Bug Fixes
+
+* Fix package paths in attach & push scripts ([99fde87](https://github.com/Zetier/aperturec/commit/99fde87ead67a9c86d0df238c8417d646dad4d83))
+
 ## [1.1.3](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.2...aperturec-server-v1.1.3) (2025-09-26)
 
 

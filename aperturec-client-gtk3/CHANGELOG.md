@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.5](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.4...aperturec-client-gtk3-v1.0.5) (2025-09-29)
+
+
+### Bug Fixes
+
+* Fix package paths in attach & push scripts ([99fde87](https://github.com/Zetier/aperturec/commit/99fde87ead67a9c86d0df238c8417d646dad4d83))
+
 ## [1.0.4](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.3...aperturec-client-gtk3-v1.0.4) (2025-09-26)
 
 
