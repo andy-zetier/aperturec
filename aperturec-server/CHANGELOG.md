@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.5](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.4...aperturec-server-v1.1.5) (2025-09-29)
+
+
+### Bug Fixes
+
+* Grab all CI artifacts with --paginate ([84a5d3d](https://github.com/Zetier/aperturec/commit/84a5d3d7610597f35ee6547e685687a65eea8803))
+
 ## [1.1.4](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.3...aperturec-server-v1.1.4) (2025-09-29)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.6](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.5...aperturec-client-gtk3-v1.0.6) (2025-09-29)
+
+
+### Bug Fixes
+
+* Grab all CI artifacts with --paginate ([84a5d3d](https://github.com/Zetier/aperturec/commit/84a5d3d7610597f35ee6547e685687a65eea8803))
+
 ## [1.0.5](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.4...aperturec-client-gtk3-v1.0.5) (2025-09-29)
 
 
