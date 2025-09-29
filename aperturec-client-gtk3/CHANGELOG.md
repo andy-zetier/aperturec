@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.9](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.8...aperturec-client-gtk3-v1.0.9) (2025-09-29)
+
+
+### Bug Fixes
+
+* Give github app access to WarpStations app repo ([fe70720](https://github.com/Zetier/aperturec/commit/fe70720a1a95fbaac0069293df9973a0da3121fc))
+
 ## [1.0.8](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.7...aperturec-client-gtk3-v1.0.8) (2025-09-29)
 
 
