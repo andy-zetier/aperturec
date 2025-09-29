@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.6](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.5...aperturec-server-v1.1.6) (2025-09-29)
+
+
+### Bug Fixes
+
+* Proper directory structure to download artifacts ([8c44441](https://github.com/Zetier/aperturec/commit/8c44441e55ebed8fc7e72245bc64f728b0253644))
+
 ## [1.1.5](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.4...aperturec-server-v1.1.5) (2025-09-29)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.7](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.6...aperturec-client-gtk3-v1.0.7) (2025-09-29)
+
+
+### Bug Fixes
+
+* Proper directory structure to download artifacts ([8c44441](https://github.com/Zetier/aperturec/commit/8c44441e55ebed8fc7e72245bc64f728b0253644))
+
 ## [1.0.6](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.5...aperturec-client-gtk3-v1.0.6) (2025-09-29)
 
 
