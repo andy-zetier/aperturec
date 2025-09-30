@@ -1409,12 +1409,18 @@ pub fn run_client(config: Configuration) -> Result<()> {
         }
     };
 
-    let ui = GtkUi::new(
+    let ui = match GtkUi::new(
         itc.gtk_half,
         config.initial_display_mode,
         client.monitor_geometry.as_ref().unwrap().clone(),
         client.display_config.as_ref().unwrap().clone(),
-    )?;
+    ) {
+        Ok(ui) => ui,
+        Err(e) => {
+            show_blocking_error("Failed to start GTK UI", &format!("{e}"));
+            return Err(e);
+        }
+    };
 
     //
     // Start up the UI on main thread
