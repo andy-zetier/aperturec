@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.12](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.11...aperturec-client-gtk3-v1.0.12) (2025-09-30)
+
+
+### Bug Fixes
+
+* Add pages permission to release-please workflow ([b67df09](https://github.com/Zetier/aperturec/commit/b67df099ec6cc643ed114183c69f86bbc3dfb69a))
+
 ## [1.0.11](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.10...aperturec-client-gtk3-v1.0.11) (2025-09-30)
 
 
