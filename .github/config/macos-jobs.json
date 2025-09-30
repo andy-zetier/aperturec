@@ -10,14 +10,6 @@
     }
   ],
   "jobs": {
-    "build": {
-      "artifacts": {
-        "client": {
-          "name": "client",
-          "paths": ["target/release/aperturec-client"]
-        }
-      }
-    },
     "package": {
       "artifacts": {
         "client": {

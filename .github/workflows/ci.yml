@@ -336,7 +336,7 @@ jobs:
         with:
           command: test
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
-  macos-build:
+  macos-build-and-package:
     runs-on: ${{ fromJson(needs.common-setup.outputs.platforms-config).runners.macos.default }}
     needs: [common-setup, macos-config]
     strategy:
@@ -357,37 +357,12 @@ jobs:
         with:
           command: build --release
           packages: ${{ join(matrix.crate_group.crates, ' ') }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name]
-        with:
-          name: ${{ fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].name }}-macos
-          path: |
-            ${{ join(fromJson(needs.macos-config.outputs.config).jobs.build.artifacts[matrix.crate_group.name].paths, '
-            ') }}
-  macos-package:
-    runs-on: ${{ fromJson(needs.common-setup.outputs.platforms-config).runners.macos.default }}
-    needs: [common-setup, macos-config, macos-build]
-    strategy:
-      matrix:
-        crate_group: ${{ fromJson(needs.macos-config.outputs.crate-groups) }}
-    steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-      - uses: ./.github/actions/setup-macos-build-environment
       - run: |
-          mkdir -p target/release
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
-        with:
-          name: client-macos
-          path: target/release/
-      - run: |
-          chmod +x target/release/aperturec-client
           chmod +x ci/scripts/create-macos-package.sh
           ci/scripts/create-macos-package.sh
       - run: |
-          if [ -f ci/scripts/package-macos-with-all-deps.sh ]; then
-            chmod +x ci/scripts/package-macos-with-all-deps.sh
-            ci/scripts/package-macos-with-all-deps.sh
-          fi
+          chmod +x ci/scripts/package-macos-with-all-deps.sh
+          ci/scripts/package-macos-with-all-deps.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: fromJson(needs.macos-config.outputs.config).jobs.package.artifacts[matrix.crate_group.name]
         with:
