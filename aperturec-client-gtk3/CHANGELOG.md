@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.10](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.9...aperturec-client-gtk3-v1.0.10) (2025-09-30)
+
+
+### Bug Fixes
+
+* Release windows MSI, add macOS build dependencies to bundle ([b92edc9](https://github.com/Zetier/aperturec/commit/b92edc999cb636c18cc8f40d0492f2fbff914512))
+
 ## [1.0.9](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.8...aperturec-client-gtk3-v1.0.9) (2025-09-29)
 
 
