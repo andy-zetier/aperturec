@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.11](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.10...aperturec-client-gtk3-v1.0.11) (2025-09-30)
+
+
+### Bug Fixes
+
+* Give release-please workflow id-token permission ([df3e267](https://github.com/Zetier/aperturec/commit/df3e2674a5b9ea0698d579dd5f2ac4bcddf556ab))
+
 ## [1.0.10](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.9...aperturec-client-gtk3-v1.0.10) (2025-09-30)
 
 
