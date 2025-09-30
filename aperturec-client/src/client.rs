@@ -504,6 +504,23 @@ impl Client {
                 .with_memory(MemoryRefreshKind::everything()),
         );
         let displays = {
+            let single_fs = || {
+                let size = self
+                    .monitor_geometry
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .next()
+                    .expect("no monitors")
+                    .usable_area
+                    .size;
+                vec![DisplayInfo {
+                    area: Some(
+                        Rectangle::try_from_size_at_origin(size).expect("Failed to generate area"),
+                    ),
+                    is_enabled: true,
+                }]
+            };
             match self.config.initial_display_mode {
                 DisplayMode::Windowed { size } => {
                     vec![DisplayInfo {
@@ -514,6 +531,7 @@ impl Client {
                         is_enabled: true,
                     }]
                 }
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                 DisplayMode::MultiFullscreen => self
                     .monitor_geometry
                     .as_ref()
@@ -526,24 +544,10 @@ impl Client {
                         is_enabled: true,
                     })
                     .collect(),
-                DisplayMode::SingleFullscreen => {
-                    let size = self
-                        .monitor_geometry
-                        .as_ref()
-                        .unwrap()
-                        .iter()
-                        .next()
-                        .expect("no monitors")
-                        .usable_area
-                        .size;
-                    vec![DisplayInfo {
-                        area: Some(
-                            Rectangle::try_from_size_at_origin(size)
-                                .expect("Failed to generate area"),
-                        ),
-                        is_enabled: true,
-                    }]
-                }
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                DisplayMode::SingleFullscreen => single_fs(),
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                DisplayMode::MultiFullscreen | DisplayMode::SingleFullscreen => single_fs(),
             }
         };
 
