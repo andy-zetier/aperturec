@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/Zetier/aperturec/compare/aperturec-client-v0.2.0...aperturec-client-v0.2.1) (2025-09-30)
+
+
+### Bug Fixes
+
+* Prevent clients on macos/windows from trying MM ([#639](https://github.com/Zetier/aperturec/issues/639)) ([cdf53bf](https://github.com/Zetier/aperturec/commit/cdf53bfa690d2326319bdc9c355394053c26d2c1))
+* Show modal error on GTK UI creation failure ([#641](https://github.com/Zetier/aperturec/issues/641)) ([c2c55af](https://github.com/Zetier/aperturec/commit/c2c55af7ab328c7cca9f58f92f311e7870a506ee))
+
 ## [0.2.0](https://github.com/Zetier/aperturec/compare/aperturec-client-v0.1.0...aperturec-client-v0.2.0) (2025-09-26)
 
 
