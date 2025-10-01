@@ -412,7 +412,7 @@ fn convert_win_virtual_key_to_scan_code(virtual_key: u32) -> anyhow::Result<u16>
     Ok(sc)
 }
 
-fn gtk_key_to_x11(key: &gdk::EventKey) -> u16 {
+fn gtk_key_to_x11(key: &gdk::EventKey) -> Option<u16> {
     let keycode = key.keycode().expect("Failed to get keycode!");
     let mapping = {
         #[cfg(target_os = "macos")]
@@ -422,8 +422,16 @@ fn gtk_key_to_x11(key: &gdk::EventKey) -> u16 {
 
         #[cfg(target_os = "windows")]
         {
-            let scancode = convert_win_virtual_key_to_scan_code(keycode as u32)
-                .unwrap_or_else(|err| panic!("{}", err));
+            let scancode = match convert_win_virtual_key_to_scan_code(keycode as u32) {
+                Ok(sc) => sc,
+                Err(err) => {
+                    warn!(
+                        "Failed to convert key code {:#X}: {}. Ignoring key event.",
+                        keycode, err
+                    );
+                    return None;
+                }
+            };
             KeyMapping::Win(scancode)
         }
 
@@ -433,8 +441,16 @@ fn gtk_key_to_x11(key: &gdk::EventKey) -> u16 {
         }
     };
 
-    let map = KeyMap::try_from(mapping).expect("Could not convert native key code");
-    map.xkb
+    match KeyMap::try_from(mapping) {
+        Ok(map) => Some(map.xkb),
+        Err(_) => {
+            warn!(
+                "Failed to convert key code {:#X} to X11 keycode. Ignoring key event.",
+                keycode
+            );
+            None
+        }
+    }
 }
 
 pub struct GtkUi {
@@ -818,7 +834,9 @@ mod signal_handlers {
         trace!(value=?key.keyval(), state=?key.state(), "GTK KeyPressEvent");
 
         // Forward all key presses to the remote system
-        let x11key = gtk_key_to_x11(key);
+        let Some(x11key) = gtk_key_to_x11(key) else {
+            return;
+        };
         workspace.held_keys.borrow_mut().insert(x11key);
         workspace
             .event_tx
@@ -835,7 +853,9 @@ mod signal_handlers {
     pub fn key_release(workspace: &UiWorkspace, key: &gdk::EventKey) {
         trace!(value=?key.keyval(), state=?key.state(), "GTK KeyReleaseEvent");
 
-        let x11key = gtk_key_to_x11(key);
+        let Some(x11key) = gtk_key_to_x11(key) else {
+            return;
+        };
         workspace.held_keys.borrow_mut().remove(&x11key);
         workspace
             .event_tx
