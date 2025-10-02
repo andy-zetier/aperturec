@@ -9,6 +9,7 @@ enum Os {
   OS_LINUX = 1;
   OS_WINDOWS = 2;
   OS_MAC = 3;
+  OS_IOS = 4;
 }
 
 enum Bitness {

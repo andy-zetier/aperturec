@@ -557,6 +557,7 @@ impl Client {
                 "linux" => Os::Linux,
                 "windows" => Os::Windows,
                 "macos" => Os::Mac,
+                "ios" => Os::Ios,
                 _ => panic!("Unsupported OS"),
             })
             .os_version(System::os_version().unwrap())
