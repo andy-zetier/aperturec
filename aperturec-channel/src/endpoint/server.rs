@@ -131,6 +131,11 @@ impl Builder {
         tls_config
             .alpn_protocols
             .push(protocol::MAGIC.as_bytes().to_vec());
+        // Client have been deployed which only have the legacy ALPN, so we need to the server
+        // to support this ALPN
+        tls_config
+            .alpn_protocols
+            .push(protocol::LEGACY_ALPN.as_bytes().to_vec());
         #[cfg(any(test, debug_assertions))]
         {
             tls_config.key_log = Arc::new(KeyLogFile::new());

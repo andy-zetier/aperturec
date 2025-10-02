@@ -14,3 +14,16 @@ in the ACP Specification.
 
 You should be able to use the ACP PDUs simply by specifying this crate as a
 Cargo dependency.
+
+## ALPN Versioning
+
+The protocol defines ALPN (Application-Layer Protocol Negotiation) identifiers used
+in TLS handshakes for QUIC connections:
+
+- `MAGIC`: Current ALPN identifier using only the **major version** (e.g., `ApertureC-1`)
+- `LEGACY_ALPN`: Legacy ALPN identifier for backward compatibility
+
+This versioning strategy ensures that:
+- Minor and patch version updates don't break compatibility
+- Clients and servers can negotiate connections across different minor/patch versions
+- Breaking changes can be signaled via major version increments
