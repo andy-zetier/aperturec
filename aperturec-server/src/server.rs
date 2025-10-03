@@ -168,16 +168,12 @@ fn parse_create_command(cmdline: &str) -> Result<Command> {
         }
 
         let prog = prog.ok_or(anyhow!(
-            "No program specified in root program \"{}\"",
-            cmdline
+            "No program specified in root program \"{cmdline}\""
         ))?;
 
         if let Err(e) = which::which(&prog) {
             anyhow::bail!(
-                "Cannot launch root program \"{}\" from command-line \"{}\": {}",
-                prog,
-                cmdline,
-                e
+                "Cannot launch root program \"{prog}\" from command-line \"{cmdline}\": {e}"
             );
         }
 
@@ -187,7 +183,7 @@ fn parse_create_command(cmdline: &str) -> Result<Command> {
         cmd.kill_on_drop(true);
         Ok(cmd)
     } else {
-        Err(anyhow!("Could not parse root program \"{}\"", cmdline))
+        Err(anyhow!("Could not parse root program \"{cmdline}\""))
     }
 }
 
@@ -907,7 +903,7 @@ where
                     trace!("Task finished");
                     if task_error.is_none() && !cleanup_started
                         && let Err(error) = res {
-                            task_error = Some(anyhow!("task error: {}", error));
+                            task_error = Some(anyhow!("task error: {error}"));
                             if gb_reason.is_none() {
                                 gb_reason = Some(cm::ServerGoodbyeReason::InternalError);
                             }
@@ -1015,7 +1011,7 @@ impl<B: Backend> TryTransitionable<SessionInactive<B>, SessionUnresumable>
                         }
                         Err(e) => Err(Recovered {
                             stateful: session_unresumable!(),
-                            error: anyhow!("Failed to wait on root process: {}", e),
+                            error: anyhow!("Failed to wait on root process: {e}"),
                         }),
                     }
                 } else {

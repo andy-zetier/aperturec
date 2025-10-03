@@ -279,8 +279,8 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
             task_res = self.state.task => {
                 let error = match task_res {
                     Ok(Ok(())) => anyhow!("rate limit task exited without internal error"),
-                    Ok(Err(e)) => anyhow!("rate limit task exited with internal error: {}", e),
-                    Err(e) => anyhow!("rate limit task exited with panic: {}", e),
+                    Ok(Err(e)) => anyhow!("rate limit task exited with internal error: {e}"),
+                    Err(e) => anyhow!("rate limit task exited with panic: {e}"),
                 };
                 Err(Recovered { stateful, error })
             },

@@ -53,7 +53,7 @@ impl JxlReturn<()> for JxlEncoderStatus {
         if self == JxlEncoderStatus::JXL_ENC_SUCCESS {
             Ok(())
         } else {
-            Err(anyhow!("{} failed with status: {:?}", name, self))
+            Err(anyhow!("{name} failed with status: {self:?}"))
         }
     }
 }
@@ -63,7 +63,7 @@ impl JxlReturn<()> for JxlDecoderStatus {
         if self == JxlDecoderStatus::JXL_DEC_SUCCESS {
             Ok(())
         } else {
-            Err(anyhow!("{} failed with status: {:?}", name, self))
+            Err(anyhow!("{name} failed with status: {self:?}"))
         }
     }
 }
@@ -76,7 +76,7 @@ impl<'r, T> JxlReturn<&'r mut T> for *mut T {
             if let Some(r) = self.as_mut() {
                 Ok(r)
             } else {
-                Err(anyhow!("{} failed", name))
+                Err(anyhow!("{name} failed"))
             }
         }
     }

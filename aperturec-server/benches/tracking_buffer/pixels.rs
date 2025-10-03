@@ -7,6 +7,7 @@ use aperturec_server::task::frame_sync::*;
 use criterion::{measurement::*, *};
 use ndarray::Zip;
 use rand::random;
+use std::hint::black_box;
 
 struct UndamagedPixelsCaptured;
 impl Measurement for UndamagedPixelsCaptured {

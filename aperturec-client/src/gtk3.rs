@@ -278,12 +278,12 @@ pub fn get_monitors_geometry() -> Result<MonitorsGeometry> {
     let display = gdk::Display::default().ok_or(anyhow!("Failed to get default GTK display"))?;
     let num_monitors = display.n_monitors();
     if num_monitors <= 0 {
-        bail!("No GTK monitors found for display {:?}", display);
+        bail!("No GTK monitors found for display {display:?}");
     }
 
     let mut monitors = EuclidMap::new();
     for i in 0..num_monitors {
-        let mon = display.monitor(i).ok_or(anyhow!("missing monitor {}", i))?;
+        let mon = display.monitor(i).ok_or(anyhow!("missing monitor {i}"))?;
         let total_area = gdkrect2rect(mon.geometry());
         let usable_area = gdkrect2rect(mon.workarea());
         if !total_area.contains_rect(&usable_area) {
@@ -292,11 +292,7 @@ pub fn get_monitors_geometry() -> Result<MonitorsGeometry> {
 
         let overlaps = monitors.insert(total_area, usable_area);
         if !overlaps.is_empty() {
-            bail!(
-                "at least two monitors overlap: {:?} and {:?}",
-                total_area,
-                overlaps
-            );
+            bail!("at least two monitors overlap: {total_area:?} and {overlaps:?}");
         }
     }
 

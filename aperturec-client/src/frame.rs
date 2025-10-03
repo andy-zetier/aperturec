@@ -175,9 +175,7 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
                 let expected_size = (info.xsize * info.ysize * PIXEL_FORMAT.num_channels) as usize;
                 if buffer_size != expected_size {
                     bail!(
-                        "jxl decoder output buffer size is invalid - expected {}, got {}",
-                        expected_size,
-                        buffer_size
+                        "jxl decoder output buffer size is invalid - expected {expected_size}, got {buffer_size}"
                     );
                 }
                 if output_size.set(expected_size).is_err() {
@@ -199,7 +197,7 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
                     expected_size,
                 )?;
             }
-            event => bail!("unexpected event from jxl decoder: {:?}", event),
+            event => bail!("unexpected event from jxl decoder: {event:?}"),
         }
     }
 
@@ -219,7 +217,7 @@ fn decode(codec: Codec, encoded_data: Vec<u8>) -> Result<Vec<u8>> {
         Codec::Raw => decode_raw(encoded_data),
         Codec::Zlib => decode_zlib(encoded_data),
         Codec::Jpegxl => decode_jpegxl(encoded_data),
-        codec => bail!("Unsupported codec: {:?}", codec),
+        codec => bail!("Unsupported codec: {codec:?}"),
     }
 }
 
@@ -335,8 +333,7 @@ impl DecoderFrameState {
             DecoderFrameState::InFlight { received } => {
                 ensure!(
                     !received.contains(sequence),
-                    "identical sequence {}",
-                    sequence
+                    "identical sequence {sequence}"
                 );
 
                 received.insert(sequence);
@@ -445,8 +442,7 @@ impl InFlightFrame {
     fn terminate_empty(&mut self, decoder: usize) -> Result<()> {
         ensure!(
             decoder < self.decoder_frame_states.len(),
-            "Invalid decoder {}",
-            decoder
+            "Invalid decoder {decoder}"
         );
         self.decoder_frame_states[decoder].mark_empty_frame_terminal_received()?;
         Ok(())
@@ -467,9 +463,7 @@ impl EarlyDrawFrame {
     ) -> Result<()> {
         ensure!(
             decoder < self.decoder_frame_states.len(),
-            "mark fragment {} received for decoder {}, which does not exist",
-            sequence,
-            decoder
+            "mark fragment {sequence} received for decoder {decoder}, which does not exist"
         );
 
         self.decoder_frame_states[decoder].mark_sequence_received(sequence, terminal)?;
@@ -479,8 +473,7 @@ impl EarlyDrawFrame {
     fn mark_empty_frame_terminal_received(&mut self, decoder: usize) -> Result<()> {
         ensure!(
             decoder < self.decoder_frame_states.len(),
-            "mark empty frame terminal received for decoder {}, which does not exist",
-            decoder
+            "mark empty frame terminal received for decoder {decoder}, which does not exist"
         );
 
         self.decoder_frame_states[decoder].mark_empty_frame_terminal_received()?;
@@ -613,15 +606,13 @@ impl DisplayFramer {
         let decoder = term.encoder as usize;
         ensure!(
             decoder < self.decoder_areas.len(),
-            "Invalid decoder {}",
-            decoder
+            "Invalid decoder {decoder}"
         );
 
         let frame = term.frame as usize;
         ensure!(
             !self.complete.contains(frame),
-            "empty frame terminal for complete frame {}",
-            frame
+            "empty frame terminal for complete frame {frame}"
         );
 
         if let Some(early_draw) = self.early_draw.get_mut(&frame) {
@@ -643,8 +634,7 @@ impl DisplayFramer {
         );
         ensure!(
             decoder < self.decoder_areas.len(),
-            "invalid decoder {}",
-            decoder
+            "invalid decoder {decoder}"
         );
 
         if let Some(early_draw) = self.early_draw.remove(&frame) {
@@ -804,7 +794,7 @@ impl Framer {
             self.display_config.id
         );
         let display = term.display as usize;
-        ensure!(display < self.displays.len(), "Invalid display {}", display);
+        ensure!(display < self.displays.len(), "Invalid display {display}");
         self.displays[display].report_empty_frame_terminal(term)
     }
 

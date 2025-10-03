@@ -406,7 +406,7 @@ impl Backend for X {
 
         let xvfb_path = env::var("XVFB").unwrap_or_else(|_| "Xvfb".to_string());
         if let Err(error) = which::which(&xvfb_path) {
-            bail!("Xvfb executable not found: {}", error);
+            bail!("Xvfb executable not found: {error}");
         }
 
         let xvfb_help = Command::new(&xvfb_path).arg("-help").output().await?.stderr;
@@ -475,7 +475,7 @@ impl Backend for X {
             xvfb_stderr
                 .read_line(&mut line)
                 .await
-                .map_err(|e| anyhow!("Failed reading Xvfb stderr: {}", e))?;
+                .map_err(|e| anyhow!("Failed reading Xvfb stderr: {e}"))?;
             if let Ok((_, id)) = scan_fmt!(line.trim(), "screen {d} shmid {d}", usize, usize) {
                 break id;
             }
@@ -1120,7 +1120,7 @@ impl X {
         let crtc = self
             .displays
             .get(&id)
-            .ok_or_else(|| anyhow!("Cannot find display id {}", id))?
+            .ok_or_else(|| anyhow!("Cannot find display id {id}"))?
             .crtc;
 
         let crtc_info = self
@@ -1149,7 +1149,7 @@ impl X {
         let xdisplay = self
             .displays
             .get(&id)
-            .ok_or_else(|| anyhow!("Cannot find display id {}", id))?;
+            .ok_or_else(|| anyhow!("Cannot find display id {id}"))?;
 
         let crtc_info = self
             .connection

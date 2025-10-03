@@ -4,7 +4,7 @@ pub mod convenience;
 
 pub const MAGIC: &str = concat!(r"ApertureC-", env!("CARGO_PKG_VERSION_MAJOR"));
 
-pub const LEGACY_ALPN: &str = &"ApertureC-0.1.0";
+pub const LEGACY_ALPN: &str = "ApertureC-0.1.0";
 
 pub mod common {
     include!(concat!(env!("OUT_DIR"), "/common.rs"));

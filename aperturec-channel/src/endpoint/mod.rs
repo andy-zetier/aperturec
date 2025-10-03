@@ -32,11 +32,7 @@ fn validate_kernel_version(kv: &versioning::Kernel) -> Result<()> {
     // not support these features, and silently fail when attempting to use them.
     const MINIMUM_KERNEL_VERSION: &str = "4.18";
     if !kv.meets_or_exceeds(MINIMUM_KERNEL_VERSION)? {
-        bail!(
-            "kernel version {} is below minimum supported version {}",
-            kv,
-            MINIMUM_KERNEL_VERSION
-        );
+        bail!("kernel version {kv} is below minimum supported version {MINIMUM_KERNEL_VERSION}");
     }
 
     Ok(())

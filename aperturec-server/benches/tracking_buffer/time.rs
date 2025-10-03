@@ -6,6 +6,7 @@ use aperturec_server::task::frame_sync::*;
 
 use criterion::*;
 use rand::random;
+use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 fn tracking_buffer_time(c: &mut Criterion) {

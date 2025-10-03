@@ -185,8 +185,7 @@ where
 
                         ensure!(
                             disabled_display_count == 0,
-                            "Disabled Displays have {} encoders assigned, expected 0",
-                            disabled_display_count,
+                            "Disabled Displays have {disabled_display_count} encoders assigned, expected 0",
                         );
 
                         //
@@ -369,8 +368,8 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
                 Some(task_res) = self.state.tasks.join_next() => {
                     let error = match task_res {
                         Ok(Ok(())) => anyhow!("frame sync task exited without internal error"),
-                        Ok(Err(e)) => anyhow!("frame sync task exited with internal error: {}", e),
-                        Err(e) => anyhow!("frame sync task exited with panic: {}", e),
+                        Ok(Err(e)) => anyhow!("frame sync task exited with internal error: {e}"),
+                        Err(e) => anyhow!("frame sync task exited with panic: {e}"),
                     };
                     errors.push(error);
                 },
@@ -383,7 +382,7 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
         } else {
             Err(Recovered {
                 stateful,
-                error: anyhow!("frame sync task errors: {:?}", errors),
+                error: anyhow!("frame sync task errors: {errors:?}"),
             })
         }
     }

@@ -136,7 +136,7 @@ impl Transitionable<Running> for Task<Created> {
                                 }
                                 self.state.event_tx.send(msg.try_into()?).await?
                             },
-                            Err(e) => bail!("EC Rx error: {}", e),
+                            Err(e) => bail!("EC Rx error: {e}"),
                         }
                     }
                     _ = rx_ct.cancelled() => {
@@ -171,15 +171,15 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
         let rx_res = self
             .state
             .rx_task
-            .map_err(|e| anyhow!("EC Rx panic: {}", e))
-            .and_then(|res| future::ready(res.map_err(|e| anyhow!("EC Rx error: {}", e))))
+            .map_err(|e| anyhow!("EC Rx panic: {e}"))
+            .and_then(|res| future::ready(res.map_err(|e| anyhow!("EC Rx error: {e}"))))
             .inspect(|_| self.state.ct.cancel())
             .boxed();
         let tx_res = self
             .state
             .tx_task
-            .map_err(|e| anyhow!("EC Tx panic: {}", e))
-            .and_then(|res| future::ready(res.map_err(|e| anyhow!("EC Tx error: {}", e))))
+            .map_err(|e| anyhow!("EC Tx panic: {e}"))
+            .and_then(|res| future::ready(res.map_err(|e| anyhow!("EC Tx error: {e}"))))
             .inspect(|_| self.state.ct.cancel())
             .boxed();
 

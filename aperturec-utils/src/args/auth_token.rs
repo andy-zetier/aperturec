@@ -17,7 +17,7 @@ impl AuthTokenFileArgGroup {
             let auth_token = if path == PathBuf::from("-") {
                 SecretString::from(
                     io::read_to_string(io::stdin())
-                        .map_err(|e| anyhow!("Failed reading auth token from stdin: {}", e))?
+                        .map_err(|e| anyhow!("Failed reading auth token from stdin: {e}"))?
                         .trim(),
                 )
             } else {

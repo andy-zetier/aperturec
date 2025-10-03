@@ -618,7 +618,7 @@ impl Client {
             let response = self
                 .allocated_tunnels
                 .get(id)
-                .ok_or(anyhow!("missing tunnel ID: {}", id))?;
+                .ok_or(anyhow!("missing tunnel ID: {id}"))?;
             match response
                 .message
                 .as_ref()

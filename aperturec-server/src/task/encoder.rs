@@ -452,8 +452,7 @@ mod compression {
                 if width > 1 {
                     ensure!(
                         col_stride == 1,
-                        "Elements in each column are not-adjacent, stride is {}",
-                        col_stride
+                        "Elements in each column are not-adjacent, stride is {col_stride}"
                     );
                 } else {
                     ensure!(width == 1, "Width <= 0");
@@ -462,8 +461,7 @@ mod compression {
                 let stride_to_next_row = if height > 1 {
                     ensure!(
                         row_stride > 0,
-                        "Rows are traversed in reverse order, stride is {}",
-                        row_stride
+                        "Rows are traversed in reverse order, stride is {row_stride}"
                     );
                     row_stride as usize - width
                 } else {
@@ -839,8 +837,8 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
             task_res = self.state.task => {
                 let error = match task_res {
                     Ok(Ok(())) => anyhow!("encoder task exited without internal error"),
-                    Ok(Err(e)) => anyhow!("encoder task exited with internal error: {}", e),
-                    Err(e) => anyhow!("encoder task exited with panic: {}", e),
+                    Ok(Err(e)) => anyhow!("encoder task exited with internal error: {e}"),
+                    Err(e) => anyhow!("encoder task exited with panic: {e}"),
                 };
                 Err(Recovered { stateful, error })
             },

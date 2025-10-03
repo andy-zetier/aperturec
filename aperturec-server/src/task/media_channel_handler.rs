@@ -98,11 +98,11 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
         match self.state.task.await {
             Err(e) => Err(Recovered {
                 stateful,
-                error: anyhow!("MC Tx error: {}", e),
+                error: anyhow!("MC Tx error: {e}"),
             }),
             Ok(Err(e)) => Err(Recovered {
                 stateful,
-                error: anyhow!("MC Tx error: {}", e),
+                error: anyhow!("MC Tx error: {e}"),
             }),
             _ => Ok(stateful),
         }

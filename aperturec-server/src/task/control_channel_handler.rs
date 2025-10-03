@@ -101,7 +101,7 @@ impl Transitionable<Running> for Task<Created> {
                                 debug!("Client said goodbye");
                                 break Ok(());
                             }
-                            Err(e) => bail!("CC Rx error: {}", e),
+                            Err(e) => bail!("CC Rx error: {e}"),
                         }
                     }
                     _ = rx_ct.cancelled() => {
@@ -140,15 +140,15 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
         let rx_res = self
             .state
             .rx_task
-            .map_err(|e| anyhow!("CC Rx panic: {}", e))
-            .and_then(|res| future::ready(res.map_err(|e| anyhow!("CC Rx error: {}", e))))
+            .map_err(|e| anyhow!("CC Rx panic: {e}"))
+            .and_then(|res| future::ready(res.map_err(|e| anyhow!("CC Rx error: {e}"))))
             .inspect(|_| self.state.ct.cancel())
             .boxed();
         let tx_res = self
             .state
             .tx_task
-            .map_err(|e| anyhow!("CC Tx panic: {}", e))
-            .and_then(|res| future::ready(res.map_err(|e| anyhow!("CC Tx error: {}", e))))
+            .map_err(|e| anyhow!("CC Tx panic: {e}"))
+            .and_then(|res| future::ready(res.map_err(|e| anyhow!("CC Tx error: {e}"))))
             .inspect(|_| self.state.ct.cancel())
             .boxed();
 

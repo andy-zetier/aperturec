@@ -160,11 +160,11 @@ impl<B: Backend + 'static> AsyncTryTransitionable<Running<B>, Created<B>> for Ta
                                     debug!("root process exited successfully");
                                     break Ok(());
                                 } else {
-                                    break Err(anyhow!("root process exited with exit status: {}", exit_status));
+                                    break Err(anyhow!("root process exited with exit status: {exit_status}"));
                                 }
                             }
                             Err(error) => {
-                                break Err(anyhow!("root process IO error: {}", error));
+                                break Err(anyhow!("root process IO error: {error}"));
                             }
                         }
                     }
@@ -397,7 +397,7 @@ impl<B: Backend> AsyncTryTransitionable<TerminatedWithBackend<B>, TerminatedWith
                 stateful: Task {
                     state: TerminatedWithoutBackend,
                 },
-                error: anyhow!("backend task panicked: {:?}", error),
+                error: anyhow!("backend task panicked: {error:?}"),
             }),
         }
     }

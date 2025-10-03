@@ -401,8 +401,8 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
                             self.state.ct.cancel();
                             continue;
                         },
-                        Ok(Err(e)) => anyhow!("tunnel channel handler task exited with internal error: {}", e),
-                        Err(e) => anyhow!("tunnel channel handler task exited with panic: {}", e),
+                        Ok(Err(e)) => anyhow!("tunnel channel handler task exited with internal error: {e}"),
+                        Err(e) => anyhow!("tunnel channel handler task exited with panic: {e}"),
                     };
                     errors.push(error);
                 },
@@ -415,7 +415,7 @@ impl AsyncTryTransitionable<Terminated, Terminated> for Task<Running> {
         } else {
             Err(Recovered {
                 stateful,
-                error: anyhow!("tunnel channel handler errors: {:?}", errors),
+                error: anyhow!("tunnel channel handler errors: {errors:?}"),
             })
         }
     }
