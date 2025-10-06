@@ -3,7 +3,7 @@ use crate::geometry::*;
 
 use ndarray::{ArcArray2, AssignElem, Data, DataMut, FoldWhile, Zip, prelude::*};
 use std::mem;
-use wide::u32x8;
+use wide::{CmpEq, u32x8};
 
 /// A 24-bit pixel in B-G-R order (no alpha channel).
 #[derive(PartialEq, Debug, Default, Clone, Copy)]
@@ -128,7 +128,7 @@ pub trait Pixel32MapExt: PixelMap<Pixel = Pixel32> {
                     let (a_chunks, a_rem) = Pixel32::as_simdable_chunks::<8>(a);
                     let (b_chunks, b_rem) = Pixel32::as_simdable_chunks::<8>(b);
                     for (&a_chunk, &b_chunk) in a_chunks.iter().zip(b_chunks) {
-                        if !u32x8::from(a_chunk).cmp_eq(u32x8::from(b_chunk)).all() {
+                        if !u32x8::from(a_chunk).simd_eq(u32x8::from(b_chunk)).all() {
                             return FoldWhile::Done(false);
                         }
                     }
