@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/Zetier/aperturec/compare/aperturec-client-v0.2.1...aperturec-client-v0.3.0) (2025-10-07)
+
+
+### Features
+
+* Add iOS OS variant and client mapping ([#645](https://github.com/Zetier/aperturec/issues/645)) ([b297082](https://github.com/Zetier/aperturec/commit/b29708283f59b849727daf456db2fcbe5175a601))
+
+
+### Bug Fixes
+
+* Prevent client crash on PrtScr key press on Windows ([#643](https://github.com/Zetier/aperturec/issues/643)) ([beba80b](https://github.com/Zetier/aperturec/commit/beba80b01a4a8d3897b58aba80d1e79afbb5f008))
+* Run clippy fixes ([#649](https://github.com/Zetier/aperturec/issues/649)) ([9a323e0](https://github.com/Zetier/aperturec/commit/9a323e087f344b26529e97b59ea2ccd3246e0bc3))
+
 ## [0.2.1](https://github.com/Zetier/aperturec/compare/aperturec-client-v0.2.0...aperturec-client-v0.2.1) (2025-09-30)
 
 

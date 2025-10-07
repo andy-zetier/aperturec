@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.7](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.6...aperturec-server-v1.1.7) (2025-10-07)
+
+
+### Bug Fixes
+
+* Run clippy fixes ([#649](https://github.com/Zetier/aperturec/issues/649)) ([9a323e0](https://github.com/Zetier/aperturec/commit/9a323e087f344b26529e97b59ea2ccd3246e0bc3))
+
 ## [1.1.6](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.5...aperturec-server-v1.1.6) (2025-09-29)
 
 
