@@ -4,20 +4,72 @@ ARG ARCHITECTURE=$TARGETARCH
 
 # Package lists for different image types and OS variants
 # Client and server packages
-ARG CLIENT_PKGS_DEBIAN="tzdata libgtk-3-dev lsb-release"
-ARG CLIENT_PKGS_FEDORA="tzdata gtk3-devel"
-ARG SERVER_PKGS_DEBIAN="libxcb1-dev ubuntu-session mesa-utils lsb-release"
-ARG SERVER_PKGS_FEDORA="glx-utils libxcb-devel"
+ARG CLIENT_PKGS_DEBIAN="\
+    libgtk-3-dev \
+    lsb-release \
+    tzdata"
+ARG CLIENT_PKGS_FEDORA="\
+    gtk3-devel \
+    tzdata"
+ARG SERVER_PKGS_DEBIAN="\
+    libxcb1-dev \
+    lsb-release \
+    mesa-utils \
+    ubuntu-session"
+ARG SERVER_PKGS_FEDORA="\
+    glx-utils \
+    libxcb-devel"
 
 # Base image packages
-ARG BASE_PKGS_DEBIAN="clang curl build-essential cmake pkg-config libssl-dev ca-certificates git protobuf-compiler libprotobuf-dev xvfb"
-ARG BASE_PKGS_FEDORA="gcc openssl-devel cmake git protobuf-compiler protobuf-devel xorg-x11-server-Xvfb"
+ARG BASE_PKGS_DEBIAN="\
+    build-essential \
+    ca-certificates \
+    clang \
+    cmake \
+    curl \
+    git \
+    libprotobuf-dev \
+    libssl-dev \
+    pkg-config \
+    protobuf-compiler \
+    xvfb"
+ARG BASE_PKGS_FEDORA="\
+    cmake \
+    gcc \
+    git \
+    openssl-devel \
+    protobuf-compiler \
+    protobuf-devel \
+    xorg-x11-server-Xvfb"
 
 # PE util build packages (for Windows cross-compilation)
-ARG PE_UTIL_PKGS="gcc-c++ boost-devel libstdc++-static glibc-static"
+ARG PE_UTIL_PKGS="\
+    boost-devel \
+    gcc-c++ \
+    glibc-static \
+    libstdc++-static"
 
 # Windows client packages
-ARG CLIENT_PKGS_WINDOWS="mingw64-gcc mingw64-gcc-c++ mingw64-freetype mingw64-cairo mingw64-harfbuzz mingw64-pango mingw64-poppler mingw64-gtk3 mingw64-winpthreads-static mingw64-glib2-static mingw64-openssl boost zip jq nasm util-linux msitools java-1.8.0-openjdk azure-cli"
+ARG CLIENT_PKGS_WINDOWS="\
+    azure-cli \
+    boost \
+    java-1.8.0-openjdk \
+    jq \
+    mingw64-cairo \
+    mingw64-freetype \
+    mingw64-gcc \
+    mingw64-gcc-c++ \
+    mingw64-glib2-static \
+    mingw64-gtk3 \
+    mingw64-harfbuzz \
+    mingw64-openssl \
+    mingw64-pango \
+    mingw64-poppler \
+    mingw64-winpthreads-static \
+    msitools \
+    nasm \
+    util-linux \
+    zip"
 
 FROM ${IMAGE_UPSTREAM} AS base-image-debian
 ARG BASE_PKGS_DEBIAN
