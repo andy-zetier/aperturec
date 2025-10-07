@@ -1,0 +1,53 @@
+name: Check & Test
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.build.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - id: build
+        uses: ./.github/actions/build-docker-image
+        with:
+          target: combined-image
+          upstream_image: docker.io/library/ubuntu:24.04
+          os_variant: debian
+          os_name: ubuntu-24
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+
+  check-test:
+    runs-on: ubuntu-latest
+    needs: build-image
+    container:
+      image: ${{ needs.build-image.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ubuntu-24-amd64
+      - run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+      - run: cargo fmt --all -- --check
+      - run: cargo deny --workspace check licenses
+      - run: |
+          if ! cargo deny --workspace check advisories; then
+            echo "::warning title=Security Advisories Found::The security audit found vulnerabilities"
+            exit 0
+          fi
+      - run: cargo check --workspace
+      - run: cargo clippy --workspace --no-deps -- -Dwarnings
+      - run: cargo test --workspace

@@ -20,7 +20,7 @@ PR_NUMBER="${PR_DATA%% *}"
 PR_HEAD_SHA="${PR_DATA#* }"
 
 RUN_IDS=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?event=pull_request&per_page=100" \
-    --jq "[.workflow_runs[] | select(.head_sha == \"${PR_HEAD_SHA}\" and .name == \"Continuous Integration\")] | sort_by(.created_at) | reverse | .[].id")
+    --jq "[.workflow_runs[] | select(.head_sha == \"${PR_HEAD_SHA}\" and .path == \".github/workflows/build-package.yml\")] | sort_by(.created_at) | reverse | .[].id")
 
 if [[ -z "$RUN_IDS" ]]; then
     echo "Error: No CI runs found" >&2

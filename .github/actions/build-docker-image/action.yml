@@ -1,0 +1,95 @@
+name: 'Build Docker Image'
+description: 'Build and push a single Docker image'
+inputs:
+  target:
+    description: 'Docker target stage to build'
+    required: true
+  upstream_image:
+    description: 'Base image to use'
+    required: true
+  os_variant:
+    description: 'OS variant (debian or fedora)'
+    required: true
+  os_name:
+    description: 'OS name for tagging (e.g., ubuntu-22, fedora-41)'
+    required: true
+  platform:
+    description: 'Platform to build for (e.g., linux/amd64)'
+    default: 'linux/amd64'
+  registry:
+    description: 'Container registry'
+    default: 'ghcr.io'
+  repository:
+    description: 'Repository path (defaults to github.repository)'
+    default: ${{ github.repository }}
+  image_name_prefix:
+    description: 'Image name prefix'
+    default: 'build-images'
+  registry_username:
+    description: 'Registry username'
+    required: false
+    default: ${{ github.repository_owner }}
+  registry_password:
+    description: 'Registry password'
+    required: false
+    default: ${{ github.token }}
+  context:
+    description: 'Docker build context'
+    default: './ci/images'
+  dockerfile:
+    description: 'Path to Dockerfile'
+    default: './ci/images/Dockerfile'
+outputs:
+  digest:
+    description: 'The digest of the built image'
+    value: ${{ steps.build.outputs.digest }}
+  image_ref:
+    description: 'Full image reference with digest (registry/repo/image@digest)'
+    value: ${{ steps.full-ref.outputs.ref }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Generate image tag
+      id: image-tag
+      shell: bash
+      run: |
+        # Extract architecture from platform (e.g., linux/amd64 -> amd64)
+        ARCH=$(echo "${{ inputs.platform }}" | cut -d'/' -f2)
+
+        # Normalize repository name to lowercase (Docker registry requirement)
+        REPO_NORMALIZED=$(echo "${{ inputs.repository }}" | tr '[:upper:]' '[:lower:]')
+
+        IMAGE_TAG="${{ inputs.registry }}/${REPO_NORMALIZED}/${{ inputs.image_name_prefix }}:${{ inputs.target }}-${{ inputs.os_name }}-${ARCH}"
+        echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+    - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+    - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.registry_username }}
+        password: ${{ inputs.registry_password }}
+    - id: build
+      uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+      env:
+        DOCKER_BUILD_SUMMARY: false
+        DOCKER_BUILD_RECORD_UPLOAD: false
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        platforms: ${{ inputs.platform }}
+        target: ${{ inputs.target }}
+        build-args: |
+          IMAGE_UPSTREAM=${{ inputs.upstream_image }}
+          OS_VARIANT=${{ inputs.os_variant }}
+        push: true
+        tags: ${{ steps.image-tag.outputs.tag }}
+        cache-from: type=registry,ref=${{ steps.image-tag.outputs.tag }},mode=max
+        cache-to: type=registry,ref=${{ steps.image-tag.outputs.tag }}
+
+    - name: Generate full image reference
+      id: full-ref
+      shell: bash
+      run: |
+        # Combine registry/repo/image with digest for immutable reference
+        FULL_REF="${{ steps.image-tag.outputs.tag }}@${{ steps.build.outputs.digest }}"
+        echo "ref=${FULL_REF}" >> $GITHUB_OUTPUT

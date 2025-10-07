@@ -1,4 +1,4 @@
-name: Release Pull Requests
+name: Automated Release
 
 on:
   push:
@@ -15,6 +15,13 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      server_release_created: ${{ steps.release.outputs['aperturec-server--release_created'] }}
+      server_tag_name: ${{ steps.release.outputs['aperturec-server--tag_name'] }}
+      client_release_created: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+      client_tag_name: ${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}
+      client_version: ${{ steps.release.outputs['aperturec-client-gtk3--version'] }}
     steps:
       - uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42
         id: app-token
@@ -22,7 +29,6 @@ jobs:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: aperturec,Warpstations-MacOS
-
       - uses: googleapis/release-please-action@4cd397a333e5500c1683589c277f56a3c10990e6
         id: release
         with:
@@ -30,94 +36,88 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  publish-releases:
+    needs: release-please
+    if: needs.release-please.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: aperturec,Warpstations-MacOS
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-        if: ${{ steps.release.outputs.releases_created == 'true' }}
-
-      - name: Find PR CI run
-        if: ${{ steps.release.outputs.releases_created == 'true' }}
-        id: find-ci-run
+      - id: find-ci-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           CI_RUN_IDS=$(ci/scripts/find-pr-ci-run.sh "${{ github.sha }}")
           echo "run_ids=$CI_RUN_IDS" >> $GITHUB_OUTPUT
-
-      - name: Download artifacts
-        if: ${{ steps.release.outputs.releases_created == 'true' && steps.find-ci-run.outputs.run_ids }}
+      - if: steps.find-ci-run.outputs.run_ids != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           ci/scripts/download-pr-artifacts.sh "${{ steps.find-ci-run.outputs.run_ids }}" "./artifacts"
-
-      - if: ${{ steps.release.outputs['aperturec-server--release_created'] }}
+      - if: needs.release-please.outputs.server_release_created == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ci/scripts/attach-release-artifacts.sh \
             "aperturec-server" \
-            "${{ steps.release.outputs['aperturec-server--tag_name'] }}" \
+            "${{ needs.release-please.outputs.server_tag_name }}" \
             "./artifacts"
-
-      - if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+      - if: needs.release-please.outputs.client_release_created == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ci/scripts/attach-release-artifacts.sh \
             "aperturec-client-gtk3" \
-            "${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}" \
+            "${{ needs.release-please.outputs.client_tag_name }}" \
             "./artifacts"
-
-      - if: ${{ steps.release.outputs.releases_created == 'true' }}
-        run: |
+      - run: |
           gem install --user-install package_cloud
           echo "$(ruby -e 'puts Gem.user_dir')/bin" >> $GITHUB_PATH
-
-      - if: ${{ steps.release.outputs['aperturec-server--release_created'] }}
+      - if: needs.release-please.outputs.server_release_created == 'true'
         env:
           PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
         run: |
           ci/scripts/push-to-packagecloud.sh \
             "aperturec-server" \
-            "${{ steps.release.outputs['aperturec-server--tag_name'] }}" \
+            "${{ needs.release-please.outputs.server_tag_name }}" \
             "./artifacts"
-
-      - if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+      - if: needs.release-please.outputs.client_release_created == 'true'
         env:
           PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
         run: |
           ci/scripts/push-to-packagecloud.sh \
             "aperturec-client-gtk3" \
-            "${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}" \
+            "${{ needs.release-please.outputs.client_tag_name }}" \
             "./artifacts"
-
-      - if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+      - if: needs.release-please.outputs.client_release_created == 'true'
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          RELEASE_TAG="${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}"
-          VERSION="${{ steps.release.outputs['aperturec-client-gtk3--version'] }}"
+          RELEASE_TAG="${{ needs.release-please.outputs.client_tag_name }}"
+          VERSION="${{ needs.release-please.outputs.client_version }}"
           ZIP_NAME="aperturec-client-macos-with-all-dependencies_${VERSION}.zip"
-
           gh api repos/Zetier/Warpstations-MacOS/dispatches \
             --field event_type=aperturec_release \
             --field 'client_payload[release_tag]='"$RELEASE_TAG" \
             --field 'client_payload[zip_name]='"$ZIP_NAME" \
             --field 'client_payload[aperturec_version]='"$VERSION" \
             --field 'client_payload[repository]='"${{ github.repository }}"
-
-      - if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+      - if: needs.release-please.outputs.client_release_created == 'true'
         run: |
           mkdir -p site
-          VERSION="${{ steps.release.outputs['aperturec-client-gtk3--version'] }}"
+          VERSION="${{ needs.release-please.outputs.client_version }}"
           cp "./artifacts/client-package-windows-amd64/aperturec-client_${VERSION}.msi" site/aperturec-client.msi
           echo "Successfully prepared MSI for GitHub Pages deployment"
-
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b
-        if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+        if: needs.release-please.outputs.client_release_created == 'true'
         with:
           path: site
-
       - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e
-        if: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
+        if: needs.release-please.outputs.client_release_created == 'true'

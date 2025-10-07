@@ -1,0 +1,181 @@
+name: Build & Package
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-images:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release-please--branches--main'
+    runs-on: ${{ (matrix.arch == 'arm64' && 'ubuntu-2404-l-arm') || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - { name: ubuntu-22, upstream: "docker.io/library/ubuntu:22.04", variant: debian }
+          - { name: ubuntu-24, upstream: "docker.io/library/ubuntu:24.04", variant: debian }
+          - { name: fedora-41, upstream: "docker.io/library/fedora:41", variant: fedora }
+          - { name: centos-stream9, upstream: "quay.io/centos/centos:stream9", variant: fedora }
+        arch: [amd64, arm64]
+        component: [client, server]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - id: build
+        uses: ./.github/actions/build-docker-image
+        with:
+          target: ${{ matrix.component }}-image
+          upstream_image: ${{ matrix.os.upstream }}
+          os_variant: ${{ matrix.os.variant }}
+          os_name: ${{ matrix.os.name }}
+          platform: linux/${{ matrix.arch }}
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: cloudposse/github-action-matrix-outputs-write@ed06cf3a6bf23b8dce36d1cf0d63123885bb8375
+        with:
+          matrix-step-name: build-images
+          matrix-key: ${{ matrix.component }}-${{ matrix.os.name }}-${{ matrix.arch }}
+          outputs: |
+            image_ref: ${{ steps.build.outputs.image_ref }}
+
+  collect-image-refs:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release-please--branches--main'
+    needs: build-images
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.read.outputs.result }}
+    steps:
+      - uses: cloudposse/github-action-matrix-outputs-read@33cac12fa9282a7230a418d859b93fdbc4f27b5a
+        id: read
+        with:
+          matrix-step-name: build-images
+
+  build-package-linux:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release-please--branches--main'
+    needs: [build-images, collect-image-refs]
+    runs-on: ${{ (matrix.arch == 'arm64' && 'ubuntu-2404-l-arm') || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - { name: ubuntu-22, variant: debian }
+          - { name: ubuntu-24, variant: debian }
+          - { name: fedora-41, variant: fedora }
+          - { name: centos-stream9, variant: fedora }
+        arch: [amd64, arm64]
+        component:
+          - { name: client, crate: aperturec-client-gtk3 }
+          - { name: server, crate: aperturec-server }
+    container:
+      # Use the specific Docker image built for this OS/arch/component with digest
+      image: ${{ fromJSON(needs.collect-image-refs.outputs.images).image_ref[format('{0}-{1}-{2}', matrix.component.name, matrix.os.name, matrix.arch)] }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ${{ matrix.os.name }}-${{ matrix.arch }}
+      - run: cargo build --release -p ${{ matrix.component.crate }}
+      - if: matrix.os.variant == 'debian'
+        run: |
+          mkdir -p target/debian
+          cargo deb -p ${{ matrix.component.crate }} -o target/debian --no-build
+      - if: matrix.os.variant == 'fedora'
+        run: |
+          mkdir -p target/rpm
+          cargo generate-rpm -p ${{ matrix.component.crate }} -o target/rpm
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.component.name }}-${{ matrix.os.name }}-${{ matrix.arch }}-pkg
+          path: |
+            target/debian
+            target/rpm
+          if-no-files-found: error
+
+  build-windows-image:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release-please--branches--main'
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.build.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - id: build
+        uses: ./.github/actions/build-docker-image
+        with:
+          target: client-image-windows
+          upstream_image: docker.io/library/fedora:40
+          os_variant: fedora
+          os_name: windows
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+
+  build-package-windows:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release-please--branches--main'
+    needs: build-windows-image
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.build-windows-image.outputs.image_ref }}
+    env:
+      AZURE_APP_ID: ${{ secrets.AZURE_APP_ID }}
+      AZURE_APP_SECRET: ${{ secrets.AZURE_APP_SECRET }}
+      AZURE_CERT_ALIAS: ${{ secrets.AZURE_CERT_ALIAS }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: windows
+      - run: cargo build --release -p aperturec-client-gtk3 --target x86_64-pc-windows-gnu
+      - run: cp target/x86_64-pc-windows-gnu/release/aperturec-client.exe ./
+      - run: |
+          chmod +x ci/scripts/create-windows-package.sh
+          ci/scripts/create-windows-package.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: client-package-windows-amd64
+          path: |
+            aperturec-client-win.zip
+            aperturec-client_*.msi
+          if-no-files-found: error
+
+  build-package-macos:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release-please--branches--main'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: ./.github/actions/setup-macos-build
+        with:
+          cache-key: macos
+      - run: cargo build --release -p aperturec-client-gtk3
+      - run: |
+          chmod +x ci/scripts/create-macos-package.sh
+          ci/scripts/create-macos-package.sh
+          chmod +x ci/scripts/package-macos-with-all-deps.sh
+          ci/scripts/package-macos-with-all-deps.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: client-package-macos
+          path: |
+            aperturec-client-macos*.tar.gz
+            aperturec-client-macos-with-all-dependencies_*.zip
+          if-no-files-found: error
+
+  build-status:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [build-package-linux, build-package-windows, build-package-macos]
+    steps:
+      - run: |
+          LINUX="${{ needs.build-package-linux.result }}"
+          WINDOWS="${{ needs.build-package-windows.result }}"
+          MACOS="${{ needs.build-package-macos.result }}"
+          if [[ "$LINUX" == "failure" ]] || [[ "$WINDOWS" == "failure" ]] || [[ "$MACOS" == "failure" ]]; then
+            echo "::error::One or more builds failed"
+            exit 1
+          fi

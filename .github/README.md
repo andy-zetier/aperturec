@@ -1,115 +1,87 @@
 # ApertureC CI/CD Pipeline
 
-This directory contains GitHub Actions workflows, composite actions, and
-configuration files that implement ApertureC's continuous integration system.
-
-## Architecture Overview
-
-The CI uses a **two-phase approach**:
-1. **Image Creation**: Build Docker images with all dependencies pre-installed
-2. **CI Execution**: Run jobs using the pre-built images for consistency and speed
-
-This design ensures all jobs use identical environments and eliminates
-dependency setup time during CI runs.
+This directory contains GitHub Actions workflows and composite actions for ApertureC's continuous integration and release automation.
 
 ## Workflows
 
-### `ci.yml` - Main CI Pipeline
-The primary workflow that runs on pushes and pull requests. It:
-- Builds and tests code across Linux (amd64/arm64), macOS, and Windows
-- Performs code quality checks (format, lint, audit)
-- Creates release packages (deb, rpm, dmg, msi)
-- Generates documentation
+### `check-test.yml` - Continuous Integration
+Runs on pull requests and pushes to main:
+- Builds a Docker image with all dependencies (Ubuntu 24.04)
+- Runs code formatting checks (`cargo fmt`)
+- Runs license and security audits (`cargo deny`)
+- Runs workspace-wide checks and clippy
+- Runs all tests
 
-### `create-images.yml` - Reusable Image Builder
-A reusable workflow that builds Docker images and returns a digest index:
-- Takes an image configuration JSON as input
-- Builds images for multiple OS/architecture combinations
-- Returns SHA256 digests indexed by `"{target}-{os}-{arch}"` keys
-- Used by the main CI to ensure consistent environments
+### `build-package.yml` - Build & Package
+Creates release artifacts for all platforms. Runs on:
+- Pull requests from `release-please--branches--main` (release PRs)
+- Manual trigger via `workflow_dispatch`
 
-## Image Strategy
+Builds and packages:
+- **Linux**: Client and server for Ubuntu 22/24, Fedora 41, CentOS Stream 9 (amd64 and arm64)
+- **Windows**: Client for amd64 (cross-compiled from Linux)
+- **macOS**: Client for arm64
 
-1. **Pre-build Phase**: `create-images.yml` builds Docker images containing:
-   - Rust toolchain and components
-   - System dependencies (GTK, protobuf, etc.)
-   - Build tools and utilities
+Package formats: .deb, .rpm, .msi, .tar.gz, .zip
 
-2. **Indexing**: Images are tagged with SHA256 digests and indexed by:
-   ```
-   rust-image-ubuntu-24-amd64 -> sha256:abc123...
-   client-image-ubuntu-24-arm64 -> sha256:def456...
-   ```
+### `automated-release.yml` - Automated Release
+Runs on pushes to main:
+- Uses release-please to manage releases and changelogs
+- Downloads artifacts from Build & Package workflow
+- Attaches artifacts to GitHub releases
+- Pushes packages to packagecloud
+- Deploys Windows MSI to GitHub Pages
+- Triggers macOS app build in separate repository
 
-3. **Usage**: CI jobs reference images via digest lookup:
-   ```yaml
-   container:
-     image: "${{ container-repo }}@${{ digests['rust-image-ubuntu-24-amd64'] }}"
-   ```
+### `scheduled-image-builds.yml` - Weekly Image Refresh
+Runs weekly to rebuild all Docker images with fresh base images and dependencies.
 
 ## Composite Actions
 
-Located in `.github/actions/`, these reusable components include:
+### `build-docker-image/`
+Builds and pushes a single Docker image with digest output.
 
-- **`cargo-workspace`**: Execute cargo commands on multiple workspace packages
-- **`package-deb`**: Create Debian (.deb) packages using cargo-deb
-- **`package-rpm`**: Create RPM packages using cargo-generate-rpm
-- **`setup-rust`**: Configure Rust environment in containers
-- **`setup-macos-build-environment`**: Install macOS dependencies (GTK, protobuf)
-- **`upload-artifacts`**: Upload build artifacts with standardized naming
+**Inputs:**
+- `target`: Docker build target (e.g., client-image, server-image)
+- `upstream_image`: Base image
+- `os_variant`: debian or fedora
+- `os_name`: For tagging (e.g., ubuntu-22)
+- `platform`: e.g., linux/amd64
+- `registry_password`: Authentication token
 
-## Configuration
+**Outputs:**
+- `digest`: SHA256 digest of built image
+- `image_ref`: Full reference with digest (e.g., `ghcr.io/org/repo/image@sha256:...`)
 
-JSON files in `.github/config/` drive the build matrix:
+### `setup-rust/`
+Configures Rust environment with caching.
 
-### `global.json`
-Central configuration for cross-platform settings:
-```json
-{
-  "registry": "ghcr.io",
-  "rust": {
-    "components": { "format": "rustfmt", "lint": "clippy", "docs": "rust-docs" },
-    "cargo_packages": { "audit": "cargo-deny" }
-  },
-  "tools": { "go_version": "1.22" }
-}
-```
+**Inputs:**
+- `toolchain`: Rust toolchain version (default: stable)
+- `components`: Rust components to install (e.g., rustfmt,clippy)
+- `cargo-packages`: Cargo packages to install (e.g., cargo-deny)
+- `cache-prefix`: Cache key prefix for differentiation
 
-### `platforms.json`
-Runner and OS image mappings:
-```json
-{
-  "runners": { "linux": { "amd64": "ubuntu-latest", "arm64": "ubuntu-2404-l-arm" } },
-  "os_images": { "linux": { "default": "ubuntu-24" } },
-  "targets": { "windows": { "default": "x86_64-pc-windows-gnu" } }
-}
-```
+## Docker Images
 
-### `{platform}-jobs.json`
-Defines crate groups and job artifacts:
-```json
-{
-  "crate_groups": [
-    { "name": "client", "crates": ["aperturec-client-gtk3"], "image": "client-image" }
-  ],
-  "jobs": { "build": { "artifacts": { "client": [{"name-prefix": "client", "path": "..."}] } } }
-}
-```
+Images are built from `ci/images/Dockerfile` with multi-stage builds:
 
-### `{platform}-images.json`
-Docker image build matrix configuration:
-```json
-{
-  "os": [{ "image_upstream": "ubuntu:24.04", "image_name": "ubuntu-24" }],
-  "target": ["rust-image", "client-image"],
-  "platform_runner": [{ "platform": "linux/amd64", "runner": "ubuntu-latest" }]
-}
-```
+- **Base images**: Ubuntu/Fedora with build tools
+- **Rust images**: Base + Rust toolchain + cargo-deb/cargo-generate-rpm
+- **FIPS-capable images**: Rust + Go compiler
+- **Client images**: FIPS + GTK3 dependencies
+- **Server images**: FIPS + X11/display dependencies
+- **Windows cross-compilation**: Fedora + MinGW + MSI tools
 
-## Dependency Updates
+Images are tagged as: `{target}-{os}-{arch}` (e.g., `client-image-ubuntu-24-arm64`)
 
-Dependabot is configured via `.github/dependabot.yml` to:
-- Update Rust (Cargo) workspace dependencies weekly
-- Update GitHub Actions references weekly
-- Attempt Docker base image updates for `ci/images/` weekly
-All PRs are labeled `dependencies` and use `chore(deps)`-style commit messages.
+## Release Process
+
+1. Commits to main trigger release-please
+2. Release-please creates/updates a PR with version bumps
+3. Build & Package workflow runs on the release PR
+4. When release PR is merged, automated-release workflow:
+   - Creates git tags and GitHub releases
+   - Downloads build artifacts
+   - Attaches artifacts to releases
+   - Publishes to package repositories

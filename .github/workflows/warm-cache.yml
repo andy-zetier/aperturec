@@ -1,0 +1,158 @@
+name: Warm Cache
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly on Mondays at 2 AM UTC
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: warm-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  quick-warmup-image:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.build.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - id: build
+        uses: ./.github/actions/build-docker-image
+        with:
+          target: combined-image
+          upstream_image: docker.io/library/ubuntu:24.04
+          os_variant: debian
+          os_name: ubuntu-24
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+
+  quick-warmup:
+    if: github.event_name == 'push'
+    needs: quick-warmup-image
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.quick-warmup-image.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ubuntu-24-amd64
+      - run: cargo check --workspace
+      - run: cargo build --workspace --all-targets
+      - run: cargo build --workspace --release
+
+  full-warmup-linux-images:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ (matrix.arch == 'arm64' && 'ubuntu-2404-l-arm') || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - { name: ubuntu-22, upstream: "docker.io/library/ubuntu:22.04", variant: debian }
+          - { name: ubuntu-24, upstream: "docker.io/library/ubuntu:24.04", variant: debian }
+          - { name: fedora-41, upstream: "docker.io/library/fedora:41", variant: fedora }
+          - { name: centos-stream9, upstream: "quay.io/centos/centos:stream9", variant: fedora }
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - id: build
+        uses: ./.github/actions/build-docker-image
+        with:
+          target: combined-image
+          upstream_image: ${{ matrix.os.upstream }}
+          os_variant: ${{ matrix.os.variant }}
+          os_name: ${{ matrix.os.name }}
+          platform: linux/${{ matrix.arch }}
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: cloudposse/github-action-matrix-outputs-write@ed06cf3a6bf23b8dce36d1cf0d63123885bb8375
+        with:
+          matrix-step-name: full-warmup-linux-images
+          matrix-key: ${{ matrix.os.name }}-${{ matrix.arch }}
+          outputs: |
+            image_ref: ${{ steps.build.outputs.image_ref }}
+
+  collect-warmup-image-refs:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: full-warmup-linux-images
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.read.outputs.result }}
+    steps:
+      - uses: cloudposse/github-action-matrix-outputs-read@33cac12fa9282a7230a418d859b93fdbc4f27b5a
+        id: read
+        with:
+          matrix-step-name: full-warmup-linux-images
+
+  full-warmup-linux:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [full-warmup-linux-images, collect-warmup-image-refs]
+    runs-on: ${{ (matrix.arch == 'arm64' && 'ubuntu-2404-l-arm') || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - { name: ubuntu-22, variant: debian }
+          - { name: ubuntu-24, variant: debian }
+          - { name: fedora-41, variant: fedora }
+          - { name: centos-stream9, variant: fedora }
+        arch: [amd64, arm64]
+    container:
+      image: ${{ fromJSON(needs.collect-warmup-image-refs.outputs.images).image_ref[format('{0}-{1}', matrix.os.name, matrix.arch)] }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ${{ matrix.os.name }}-${{ matrix.arch }}
+      - run: cargo check --workspace
+      - run: cargo build --workspace --all-targets
+      - run: cargo build --workspace --release
+
+  full-warmup-windows-image:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.build.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - id: build
+        uses: ./.github/actions/build-docker-image
+        with:
+          target: client-image-windows
+          upstream_image: docker.io/library/fedora:40
+          os_variant: fedora
+          os_name: windows
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+
+  full-warmup-windows:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: full-warmup-windows-image
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.full-warmup-windows-image.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: windows
+      - run: cargo check -p aperturec-client-gtk3
+      - run: cargo build -p aperturec-client-gtk3 --all-targets --target x86_64-pc-windows-gnu
+      - run: cargo build -p aperturec-client-gtk3 --target x86_64-pc-windows-gnu --release
+
+  full-warmup-macos:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: ./.github/actions/setup-macos-build
+        with:
+          cache-key: macos
+      - run: cargo check -p aperturec-client-gtk3
+      - run: cargo build -p aperturec-client-gtk3 --all-targets
+      - run: cargo build -p aperturec-client-gtk3 --release

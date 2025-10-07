@@ -11,8 +11,12 @@ inputs:
   cargo-packages:
     description:  'Comma-separated list of Cargo packages to install (e.g., cargo-deny)'
     required: false
-  os-image:
-    description: 'OS image name for cache key differentiation (e.g., ubuntu-22, ubuntu-24)'
+  cache-key:
+    description: 'Cache key'
+    required: false
+  install-home:
+    description: 'Home directory for Rust installation (defaults to /root for Docker-based builds)'
+    default: '/root'
     required: false
 runs:
   using: 'composite'
@@ -20,9 +24,9 @@ runs:
     - name: Setup Rust environment
       shell: bash
       run: |
-        echo "RUSTUP_HOME=/root/.rustup" >> $GITHUB_ENV
-        echo "CARGO_HOME=/root/.cargo" >> $GITHUB_ENV
-        echo "/root/.cargo/bin" >> $GITHUB_PATH
+        echo "RUSTUP_HOME=${{ inputs.install-home }}/.rustup" >> $GITHUB_ENV
+        echo "CARGO_HOME=${{ inputs.install-home }}/.cargo" >> $GITHUB_ENV
+        echo "${{ inputs.install-home }}/.cargo/bin" >> $GITHUB_PATH
     - name: Default toolchain
       shell: bash
       run: rustup default ${{ inputs.toolchain }}
@@ -37,5 +41,6 @@ runs:
     - name: Cache Rust dependencies
       uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0
       with:
-        cache-on-failure: true
-        prefix-key: ${{ inputs.os-image && format('v0-rust-{0}', inputs.os-image) || 'v0-rust' }}
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        shared-key: ${{ inputs.cache-key }}
+        cache-bin: false
