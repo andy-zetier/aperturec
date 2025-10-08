@@ -6,6 +6,7 @@ use anyhow::Result;
 use futures::{prelude::*, stream::BoxStream};
 use pbkdf2::{
     Pbkdf2,
+    password_hash::rand_core::OsRng,
     password_hash::{PasswordHasher, PasswordVerifier, SaltString},
 };
 use secrecy::{ExposeSecret, SecretString, zeroize::Zeroize};
@@ -48,8 +49,7 @@ impl AuthenticatedStream {
         channel_server: channel::endpoint::AsyncServer,
         auth_token: SecretString,
     ) -> Result<Self> {
-        static SALT: LazyLock<SaltString> =
-            LazyLock::new(|| SaltString::generate(rand::thread_rng()));
+        static SALT: LazyLock<SaltString> = LazyLock::new(|| SaltString::generate(&mut OsRng));
         let auth_token_hash = Pbkdf2
             .hash_password(auth_token.expose_secret().as_ref(), &*SALT)
             .expect("hash auth token");

@@ -35,5 +35,5 @@ features = ["provider-tls-rustls"]
 [dev-dependencies]
 once_cell = "1.19"
 prost-types = "0.14"
-rand = "0.8"
+rand = "0.9"
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }

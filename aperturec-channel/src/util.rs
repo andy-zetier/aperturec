@@ -88,12 +88,12 @@ mod test {
 
     #[test]
     fn syncify_io() {
-        use rand::{Rng, distributions::Standard};
+        use rand::{Rng, distr::StandardUniform};
 
         let rt = new_async_rt().expect("rt");
 
-        let data: Vec<u8> = rand::thread_rng()
-            .sample_iter(&Standard)
+        let data: Vec<u8> = rand::rng()
+            .sample_iter(&StandardUniform)
             .take(256)
             .collect();
         let mut copy = vec![];

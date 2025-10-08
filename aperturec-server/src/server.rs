@@ -19,6 +19,7 @@ use derive_builder::Builder;
 use derive_more::Debug;
 use futures::prelude::*;
 use futures::stream::{FuturesUnordered, Peekable, StreamExt};
+use pbkdf2::password_hash::rand_core::OsRng;
 use petname::{Generator, Petnames};
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::BTreeMap;
@@ -286,7 +287,7 @@ impl Server<Created> {
             debug!(cardinality = DICTIONARY.cardinality(NUM_WORDS));
             let auth_token = SecretString::new(
                 DICTIONARY
-                    .generate(&mut rand::thread_rng(), NUM_WORDS, "-")
+                    .generate(&mut OsRng, NUM_WORDS, "-")
                     .expect("generate auth token")
                     .into(),
             );
@@ -1082,7 +1083,7 @@ mod test {
     };
     use aperturec_protocol::control::{client_to_server as cm_c2s, server_to_client as cm_s2c, *};
 
-    use rand::{Rng, distributions::Alphanumeric};
+    use rand::{Rng, distr::Alphanumeric};
     use test_log::test;
 
     fn client_init_msg(auth_token: SecretString) -> cm_c2s::Message {
@@ -1139,7 +1140,7 @@ mod test {
     ) {
         let tlsdir = tempfile::tempdir().expect("temp dir");
         let auth_token: SecretString = SecretString::from(
-            rand::thread_rng()
+            rand::rng()
                 .sample_iter(&Alphanumeric)
                 .take(16)
                 .map(char::from)
