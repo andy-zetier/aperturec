@@ -11,7 +11,8 @@ use crate::metrics::RefreshCount;
 use aperturec_graphics::{display::*, euclid_collections::*, prelude::*};
 
 use anyhow::{Result, anyhow, bail};
-use crossbeam::channel::{Receiver, Sender, unbounded};
+use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
+use crossbeam::channel::{Receiver, Sender};
 use gtk::{cairo, gdk, gdk_pixbuf, gio, glib, prelude::*};
 use keycode::{KeyMap, KeyMapping, KeyMappingId};
 use ndarray::prelude::*;
@@ -194,7 +195,7 @@ const SCROLL_THRESHOLD: f64 = {
 };
 
 pub struct ClientSideItcChannels {
-    pub ui_tx: glib::Sender<UiMessage>,
+    pub ui_tx: AsyncSender<UiMessage>,
     pub notify_event_rx: Receiver<EventMessage>,
     pub notify_event_tx: Sender<EventMessage>,
     pub notify_media_rx: Receiver<DisplayConfiguration>,
@@ -202,7 +203,7 @@ pub struct ClientSideItcChannels {
 }
 
 pub struct GtkSideItcChannels {
-    ui_rx: glib::Receiver<UiMessage>,
+    ui_rx: AsyncReceiver<UiMessage>,
     notify_event_tx: Sender<EventMessage>,
 }
 
@@ -219,10 +220,10 @@ impl Default for ItcChannels {
 
 impl ItcChannels {
     pub fn new() -> Self {
-        let (ui_tx, ui_rx) = glib::MainContext::channel(glib::Priority::default());
+        let (ui_tx, ui_rx) = async_channel::unbounded();
 
-        let (notify_event_tx, notify_event_rx) = unbounded();
-        let (notify_media_tx, notify_media_rx) = unbounded();
+        let (notify_event_tx, notify_event_rx) = crossbeam::channel::unbounded();
+        let (notify_media_tx, notify_media_rx) = crossbeam::channel::unbounded();
 
         ItcChannels {
             client_half: ClientSideItcChannels {
@@ -451,8 +452,8 @@ fn gtk_key_to_x11(key: &gdk::EventKey) -> Option<u16> {
 
 pub struct GtkUi {
     app: Rc<gtk::Application>,
-    action_rx: glib::Receiver<Action>,
-    ui_rx: glib::Receiver<UiMessage>,
+    action_rx: AsyncReceiver<Action>,
+    ui_rx: AsyncReceiver<UiMessage>,
     workspace: Rc<UiWorkspace>,
     windows: Rc<RefCell<Windows>>,
 }
@@ -471,7 +472,7 @@ impl GtkUi {
                 .build(),
         );
 
-        let (action_tx, action_rx) = glib::MainContext::channel(glib::Priority::default());
+        let (action_tx, action_rx) = async_channel::unbounded();
 
         #[cfg(not(target_os = "macos"))]
         {
@@ -585,8 +586,9 @@ impl GtkUi {
                 }
             }));
 
-        self.action_rx.attach(
-            None,
+        let action_rx = self.action_rx.clone();
+        GtkUi::attach_async_rx(
+            action_rx,
             glib::clone!(@strong windows, @strong workspace => move |shortcut| {
                 match shortcut {
                     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -643,21 +645,22 @@ impl GtkUi {
                         windows.borrow_mut().window();
                     }
                 }
-                glib::source::Continue(true)
+                glib::ControlFlow::Continue
             }),
         );
 
         let app = self.app.clone();
 
-        self.ui_rx.attach(
-            None,
+        let ui_rx = self.ui_rx.clone();
+        GtkUi::attach_async_rx(
+            ui_rx,
             glib::clone!(@strong windows, @strong workspace, @strong app => move |msg| {
                 match msg {
                     UiMessage::Quit(msg) => {
                         debug!("GTK received shutdown notification: {}", msg);
                         workspace.shutdown_started.set(true);
                         windows.borrow_mut().close();
-                        return glib::source::Continue(false);
+                        return glib::ControlFlow::Break;
                     }
                     UiMessage::ShowModal { title, text } => {
                         if let Some(window) = app.active_window() {
@@ -727,7 +730,7 @@ impl GtkUi {
                     }
                     UiMessage::Draw { draw } => windows.borrow().draw(draw),
                 }
-                glib::source::Continue(true)
+                glib::ControlFlow::Continue
             }),
         );
         //
@@ -735,12 +738,26 @@ impl GtkUi {
         //
         self.app.run_with_args(&[""; 0]);
     }
+
+    fn attach_async_rx<T, F>(rx: AsyncReceiver<T>, mut handler: F)
+    where
+        T: 'static,
+        F: FnMut(T) -> glib::ControlFlow + 'static,
+    {
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(message) = rx.recv().await {
+                if (handler)(message) == glib::ControlFlow::Break {
+                    break;
+                }
+            }
+        });
+    }
 }
 
 struct UiWorkspace {
     event_tx: Sender<EventMessage>,
     monitors_geometry: RefCell<MonitorsGeometry>,
-    action_tx: glib::Sender<Action>,
+    action_tx: AsyncSender<Action>,
     last_mouse_pos: Cell<Point>,
     cursor_map: RefCell<HashMap<usize, gdk::Cursor>>,
     lock_state: Cell<LockState>,
@@ -752,7 +769,7 @@ struct UiWorkspace {
 impl UiWorkspace {
     fn new(
         itc: &GtkSideItcChannels,
-        action_tx: glib::Sender<Action>,
+        action_tx: AsyncSender<Action>,
         initial_monitors_geometry: MonitorsGeometry,
     ) -> Result<Self> {
         debug!(?initial_monitors_geometry);
@@ -790,7 +807,7 @@ impl ActionManager {
                 Self::release_held_keys(&workspace);
                 workspace
                     .action_tx
-                    .send(action)
+                    .try_send(action)
                     .unwrap_or_else(|err| warn!(%err, "Failed to send action"));
             });
 
@@ -1242,14 +1259,14 @@ fn setup_overlay_menu(overlay: &gtk::Overlay) -> Rc<gtk::Button> {
                 window.set_cursor(Some(&hand_cursor));
             }
         }
-        gtk::Inhibit(false)
+        glib::Propagation::Proceed
     });
 
     toggle_arrow.connect_leave_notify_event(|button, _| {
         if let Some(window) = button.window() {
             window.set_cursor(None);
         }
-        gtk::Inhibit(false)
+        glib::Propagation::Proceed
     });
 
     menu_container.pack_start(&*menu_revealer, false, false, 0);
@@ -1303,7 +1320,7 @@ impl WindowInternals {
         app_window.connect_delete_event(
             glib::clone!(@strong workspace, @strong app => move |_, _| {
                 signal_handlers::delete(&app, &workspace);
-                gtk::Inhibit(true)
+                glib::Propagation::Stop
             }),
         );
 
@@ -1326,48 +1343,48 @@ impl WindowInternals {
         drawing_area.connect_motion_notify_event(
             glib::clone!(@strong workspace => move |_, motion| {
                 signal_handlers::motion(&workspace, motion, origin_offset);
-                gtk::Inhibit(true)
+                glib::Propagation::Stop
             }),
         );
         drawing_area.connect_key_press_event(glib::clone!(@strong workspace => move |_, key| {
             signal_handlers::key_press(&workspace, key);
-            gtk::Inhibit(true)
+            glib::Propagation::Stop
         }));
         drawing_area.connect_key_release_event(glib::clone!(@strong workspace => move |_, key| {
             signal_handlers::key_release(&workspace, key);
-            gtk::Inhibit(true)
+            glib::Propagation::Stop
         }));
         drawing_area.connect_button_press_event(
             glib::clone!(@strong workspace => move |_, button| {
                 signal_handlers::button_press(&workspace, button);
-                gtk::Inhibit(true)
+                glib::Propagation::Stop
             }),
         );
         drawing_area.connect_button_release_event(
             glib::clone!(@strong workspace => move |_, button| {
                 signal_handlers::button_release(&workspace, button);
-                gtk::Inhibit(true)
+                glib::Propagation::Stop
             }),
         );
         drawing_area.connect_scroll_event(glib::clone!(@strong workspace => move |_, scroll| {
             signal_handlers::scroll(&workspace, scroll);
-            gtk::Inhibit(true)
+            glib::Propagation::Stop
         }));
         drawing_area.connect_focus_in_event(
             glib::clone!(@strong workspace => move |drawing_area, _| {
                 drawing_area.grab_focus();
                 signal_handlers::focus_in(&workspace);
-                gtk::Inhibit(true)
+                glib::Propagation::Stop
             }),
         );
         drawing_area.connect_focus_out_event(glib::clone!(@strong workspace => move |_, _| {
             signal_handlers::focus_out(&workspace);
-            gtk::Inhibit(true)
+            glib::Propagation::Stop
         }));
         drawing_area.connect_draw(
             glib::clone!(@strong workspace, @strong image => move |drawing_area, cr| {
                 signal_handlers::draw(&mut image.borrow_mut(), drawing_area, cr);
-                gtk::Inhibit(true)
+                glib::Propagation::Stop
             }),
         );
 
@@ -1525,8 +1542,6 @@ impl SingleDisplayWindow {
     /// Sets up macOS-specific window state tracking to sync with green maximize button
     #[cfg(target_os = "macos")]
     fn setup_macos_state_tracking(&self, windows_ref: std::rc::Weak<RefCell<Windows>>) {
-        use glib::signal::Inhibit;
-
         let windows_weak = windows_ref.clone();
         self.internals
             .app_window
@@ -1541,7 +1556,7 @@ impl SingleDisplayWindow {
                             .sync_mode_from_window_state(is_fullscreen);
                     }
                 }
-                Inhibit(false)
+                glib::Propagation::Proceed
             });
     }
 }

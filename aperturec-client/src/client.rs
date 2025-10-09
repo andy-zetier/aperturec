@@ -24,9 +24,9 @@ use aperturec_protocol::tunnel;
 use aperturec_utils::log::*;
 
 use anyhow::{Error, Result, anyhow, bail};
+use async_channel::Sender as AsyncSender;
 use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, bounded, select, unbounded};
 use derive_builder::Builder;
-use gtk::glib;
 use openssl::x509::X509;
 use secrecy::{ExposeSecret, SecretString, zeroize::Zeroize};
 use std::collections::BTreeMap;
@@ -958,7 +958,7 @@ impl Client {
         &mut self,
         mut mc: channel::ClientMedia,
         notify_media_rx: Receiver<display::DisplayConfiguration>,
-        ui_tx: glib::Sender<UiMessage>,
+        ui_tx: AsyncSender<UiMessage>,
     ) -> Result<()> {
         let (mm_rx_tx, mm_rx_rx) = bounded(0);
         let should_stop = self.should_stop.clone();
@@ -998,7 +998,7 @@ impl Client {
                         if display_config.id > framer.display_config.id {
                             framer = Framer::new(display_config.clone());
                         }
-                        if let Err(error) = ui_tx.send(UiMessage::DisplayChange { display_config }) {
+                        if let Err(error) = ui_tx.try_send(UiMessage::DisplayChange { display_config }) {
                             warn!(%error, "failed sending display config to UI");
                             break Err(error.into());
                         }
@@ -1007,7 +1007,7 @@ impl Client {
 
                 if framer.has_draws() {
                     for draw in framer.get_draws_and_reset() {
-                        if let Err(error) = ui_tx.send(UiMessage::Draw { draw }) {
+                        if let Err(error) = ui_tx.try_send(UiMessage::Draw { draw }) {
                             warn!(%error, "failed sending draw to UI");
                             break 'outer Err(error.into());
                         }
@@ -1025,7 +1025,7 @@ impl Client {
     fn setup_control_channel(
         &mut self,
         client_cc: channel::ClientControl,
-        ui_tx: glib::Sender<UiMessage>,
+        ui_tx: AsyncSender<UiMessage>,
         notify_control_tx: Sender<ControlMessage>,
         notify_control_rx: Receiver<ControlMessage>,
     ) -> Result<()> {
@@ -1183,7 +1183,7 @@ impl Client {
                                 _ => error!(reason),
                             };
 
-                            ui_tx.send(UiMessage::ShowModal {
+                            ui_tx.try_send(UiMessage::ShowModal {
                                 title: format!("{} disconnected", &server_addr),
                                 text: reason,
                             })
@@ -1199,7 +1199,7 @@ impl Client {
                                 _ => {
                                     quit_reason = format!("Couldn't read control message: {ioe:?}");
                                     error!("{}", quit_reason);
-                                    ui_tx.send(UiMessage::ShowModal {
+                                    ui_tx.try_send(UiMessage::ShowModal {
                                         title: "I/O Error".to_string(),
                                         text: quit_reason.clone(),
                                     })
@@ -1218,7 +1218,7 @@ impl Client {
                                 if !should_stop.load(Ordering::Relaxed) {
                                     error!("{}", quit_reason);
                                 }
-                                ui_tx.send(UiMessage::ShowModal {
+                                ui_tx.try_send(UiMessage::ShowModal {
                                     title: "Error".to_string(),
                                     text: quit_reason.clone(),
                                 })
@@ -1231,7 +1231,7 @@ impl Client {
                             if !should_stop.load(Ordering::Relaxed) {
                                 error!("{}", quit_reason);
                             }
-                            ui_tx.send(UiMessage::ShowModal {
+                            ui_tx.try_send(UiMessage::ShowModal {
                                 title: "Error".to_string(),
                                 text: quit_reason.clone(),
                             })
@@ -1256,7 +1256,7 @@ impl Client {
             } // loop
 
             ui_tx
-                .send(UiMessage::Quit(quit_reason))
+                .try_send(UiMessage::Quit(quit_reason))
                 .unwrap_or_else(|e| warn!(%e, "Failed to send UiMessage::Quit"));
 
             should_stop.store(true, Ordering::Relaxed);
@@ -1272,7 +1272,7 @@ impl Client {
         notify_event_rx: Receiver<EventMessage>,
         notify_control_tx: Sender<ControlMessage>,
         notify_media_tx: Sender<display::DisplayConfiguration>,
-        ui_tx: glib::Sender<UiMessage>,
+        ui_tx: AsyncSender<UiMessage>,
     ) -> Result<()> {
         let (mut ec_rx, mut ec_tx) = client_ec.split();
         let should_stop = self.should_stop.clone();
@@ -1290,7 +1290,7 @@ impl Client {
                     notify_media_tx.send((*display_config).clone().try_into()?)?;
                 } else {
                     let ui_msg = UiMessage::try_from(msg)?;
-                    ui_tx.send(ui_msg)?;
+                    ui_tx.try_send(ui_msg).map_err(|err| anyhow!(err))?;
                 }
             }
             should_stop.store(true, Ordering::Relaxed);

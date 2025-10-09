@@ -19,13 +19,14 @@ aperturec-metrics = { path = "../aperturec-metrics" }
 aperturec-utils = { path = "../aperturec-utils" }
 
 anyhow = "1.0"
+async-channel = "1.9"
 clap = { version = "4.5.48", features = ["derive"] }
-ctrlc = { version = "3.5", features = ["termination"] }
 crossbeam = "0.8"
+ctrlc = { version = "3.5", features = ["termination"] }
 derive_builder = "0.20"
 flate2 = { version = "1.0", features = ["zlib-ng"], default-features = false }
 gethostname = "1.0"
-gtk = "0.17.1"
+gtk = "0.18"
 jxl-sys = "0.1"
 keycode = "1.0.0"
 libc = { version = "0.2", optional = true }
