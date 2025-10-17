@@ -1,7 +1,14 @@
-use anyhow::{Result, anyhow};
 use secrecy::SecretString;
 use std::path::PathBuf;
 use std::{fs, io};
+
+#[derive(Debug, thiserror::Error)]
+pub enum AuthTokenError {
+    #[error("Failed to read token from stdin: {0}")]
+    ReadFromStdin(#[source] io::Error),
+    #[error("Failed to read token from file {path}: {source}")]
+    ReadFromFile { path: PathBuf, source: io::Error },
+}
 
 #[derive(Debug, clap::Args)]
 pub struct AuthTokenFileArgGroup {
@@ -12,18 +19,18 @@ pub struct AuthTokenFileArgGroup {
 }
 
 impl AuthTokenFileArgGroup {
-    pub fn into_token(self) -> Result<Option<SecretString>> {
+    pub fn into_token(self) -> Result<Option<SecretString>, AuthTokenError> {
         if let Some(path) = self.auth_token_file {
             let auth_token = if path == PathBuf::from("-") {
                 SecretString::from(
                     io::read_to_string(io::stdin())
-                        .map_err(|e| anyhow!("Failed reading auth token from stdin: {e}"))?
+                        .map_err(AuthTokenError::ReadFromStdin)?
                         .trim(),
                 )
             } else {
                 SecretString::from(
                     fs::read_to_string(&path)
-                        .map_err(|e| anyhow!("Failed reading '{}': {}", path.display(), e))?
+                        .map_err(|source| AuthTokenError::ReadFromFile { path, source })?
                         .trim(),
                 )
             };
@@ -57,7 +64,7 @@ pub struct AuthTokenAllArgGroup {
 }
 
 impl AuthTokenAllArgGroup {
-    pub fn into_token(self) -> Result<Option<SecretString>> {
+    pub fn into_token(self) -> Result<Option<SecretString>, AuthTokenError> {
         Ok(self.file.into_token()?.or(self.direct.into_token()))
     }
 }
