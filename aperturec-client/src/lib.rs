@@ -1,4 +1,6 @@
 pub mod client;
+#[cfg(feature = "ffi-lib")]
+pub mod ffi;
 pub mod frame;
 pub mod gtk3;
 pub mod metrics;

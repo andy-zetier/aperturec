@@ -20,10 +20,12 @@ aperturec-utils = { path = "../aperturec-utils" }
 
 anyhow = "1.0"
 async-channel = "2.5"
+atomicbox = "0.4"
 clap = { version = "4.5.49", features = ["derive"] }
 crossbeam = "0.8"
 ctrlc = { version = "3.5", features = ["termination"] }
 derive_builder = "0.20"
+derive_more = { version = "2.0", features = ["display"] }
 flate2 = { version = "1.1", features = ["zlib-ng"], default-features = false }
 gethostname = "1.0"
 gtk = "0.18"
@@ -36,10 +38,11 @@ paste = "1.0.14"
 prometheus = "0.14"
 range-set-blaze = "0.3"
 regex = "1.12"
-rpassword = "7.3"
+rpassword = "7.4"
 secrecy = "0.10"
 strum = { version = "0.27", features = ["derive"] }
 sysinfo = "0.37"
+thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 url = "2.5"
