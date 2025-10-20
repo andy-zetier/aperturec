@@ -32,34 +32,15 @@ struct DeriveFrom {
 
 impl DeriveFrom {
     fn complete(self, file: &mut syn::File) {
-        file.items.push(parse_quote! {
-            /// Error when converting a struct which wraps a single Option to it's inner type, and
-            /// the Option is None.
-            #[derive(Debug)]
-            pub struct WrappedOptionalConvertError;
-        });
-
-        file.items.push(parse_quote! {
-            impl std::fmt::Display for WrappedOptionalConvertError {
-                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-                    <Self as std::fmt::Debug>::fmt(self, f)
-                }
-            }
-        });
-
-        file.items.push(parse_quote! {
-            impl std::error::Error for WrappedOptionalConvertError {}
-        });
-
         for (item_struct, (field_ident, generic_ty)) in self.wrapped_options {
             let outer_ident = item_struct.ident;
 
             file.items.push(parse_quote! {
                 impl TryFrom<#outer_ident> for #generic_ty {
-                    type Error = WrappedOptionalConvertError;
+                    type Error = crate::WrappedOptionalConvertError;
 
                     fn try_from(v: #outer_ident) -> Result<#generic_ty, Self::Error> {
-                        v.#field_ident.ok_or(WrappedOptionalConvertError)
+                        v.#field_ident.ok_or(crate::WrappedOptionalConvertError)
                     }
                 }
             });
