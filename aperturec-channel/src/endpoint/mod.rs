@@ -28,6 +28,7 @@ pub enum BuildError {
     ///
     /// On Linux, QUIC performance features (GSO/GRO) require kernel 4.18+.
     /// This error occurs on older kernels that lack these features.
+    #[cfg(target_os = "linux")]
     #[error(transparent)]
     KernelVersion(#[from] KernelValidationError),
 
