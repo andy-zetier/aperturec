@@ -1193,38 +1193,22 @@ impl Client {
                         Ok(Ok(_)) => {
                             warn!("Unexpected message received on control channel");
                         },
-                        Ok(Err(err)) => match err.downcast::<std::io::Error>() {
-                            Ok(ioe) => match ioe.kind() {
-                                ErrorKind::WouldBlock | ErrorKind::Interrupted => (),
-                                _ => {
-                                    quit_reason = format!("Couldn't read control message: {ioe:?}");
-                                    error!("{}", quit_reason);
-                                    ui_tx.try_send(UiMessage::ShowModal {
-                                        title: "I/O Error".to_string(),
-                                        text: quit_reason.clone(),
-                                    })
-                                    .unwrap_or_else(|e| warn!(%e, "Failed to send ShowModal"));
-                                    let _ = control_tx_tx.send(ClientGoodbye::new(client_id, ClientGoodbyeReason::Terminating.into()).into());
-                                    trace!("Sent ClientGoodbye: Terminating");
-                                }
-                            },
-                            Err(other) => {
-                                quit_reason = format!("Fatal error reading control message: {other:?}");
-                                let _ = control_tx_tx.send(ClientGoodbye::new(
-                                            client_id,
-                                            ClientGoodbyeReason::Terminating.into(),
-                                            ).into());
-                                trace!("Sent ClientGoodbye: Terminating");
-                                if !should_stop.load(Ordering::Relaxed) {
-                                    error!("{}", quit_reason);
-                                }
-                                ui_tx.try_send(UiMessage::ShowModal {
-                                    title: "Error".to_string(),
-                                    text: quit_reason.clone(),
-                                })
-                                .unwrap_or_else(|e| warn!(%e, "Failed to send ShowModal"));
-                                break;
+                        Ok(Err(error)) => {
+                            quit_reason = format!("Fatal error reading control message: {error:?}");
+                            let _ = control_tx_tx.send(ClientGoodbye::new(
+                                        client_id,
+                                        ClientGoodbyeReason::Terminating.into(),
+                                        ).into());
+                            trace!("Sent ClientGoodbye: Terminating");
+                            if !should_stop.load(Ordering::Relaxed) {
+                                error!("{}", quit_reason);
                             }
+                            ui_tx.try_send(UiMessage::ShowModal {
+                                title: "Error".to_string(),
+                                text: quit_reason.clone(),
+                            })
+                            .unwrap_or_else(|e| warn!(%e, "Failed to send ShowModal"));
+                            break;
                         },
                         Err(err) => {
                             quit_reason = format!("Failed to recv from control channel rx: {err}");

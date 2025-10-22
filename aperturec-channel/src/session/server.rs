@@ -1,10 +1,11 @@
 //! Server-side sessions
+use super::{Error, Result};
 use crate::session;
 use crate::transport::{datagram, stream};
 use crate::util::Syncify;
 use crate::*;
 
-use anyhow::{Result, anyhow};
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
@@ -22,27 +23,30 @@ impl AsyncSession {
         let cc = AsyncServerControl::new(stream::AsyncTransceiver::new(
             connection
                 .accept_bidirectional_stream()
-                .await?
-                .ok_or(anyhow!("no CC stream"))?,
+                .await
+                .map_err(quic::Error::from)?
+                .ok_or(Error::MissingCCStream)?,
         ));
         let ec = AsyncServerEvent::new(stream::AsyncTransceiver::new(
             connection
                 .accept_bidirectional_stream()
-                .await?
-                .ok_or(anyhow!("no EC stream"))?,
+                .await
+                .map_err(quic::Error::from)?
+                .ok_or(Error::MissingECStream)?,
         ));
         let tc = AsyncServerTunnel::new(stream::AsyncTransceiver::new(
             connection
                 .accept_bidirectional_stream()
-                .await?
-                .ok_or(anyhow!("no TC stream"))?,
+                .await
+                .map_err(quic::Error::from)?
+                .ok_or(Error::MissingTCStream)?,
         ));
         let mc = AsyncServerMedia::new(datagram::AsyncTransmitter::new(connection));
 
         Ok(AsyncSession { cc, ec, mc, tc })
     }
 
-    pub fn remote_addr(&self) -> Result<SocketAddr> {
+    pub fn remote_addr(&self) -> Result<SocketAddr, io::Error> {
         Ok(self.mc.as_ref().as_ref().remote_addr()?)
     }
 }
@@ -78,22 +82,25 @@ impl Session {
         let cc = ServerControl::new(stream::Transceiver::new(
             connection
                 .accept_bidirectional_stream()
-                .syncify(&async_rt)?
-                .ok_or(anyhow!("no CC stream"))?,
+                .syncify(&async_rt)
+                .map_err(quic::Error::from)?
+                .ok_or(Error::MissingCCStream)?,
             async_rt.clone(),
         ));
         let ec = ServerEvent::new(stream::Transceiver::new(
             connection
                 .accept_bidirectional_stream()
-                .syncify(&async_rt)?
-                .ok_or(anyhow!("no EC stream"))?,
+                .syncify(&async_rt)
+                .map_err(quic::Error::from)?
+                .ok_or(Error::MissingECStream)?,
             async_rt.clone(),
         ));
         let tc = ServerTunnel::new(stream::Transceiver::new(
             connection
                 .accept_bidirectional_stream()
-                .syncify(&async_rt)?
-                .ok_or(anyhow!("no TC stream"))?,
+                .syncify(&async_rt)
+                .map_err(quic::Error::from)?
+                .ok_or(Error::MissingTCStream)?,
             async_rt.clone(),
         ));
         let mc = ServerMedia::new(datagram::Transmitter::new(connection, async_rt));
@@ -101,7 +108,7 @@ impl Session {
         Ok(Session { cc, ec, mc, tc })
     }
 
-    pub fn remote_addr(&self) -> Result<SocketAddr> {
+    pub fn remote_addr(&self) -> Result<SocketAddr, io::Error> {
         Ok(self.mc.as_ref().as_ref().remote_addr()?)
     }
 }

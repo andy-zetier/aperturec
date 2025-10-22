@@ -1,16 +1,15 @@
 //! Server-side endpoint
 use aperturec_protocol as protocol;
 
-use crate::endpoint::*;
+use super::{BuildError, DEFAULT_SERVER_BIND_PORT};
 use crate::quic::provider;
 use crate::session;
-#[cfg(any(test, debug_assertions))]
 use crate::tls;
 use crate::util::{Syncify, new_async_rt};
 
-use anyhow::{Result, anyhow};
 #[cfg(any(test, debug_assertions))]
 use std::env;
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
@@ -24,6 +23,18 @@ use s2n_quic::provider::tls::rustls::{
 #[cfg(any(test, debug_assertions))]
 use tracing::*;
 
+/// Errors that occur when accepting client connections on the server.
+#[derive(Debug, thiserror::Error)]
+pub enum AcceptError {
+    /// Session channel establishment failed after accepting QUIC connection.
+    #[error(transparent)]
+    Session(#[from] session::Error),
+
+    /// Server was closed before accepting a client connection.
+    #[error("server closed before accepting a client connection")]
+    Closed,
+}
+
 #[derive(Debug)]
 /// A synchronous server endpoint
 pub struct Server {
@@ -32,18 +43,18 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.quic_server.local_addr()?)
+    pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
+        self.quic_server.local_addr()
     }
 
-    pub fn accept(&mut self) -> Result<session::Server> {
-        session::Server::new(
+    pub fn accept(&mut self) -> Result<session::Server, AcceptError> {
+        Ok(session::Server::new(
             self.quic_server
                 .accept()
                 .syncify(&self.async_rt)
-                .ok_or(anyhow!("no connection"))?,
+                .ok_or(AcceptError::Closed)?,
             self.async_rt.clone(),
-        )
+        )?)
     }
 }
 
@@ -54,18 +65,15 @@ pub struct AsyncServer {
 }
 
 impl AsyncServer {
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.quic_server.local_addr()?)
+    pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
+        self.quic_server.local_addr()
     }
 
-    pub async fn accept(&mut self) -> Result<session::AsyncServer> {
-        session::AsyncServer::new(
-            self.quic_server
-                .accept()
-                .await
-                .ok_or(anyhow!("no connection"))?,
+    pub async fn accept(&mut self) -> Result<session::AsyncServer, AcceptError> {
+        Ok(
+            session::AsyncServer::new(self.quic_server.accept().await.ok_or(AcceptError::Closed)?)
+                .await?,
         )
-        .await
     }
 }
 
@@ -96,11 +104,11 @@ impl Builder {
         self
     }
 
-    fn build(self) -> Result<(s2n_quic::Server, Option<TokioRuntime>)> {
+    fn build(self) -> Result<(s2n_quic::Server, Option<TokioRuntime>), BuildError> {
         #[cfg(target_os = "linux")]
         super::validate_current_kernel_version()?;
 
-        let bind_addr = self.bind_addr.ok_or(anyhow!("no bind address provided"))?;
+        let bind_addr = self.bind_addr.ok_or(BuildError::NoBindAddress)?;
         let bind_sa = {
             if let Ok(sa) = bind_addr.parse::<SocketAddr>() {
                 sa
@@ -110,24 +118,21 @@ impl Builder {
         };
 
         let cert_der = rustls::pki_types::CertificateDer::from(
-            pem::parse(
-                self.tls_pem_cert
-                    .ok_or(anyhow!("no certificate provided"))?,
-            )?
-            .into_contents(),
+            pem::parse(self.tls_pem_cert.ok_or(tls::Error::NoCertificate)?)
+                .map_err(tls::Error::from)?
+                .into_contents(),
         );
         let key_der = rustls::pki_types::PrivateKeyDer::try_from(
-            pem::parse(
-                self.tls_pem_private_key
-                    .ok_or(anyhow!("no private key provided"))?,
-            )?
-            .into_contents(),
+            pem::parse(self.tls_pem_private_key.ok_or(tls::Error::NoPrivateKey)?)
+                .map_err(tls::Error::from)?
+                .into_contents(),
         )
-        .map_err(|s| anyhow!(s))?;
+        .map_err(tls::Error::ParsePkiMaterials)?;
 
         let mut tls_config = TlsConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(vec![cert_der], key_der)?;
+            .with_single_cert(vec![cert_der], key_der)
+            .map_err(tls::Error::from)?;
         tls_config
             .alpn_protocols
             .push(protocol::MAGIC.as_bytes().to_vec());
@@ -175,11 +180,9 @@ impl Builder {
     /// Build a synchronous [`Server`]
     ///
     /// This will return an error if called from an async runtime
-    pub fn build_sync(self) -> Result<Server> {
+    pub fn build_sync(self) -> Result<Server, BuildError> {
         let (quic_server, async_rt_opt) = self.build()?;
-        let async_rt = async_rt_opt
-            .ok_or(anyhow!("building server client within an async runtime"))?
-            .into();
+        let async_rt = async_rt_opt.ok_or(BuildError::SyncInAsync)?.into();
         Ok(Server {
             quic_server,
             async_rt,
@@ -189,14 +192,14 @@ impl Builder {
     /// Build an asynchronous [`Server`]
     ///
     /// This will return an error if called from outside an async runtime
-    pub fn build_async(self) -> Result<AsyncServer> {
+    pub fn build_async(self) -> Result<AsyncServer, BuildError> {
         let (quic_server, async_rt_opt) = self.build()?;
 
         if async_rt_opt.is_some() {
-            anyhow::bail!("building async server within a sync runtime");
+            Err(BuildError::AsyncInSync)
+        } else {
+            Ok(AsyncServer { quic_server })
         }
-
-        Ok(AsyncServer { quic_server })
     }
 }
 

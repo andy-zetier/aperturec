@@ -1,26 +1,31 @@
 //! Low-level, byte-oriented API
-use anyhow::Result;
 use bytes::Bytes;
+use std::error::Error;
 
 pub mod datagram;
 pub mod stream;
 
 /// A trait for types which can receive bytes
 pub trait Receive {
+    /// The error type returned when receiving fails
+    type Error: Error;
     /// Receive a datagram or return an error
-    fn receive(&mut self) -> Result<Bytes>;
+    fn receive(&mut self) -> Result<Bytes, Self::Error>;
 }
 
 /// A trait for types which can send bytes
 pub trait Transmit {
+    /// The error type returned when transmitting fails
+    type Error: Error;
+
     /// Send some bytes or return an error
-    fn transmit(&mut self, data: Bytes) -> Result<()>;
+    fn transmit(&mut self, data: Bytes) -> Result<(), Self::Error>;
 }
 
 /// A trait for types which can ensure all bytes have been received by the other side
 pub trait Flush: Transmit {
     /// Block and ensure all bytes which have been sent are received by the other side
-    fn flush(&mut self) -> Result<()>;
+    fn flush(&mut self) -> Result<(), Self::Error>;
 }
 
 /// A unifying trait for all types which are both [`Transmit`] and [`Receive`]
@@ -45,21 +50,23 @@ mod async_variants {
     #[allow(dead_code)]
     /// Async variant of [`super::Receive`]
     pub trait LocalReceive: Send + Sized {
-        async fn receive(&mut self) -> Result<Bytes>;
+        type Error: Error;
+        async fn receive(&mut self) -> Result<Bytes, Self::Error>;
     }
 
     #[trait_variant::make(Transmit: Send)]
     #[allow(dead_code)]
     /// Async variant of [`super::Transmit`]
     pub trait LocalTransmit: Send + Sized {
-        async fn transmit(&mut self, data: Bytes) -> Result<()>;
+        type Error: Error;
+        async fn transmit(&mut self, data: Bytes) -> Result<(), Self::Error>;
     }
 
     #[trait_variant::make(Flush: Send)]
     #[allow(dead_code)]
     /// Async variant of [`super::Flush`]
     pub trait LocalFlush: Transmit + Send + Sized {
-        async fn flush(&mut self) -> Result<()>;
+        async fn flush(&mut self) -> Result<(), Self::Error>;
     }
 
     #[trait_variant::make(Splitable: Send)]
@@ -89,9 +96,10 @@ pub use async_variants::Transmit as AsyncTransmit;
 
 mod macros {
     macro_rules! delegate_transport_rx_sync {
-        ($type:ident) => {
+        ($type:ident, $error:ident) => {
             impl crate::transport::Receive for $type {
-                fn receive(&mut self) -> Result<Bytes> {
+                type Error = $error;
+                fn receive(&mut self) -> Result<Bytes, $error> {
                     AsyncReceive::receive(&mut self.transport).syncify(&self.async_rt)
                 }
             }
@@ -99,9 +107,10 @@ mod macros {
     }
 
     macro_rules! delegate_transport_rx_async {
-        ($type:ident) => {
+        ($type:ident, $error:ident) => {
             impl crate::transport::AsyncReceive for $type {
-                async fn receive(&mut self) -> Result<Bytes> {
+                type Error = $error;
+                async fn receive(&mut self) -> Result<Bytes, $error> {
                     AsyncReceive::receive(&mut self.transport).await
                 }
             }
@@ -109,9 +118,10 @@ mod macros {
     }
 
     macro_rules! delegate_transport_tx_sync {
-        ($type:ident) => {
+        ($type:ident, $error:ident) => {
             impl crate::transport::Transmit for $type {
-                fn transmit(&mut self, data: Bytes) -> Result<()> {
+                type Error = $error;
+                fn transmit(&mut self, data: Bytes) -> Result<(), $error> {
                     AsyncTransmit::transmit(&mut self.transport, data).syncify(&self.async_rt)
                 }
             }
@@ -119,9 +129,10 @@ mod macros {
     }
 
     macro_rules! delegate_transport_tx_async {
-        ($type:ident) => {
+        ($type:ident, $error:ident) => {
             impl crate::transport::AsyncTransmit for $type {
-                async fn transmit(&mut self, data: Bytes) -> Result<()> {
+                type Error = $error;
+                async fn transmit(&mut self, data: Bytes) -> Result<(), $error> {
                     AsyncTransmit::transmit(&mut self.transport, data).await
                 }
             }
@@ -129,9 +140,9 @@ mod macros {
     }
 
     macro_rules! delegate_transport_flush_sync {
-        ($type:ident) => {
+        ($type:ident, $error:ident) => {
             impl crate::transport::Flush for $type {
-                fn flush(&mut self) -> Result<()> {
+                fn flush(&mut self) -> Result<(), $error> {
                     AsyncFlush::flush(&mut self.transport).syncify(&self.async_rt)
                 }
             }
@@ -139,9 +150,9 @@ mod macros {
     }
 
     macro_rules! delegate_transport_flush_async {
-        ($type:ident) => {
+        ($type:ident, $error:ident) => {
             impl crate::transport::AsyncFlush for $type {
-                async fn flush(&mut self) -> Result<()> {
+                async fn flush(&mut self) -> Result<(), $error> {
                     AsyncFlush::flush(&mut self.transport).await
                 }
             }

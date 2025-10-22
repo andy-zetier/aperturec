@@ -55,8 +55,13 @@ impl RateLimitHandle {
 }
 
 impl AsyncGate for RateLimitHandle {
-    async fn wait(&self, msg_len: usize) -> anyhow::Result<()> {
-        self.request_to_send(msg_len).await
+    async fn wait(
+        &self,
+        msg_len: usize,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+        self.request_to_send(msg_len)
+            .await
+            .map_err(anyhow::Error::into_boxed_dyn_error)
     }
 }
 

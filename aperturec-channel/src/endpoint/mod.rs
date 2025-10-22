@@ -1,9 +1,10 @@
 //! QUIC client & server
+use crate::{tls, util};
 
 #[cfg(target_os = "linux")]
-use anyhow::{Result, bail};
-#[cfg(target_os = "linux")]
 use aperturec_utils::versioning;
+
+use std::{convert::Infallible, io, net::AddrParseError};
 
 mod client;
 mod server;
@@ -20,22 +21,125 @@ pub const DEFAULT_CLIENT_BIND_PORT: u16 = 0;
 /// Variable for setting where the SSL key-logging file is saved to
 pub const SSLKEYLOGFILE_VAR: &str = "SSLKEYLOGFILE";
 
+/// Errors that occur when building QUIC client or server endpoints.
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    /// Kernel version does not meet minimum requirement
+    ///
+    /// On Linux, QUIC performance features (GSO/GRO) require kernel 4.18+.
+    /// This error occurs on older kernels that lack these features.
+    #[error(transparent)]
+    KernelVersion(#[from] KernelValidationError),
+
+    /// Failed to create the async runtime.
+    ///
+    /// Occurs when building a synchronous endpoint and the tokio runtime
+    /// cannot be created.
+    #[error(transparent)]
+    BuildRuntime(#[from] util::BuildRuntimeError),
+
+    /// Attempted to build an async endpoint while already within a sync runtime context.
+    ///
+    /// Async endpoints must be built directly within an async context, not
+    /// from a synchronous wrapper that creates its own runtime.
+    #[error("building async endpoint within sync runtime")]
+    AsyncInSync,
+
+    /// Attempted to build a sync endpoint while within an async runtime context.
+    ///
+    /// Sync endpoints cannot be built from within an async runtime as they
+    /// need to create their own dedicated runtime.
+    #[error("building sync endpoint within async runtime")]
+    SyncInAsync,
+
+    /// TLS configuration error.
+    ///
+    /// Wraps errors from certificate loading, private key setup, or TLS
+    /// provider configuration. See [`tls::Error`] for details.
+    #[error(transparent)]
+    Tls(#[from] tls::Error),
+
+    /// IO error during endpoint setup.
+    ///
+    /// Typically occurs when binding to network addresses or accessing
+    /// filesystem resources during configuration.
+    #[error(transparent)]
+    IO(#[from] io::Error),
+
+    /// No bind address was specified.
+    ///
+    /// Server endpoints require a bind address to listen on. This error
+    /// indicates the address was not provided during builder configuration.
+    #[error("no bind address")]
+    NoBindAddress,
+
+    /// Failed to parse network address.
+    ///
+    /// The provided address string could not be parsed into a valid
+    /// socket address (e.g., invalid IP address or port number).
+    #[error(transparent)]
+    ParseAddress(#[from] AddrParseError),
+
+    /// QUIC provider failed to start.
+    ///
+    /// Wraps errors from s2n-quic when initializing the QUIC endpoint
+    #[error(transparent)]
+    Start(#[from] s2n_quic::provider::StartError),
+}
+
+impl From<Infallible> for BuildError {
+    fn from(_: Infallible) -> Self {
+        unreachable!("convert infallible to error");
+    }
+}
+
+/// Errors that occur during Linux kernel version validation.
+///
+/// ApertureC requires Linux kernel 4.18 or newer for optimal QUIC performance
+/// via Generic Segmentation Offload (GSO) and Generic Receive Offload (GRO).
+/// Older kernels lack these features and will silently fail to achieve expected
+/// performance characteristics.
+///
+/// This error type is only available on Linux systems.
 #[cfg(target_os = "linux")]
-pub(crate) fn validate_current_kernel_version() -> Result<()> {
+#[derive(Debug, thiserror::Error)]
+pub enum KernelValidationError {
+    /// Failed to identify the running kernel version.
+    ///
+    /// This error occurs when the system kernel version cannot be determined,
+    /// typically due to missing system files or unexpected version string format.
+    #[error(transparent)]
+    IdentifyRunningKernel(#[from] versioning::KernelError),
+
+    /// Kernel version does not meet minimum requirements.
+    ///
+    /// The detected kernel version is older than the minimum required version (4.18).
+    /// Upgrading to a newer kernel is required for proper operation.
+    #[error("kernel version {discovered} does not meet minimum required kernel {minimum}")]
+    RequirementNotMet { discovered: String, minimum: String },
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn validate_current_kernel_version() -> std::result::Result<(), KernelValidationError> {
     let kernel_version = versioning::running_kernel()?;
     validate_kernel_version(&kernel_version)
 }
 
 #[cfg(target_os = "linux")]
-fn validate_kernel_version(kv: &versioning::Kernel) -> Result<()> {
+fn validate_kernel_version(
+    kv: &versioning::Kernel,
+) -> std::result::Result<(), KernelValidationError> {
     // Minimum Linux kernel version supported for GSO and GRO. Prior LTS versions of the kernel do
     // not support these features, and silently fail when attempting to use them.
     const MINIMUM_KERNEL_VERSION: &str = "4.18";
     if !kv.meets_or_exceeds(MINIMUM_KERNEL_VERSION)? {
-        bail!("kernel version {kv} is below minimum supported version {MINIMUM_KERNEL_VERSION}");
+        Err(KernelValidationError::RequirementNotMet {
+            discovered: kv.to_string(),
+            minimum: MINIMUM_KERNEL_VERSION.to_string(),
+        })
+    } else {
+        Ok(())
     }
-
-    Ok(())
 }
 
 #[cfg(test)]

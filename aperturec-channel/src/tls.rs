@@ -1,5 +1,4 @@
 //! TLS utilities for QUIC
-use anyhow::Result;
 use openssl::asn1::Asn1Time;
 use openssl::ec::{EcGroup, EcKey};
 use openssl::nid::Nid;
@@ -9,15 +8,58 @@ use openssl::x509::{X509, X509NameBuilder};
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fs;
+use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
+use std::string;
 use std::sync::Arc;
 
-use rustls::Error;
 use rustls::client::danger::*;
-use rustls::pki_types::*;
+use rustls::pki_types as rustls_pki;
 #[allow(deprecated)]
 use s2n_quic::provider::tls::rustls::rustls;
+
+/// Errors that occur during TLS setup and certificate operations.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Failed to build PKI certificate verifier.
+    #[error(transparent)]
+    BuildPkiVerifier(#[from] rustls::client::VerifierBuilderError),
+
+    /// No certificate was provided or found.
+    #[error("no certificate")]
+    NoCertificate,
+
+    /// No private key was provided or found.
+    #[error("no private key")]
+    NoPrivateKey,
+
+    /// Failed to parse PKI materials (certificates or keys).
+    #[error("failed parsing PKI materials: {0}")]
+    ParsePkiMaterials(&'static str),
+
+    /// PEM file parsing error.
+    #[error(transparent)]
+    Pem(#[from] pem::PemError),
+
+    /// Rustls TLS library error.
+    #[error(transparent)]
+    Rustls(#[from] rustls::Error),
+
+    /// OpenSSL library error.
+    #[error(transparent)]
+    Openssl(#[from] openssl::error::ErrorStack),
+
+    /// Failed to parse UTF-8 string.
+    #[error(transparent)]
+    StringParse(#[from] string::FromUtf8Error),
+
+    /// IO error reading certificate or key files.
+    #[error(transparent)]
+    IO(#[from] io::Error),
+}
+
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 pub const SSLKEYLOGFILE_VAR: &str = "SSLKEYLOGFILE";
 
@@ -44,12 +86,12 @@ impl CertVerifier {
 impl ServerCertVerifier for CertVerifier {
     fn verify_server_cert(
         &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        server_name: &ServerName<'_>,
+        end_entity: &rustls_pki::CertificateDer<'_>,
+        intermediates: &[rustls_pki::CertificateDer<'_>],
+        server_name: &rustls_pki::ServerName<'_>,
         ocsp_response: &[u8],
-        now: UnixTime,
-    ) -> Result<ServerCertVerified, Error> {
+        now: rustls_pki::UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
         if self.allow_insecure_connection {
             return Ok(ServerCertVerified::assertion());
         }
@@ -73,9 +115,9 @@ impl ServerCertVerifier for CertVerifier {
     fn verify_tls12_signature(
         &self,
         message: &[u8],
-        cert: &CertificateDer<'_>,
+        cert: &rustls_pki::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, Error> {
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         if self.allow_insecure_connection {
             return Ok(HandshakeSignatureValid::assertion());
         }
@@ -94,9 +136,9 @@ impl ServerCertVerifier for CertVerifier {
     fn verify_tls13_signature(
         &self,
         message: &[u8],
-        cert: &CertificateDer<'_>,
+        cert: &rustls_pki::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, Error> {
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         if self.allow_insecure_connection {
             return Ok(HandshakeSignatureValid::assertion());
         }
@@ -142,7 +184,7 @@ pub struct Material {
 }
 
 impl TryFrom<Material> for PemMaterial {
-    type Error = anyhow::Error;
+    type Error = Error;
     fn try_from(m: Material) -> Result<PemMaterial> {
         Ok(PemMaterial {
             certificate: String::from_utf8(m.certificate.to_pem()?)?,
@@ -152,7 +194,7 @@ impl TryFrom<Material> for PemMaterial {
 }
 
 impl TryFrom<Material> for DerMaterial {
-    type Error = anyhow::Error;
+    type Error = Error;
     fn try_from(m: Material) -> Result<DerMaterial> {
         Ok(DerMaterial {
             certificate: m.certificate.to_der()?,

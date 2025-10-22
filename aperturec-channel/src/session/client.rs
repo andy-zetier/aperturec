@@ -1,8 +1,9 @@
+use super::Result;
 use crate::transport::{datagram, stream};
 use crate::util::Syncify;
 use crate::*;
 
-use anyhow::Result;
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
@@ -32,24 +33,33 @@ impl session::Unified for AsyncSession {
 impl AsyncSession {
     pub(crate) async fn new(mut connection: s2n_quic::Connection) -> Result<Self> {
         let cc = AsyncClientControl::new(stream::AsyncTransceiver::new(
-            connection.open_bidirectional_stream().await?,
+            connection
+                .open_bidirectional_stream()
+                .await
+                .map_err(quic::Error::from)?,
         ));
         let ec = AsyncClientEvent::new(stream::AsyncTransceiver::new(
-            connection.open_bidirectional_stream().await?,
+            connection
+                .open_bidirectional_stream()
+                .await
+                .map_err(quic::Error::from)?,
         ));
         let tc = AsyncClientTunnel::new(stream::AsyncTransceiver::new(
-            connection.open_bidirectional_stream().await?,
+            connection
+                .open_bidirectional_stream()
+                .await
+                .map_err(quic::Error::from)?,
         ));
         let mc = AsyncClientMedia::new(datagram::AsyncReceiver::new(connection));
 
         Ok(AsyncSession { cc, ec, tc, mc })
     }
 
-    pub fn local_addr(&self) -> Result<SocketAddr> {
+    pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
         Ok(self.mc.as_ref().as_ref().local_addr()?)
     }
 
-    pub fn remote_addr(&self) -> Result<SocketAddr> {
+    pub fn remote_addr(&self) -> Result<SocketAddr, io::Error> {
         Ok(self.mc.as_ref().as_ref().remote_addr()?)
     }
 }
@@ -82,15 +92,24 @@ impl Session {
         async_rt: Arc<TokioRuntime>,
     ) -> Result<Self> {
         let cc = ClientControl::new(stream::Transceiver::new(
-            connection.open_bidirectional_stream().syncify(&async_rt)?,
+            connection
+                .open_bidirectional_stream()
+                .syncify(&async_rt)
+                .map_err(quic::Error::from)?,
             async_rt.clone(),
         ));
         let ec = ClientEvent::new(stream::Transceiver::new(
-            connection.open_bidirectional_stream().syncify(&async_rt)?,
+            connection
+                .open_bidirectional_stream()
+                .syncify(&async_rt)
+                .map_err(quic::Error::from)?,
             async_rt.clone(),
         ));
         let tc = ClientTunnel::new(stream::Transceiver::new(
-            connection.open_bidirectional_stream().syncify(&async_rt)?,
+            connection
+                .open_bidirectional_stream()
+                .syncify(&async_rt)
+                .map_err(quic::Error::from)?,
             async_rt.clone(),
         ));
         let mc = ClientMedia::new(datagram::Receiver::new(connection, async_rt));
@@ -98,11 +117,11 @@ impl Session {
         Ok(Session { cc, ec, tc, mc })
     }
 
-    pub fn local_addr(&self) -> Result<SocketAddr> {
+    pub fn local_addr(&self) -> Result<SocketAddr, quic::Error> {
         Ok(self.mc.as_ref().as_ref().local_addr()?)
     }
 
-    pub fn remote_addr(&self) -> Result<SocketAddr> {
+    pub fn remote_addr(&self) -> Result<SocketAddr, quic::Error> {
         Ok(self.mc.as_ref().as_ref().remote_addr()?)
     }
 }

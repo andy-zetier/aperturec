@@ -3,18 +3,63 @@
 //! Built on-top of the [`crate::transport::datagram`] API, this provides methods for sending and
 //! receiving messages reliably and out-of-order.
 
-use crate::gate::*;
-use crate::transport::{self, datagram};
-
 use super::*;
+use crate::gate::{self, AsyncGate, Gate};
+use crate::transport::{self, datagram};
 
 use aperturec_protocol::media;
 
-use anyhow::Result;
 use bytes::Bytes;
 use prost::Message;
-use std::error::Error;
-use std::marker::PhantomData;
+use std::{convert::Infallible, marker::PhantomData};
+
+/// Errors that can occur when receiving messages over an out-of-order channel
+#[derive(Debug, thiserror::Error)]
+pub enum RxError {
+    /// A transport-layer error occurred while receiving data
+    #[error(transparent)]
+    Transport(#[from] datagram::RxError),
+
+    /// Failed to decode the received message
+    #[error(transparent)]
+    Decode(#[from] prost::DecodeError),
+
+    /// A required field was missing in the received message
+    #[error(transparent)]
+    MissingField(#[from] aperturec_protocol::WrappedOptionalConvertError),
+}
+
+// Implemented to allow `?` on Infallible errors when returning Result<T, RxError>
+impl From<Infallible> for RxError {
+    fn from(_: Infallible) -> Self {
+        unreachable!("Infallible being converted to an error");
+    }
+}
+
+/// Errors that can occur when sending messages over an out-of-order channel
+#[derive(Debug, thiserror::Error)]
+pub enum TxError {
+    /// A transport-layer error occurred while sending data
+    #[error(transparent)]
+    Transport(#[from] datagram::TxError),
+
+    /// Failed to encode the message for transmission
+    #[error(transparent)]
+    Encode(#[from] prost::EncodeError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GatedTxError {
+    /// A transmission error occurred
+    #[error(transparent)]
+    Tx(#[from] TxError),
+
+    /// Gate errored while waiting for permission to send
+    ///
+    /// Gates provide rate limiting. This error occurs when the gate itself encountered an error
+    #[error("gate error: {0}")]
+    Gate(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
 
 pub struct Gated<S, G> {
     gate: G,
@@ -24,54 +69,57 @@ pub struct Gated<S, G> {
 impl<S: Sender, G: Gate> Sender for Gated<S, G>
 where
     S::Message: Message,
+    GatedTxError: From<<S as Sender>::Error>,
 {
     type Message = S::Message;
+    type Error = GatedTxError;
 
-    fn send(&mut self, msg: Self::Message) -> Result<()> {
+    fn send(&mut self, msg: Self::Message) -> Result<(), Self::Error> {
         let msg_size = msg.encoded_len();
-        self.gate.wait(msg_size)?;
+        self.gate.wait(msg_size).map_err(GatedTxError::Gate)?;
         self.ungated.send(msg)?;
         Ok(())
     }
 }
 
-impl<S: AsyncSender, G: AsyncGate + Send> AsyncSender for Gated<S, G>
+impl<S: AsyncSender, G: gate::AsyncGate + Send> AsyncSender for Gated<S, G>
 where
     S::Message: Message,
+    GatedTxError: From<<S as AsyncSender>::Error>,
 {
     type Message = S::Message;
+    type Error = GatedTxError;
 
-    async fn send(&mut self, msg: Self::Message) -> Result<()> {
+    async fn send(&mut self, msg: Self::Message) -> Result<(), Self::Error> {
         let msg_size = msg.encoded_len();
-        self.gate.wait(msg_size).await?;
+        self.gate.wait(msg_size).await.map_err(GatedTxError::Gate)?;
         self.ungated.send(msg).await?;
         Ok(())
     }
 }
 
-impl<S: AsyncFlushable, G: AsyncGate + Send> AsyncFlushable for Gated<S, G>
+impl<S: AsyncFlushable, G: gate::AsyncGate + Send> AsyncFlushable for Gated<S, G>
 where
     S::Message: Message,
+    GatedTxError: From<<S as AsyncSender>::Error>,
 {
-    async fn flush(&mut self) -> Result<()> {
-        self.ungated.flush().await
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(self.ungated.flush().await?)
     }
 }
 
-fn encode<ApiSm, WireSm>(msg: ApiSm) -> Result<Bytes>
+fn encode<ApiSm, WireSm>(msg: ApiSm) -> Bytes
 where
-    WireSm: Message,
-    ApiSm: TryInto<WireSm>,
-    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
+    WireSm: Message + From<ApiSm>,
 {
-    Ok(Bytes::from(msg.try_into()?.encode_to_vec()))
+    Bytes::from(WireSm::from(msg).encode_to_vec())
 }
 
-fn decode<ApiRm, WireRm>(dg: Bytes) -> Result<(ApiRm, usize)>
+fn decode<ApiRm, WireRm>(dg: Bytes) -> Result<(ApiRm, usize), RxError>
 where
     WireRm: Message + Default,
     ApiRm: TryFrom<WireRm>,
-    <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
+    RxError: From<<ApiRm as TryFrom<WireRm>>::Error>,
 {
     let dg_len = dg.len();
     let msg = WireRm::decode(dg)?.try_into()?;
@@ -81,24 +129,25 @@ where
 mod sync_impls {
     use super::*;
 
-    pub(super) fn do_send<T, ApiSm, WireSm>(dg_transport: &mut T, msg: ApiSm) -> Result<()>
+    pub(super) fn do_send<T, ApiSm, WireSm>(dg_transport: &mut T, msg: ApiSm) -> Result<(), TxError>
     where
         T: transport::Transmit,
-        WireSm: Message,
-        ApiSm: TryInto<WireSm>,
-        <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
+        WireSm: Message + From<ApiSm>,
+        TxError: From<<T as transport::Transmit>::Error>,
     {
-        let dg = encode(msg)?;
+        let dg = encode::<_, WireSm>(msg);
         dg_transport.transmit(dg)?;
         Ok(())
     }
 
-    pub(super) fn do_receive<T, ApiRm, WireRm>(dg_transport: &mut T) -> Result<(ApiRm, usize)>
+    pub(super) fn do_receive<T, ApiRm, WireRm>(
+        dg_transport: &mut T,
+    ) -> Result<(ApiRm, usize), RxError>
     where
         T: transport::Receive,
         WireRm: Message + Default,
         ApiRm: TryFrom<WireRm>,
-        <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
+        RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::Receive>::Error>,
     {
         decode(dg_transport.receive()?)
     }
@@ -107,24 +156,29 @@ mod sync_impls {
 mod async_impls {
     use super::*;
 
-    pub(super) async fn do_send<T, ApiSm, WireSm>(dg_transport: &mut T, msg: ApiSm) -> Result<()>
+    pub(super) async fn do_send<T, ApiSm, WireSm>(
+        dg_transport: &mut T,
+        msg: ApiSm,
+    ) -> Result<(), TxError>
     where
         T: transport::AsyncTransmit,
-        WireSm: Message,
-        ApiSm: TryInto<WireSm>,
-        <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
+        WireSm: Message + From<ApiSm>,
+        TxError: From<<T as transport::AsyncTransmit>::Error>,
     {
-        let dg = encode(msg)?;
+        let dg = encode::<_, WireSm>(msg);
         dg_transport.transmit(dg).await?;
         Ok(())
     }
 
-    pub(super) async fn do_receive<T, ApiRm, WireRm>(dg_transport: &mut T) -> Result<(ApiRm, usize)>
+    pub(super) async fn do_receive<T, ApiRm, WireRm>(
+        dg_transport: &mut T,
+    ) -> Result<(ApiRm, usize), RxError>
     where
         T: transport::AsyncReceive,
         WireRm: Message + Default,
         ApiRm: TryFrom<WireRm>,
-        <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
+        RxError:
+            From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::AsyncReceive>::Error>,
     {
         decode(dg_transport.receive().await?)
     }
@@ -165,10 +219,12 @@ where
     T: transport::Receive,
     WireRm: Message + Default,
     ApiRm: TryFrom<WireRm>,
-    <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
+    RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::Receive>::Error>,
 {
     type Message = ApiRm;
-    fn receive_with_len(&mut self) -> Result<(Self::Message, usize)> {
+    type Error = RxError;
+
+    fn receive_with_len(&mut self) -> Result<(Self::Message, usize), RxError> {
         sync_impls::do_receive(&mut self.transport)
     }
 }
@@ -210,11 +266,12 @@ where
     T: transport::AsyncReceive + 'static,
     WireRm: Message + Default + 'static,
     ApiRm: TryFrom<WireRm> + Send + 'static,
-    <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync,
+    RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::AsyncReceive>::Error>,
 {
     type Message = ApiRm;
+    type Error = RxError;
 
-    async fn receive_with_len(&mut self) -> Result<(Self::Message, usize)> {
+    async fn receive_with_len(&mut self) -> Result<(Self::Message, usize), Self::Error> {
         async_impls::do_receive(&mut self.transport).await
     }
 }
@@ -254,7 +311,6 @@ where
     T: transport::Transmit,
     WireSm: Message,
     ApiSm: TryInto<WireSm>,
-    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
 {
     /// Create a [`Self`] which limits the rate at which messages are sent based on the
     /// provided [`Gate`]
@@ -269,13 +325,14 @@ where
 impl<T, ApiSm, WireSm> Sender for SenderSimplex<T, ApiSm, WireSm>
 where
     T: transport::Transmit,
-    WireSm: Message,
-    ApiSm: TryInto<WireSm>,
-    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
+    WireSm: Message + From<ApiSm>,
+    TxError: From<<T as transport::Transmit>::Error>,
 {
     type Message = ApiSm;
-    fn send(&mut self, msg: Self::Message) -> Result<()> {
-        sync_impls::do_send(&mut self.transport, msg)
+    type Error = TxError;
+
+    fn send(&mut self, msg: Self::Message) -> Result<(), Self::Error> {
+        sync_impls::do_send::<_, _, WireSm>(&mut self.transport, msg)
     }
 }
 
@@ -321,14 +378,15 @@ impl<T: transport::AsyncTransmit, ApiSm, WireSm> AsRef<T> for AsyncSenderSimplex
 impl<T, ApiSm, WireSm> AsyncSender for AsyncSenderSimplex<T, ApiSm, WireSm>
 where
     T: transport::AsyncTransmit + 'static,
-    WireSm: Message + 'static,
-    ApiSm: TryInto<WireSm> + Send + 'static,
-    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync,
+    WireSm: Message + From<ApiSm> + 'static,
+    ApiSm: Send,
+    TxError: From<<T as transport::AsyncTransmit>::Error>,
 {
     type Message = ApiSm;
+    type Error = TxError;
 
-    async fn send(&mut self, msg: Self::Message) -> Result<()> {
-        async_impls::do_send(&mut self.transport, msg).await
+    async fn send(&mut self, msg: Self::Message) -> Result<(), Self::Error> {
+        async_impls::do_send::<_, _, WireSm>(&mut self.transport, msg).await
     }
 }
 
@@ -382,10 +440,12 @@ where
     T: transport::Receive + transport::Transmit,
     WireRm: Message + Default,
     ApiRm: TryFrom<WireRm>,
-    <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync + 'static,
+    RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::Receive>::Error>,
 {
     type Message = ApiRm;
-    fn receive_with_len(&mut self) -> Result<(Self::Message, usize)> {
+    type Error = RxError;
+
+    fn receive_with_len(&mut self) -> Result<(Self::Message, usize), Self::Error> {
         sync_impls::do_receive(&mut self.transport)
     }
 }
@@ -393,13 +453,14 @@ where
 impl<T, ApiRm, ApiSm, WireRm, WireSm> Sender for Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
 where
     T: transport::Receive + transport::Transmit,
-    WireSm: Message,
-    ApiSm: TryInto<WireSm>,
-    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync + 'static,
+    WireSm: Message + From<ApiSm>,
+    TxError: From<<T as transport::Transmit>::Error>,
 {
     type Message = ApiSm;
-    fn send(&mut self, msg: Self::Message) -> Result<()> {
-        sync_impls::do_send(&mut self.transport, msg)
+    type Error = TxError;
+
+    fn send(&mut self, msg: Self::Message) -> Result<(), Self::Error> {
+        sync_impls::do_send::<_, _, WireSm>(&mut self.transport, msg)
     }
 }
 
@@ -455,13 +516,13 @@ where
     T: transport::AsyncReceive + transport::AsyncTransmit + 'static,
     WireRm: Message + Default + 'static,
     ApiRm: TryFrom<WireRm> + Send + 'static,
-    <ApiRm as TryFrom<WireRm>>::Error: Error + Send + Sync,
-    WireSm: Send + 'static,
-    ApiSm: Send + 'static,
+    RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::AsyncReceive>::Error>,
+    Self: Send,
 {
     type Message = ApiRm;
+    type Error = RxError;
 
-    async fn receive_with_len(&mut self) -> Result<(Self::Message, usize)> {
+    async fn receive_with_len(&mut self) -> Result<(Self::Message, usize), Self::Error> {
         async_impls::do_receive(&mut self.transport).await
     }
 }
@@ -469,16 +530,17 @@ where
 impl<T, ApiRm, ApiSm, WireRm, WireSm> AsyncSender for AsyncDuplex<T, ApiRm, ApiSm, WireRm, WireSm>
 where
     T: transport::AsyncReceive + transport::AsyncTransmit + 'static,
-    WireSm: Message + 'static,
-    ApiSm: TryInto<WireSm> + Send + 'static,
-    <ApiSm as TryInto<WireSm>>::Error: Error + Send + Sync,
-    WireRm: Send + 'static,
-    ApiRm: Send + 'static,
+    ApiSm: Send,
+    ApiRm: Send,
+    WireRm: Send,
+    WireSm: Message + From<ApiSm> + 'static,
+    TxError: From<<T as transport::AsyncTransmit>::Error>,
 {
     type Message = ApiSm;
+    type Error = TxError;
 
-    async fn send(&mut self, msg: Self::Message) -> Result<()> {
-        async_impls::do_send(&mut self.transport, msg).await
+    async fn send(&mut self, msg: Self::Message) -> Result<(), Self::Error> {
+        async_impls::do_send::<_, _, WireSm>(&mut self.transport, msg).await
     }
 }
 
@@ -506,3 +568,94 @@ pub type AsyncGatedServerMediaChannel<G> = Gated<
     AsyncSenderSimplex<datagram::AsyncTransmitter, media::ServerToClient, media::ServerToClient>,
     G,
 >;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rx_error_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RxError>();
+    }
+
+    #[test]
+    fn test_tx_error_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<TxError>();
+    }
+
+    #[test]
+    fn test_gated_tx_error_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<GatedTxError>();
+    }
+
+    #[test]
+    fn test_rx_error_from_transport() {
+        let transport_err = datagram::RxError::Accept;
+        let error: RxError = transport_err.into();
+        assert!(matches!(error, RxError::Transport(_)));
+    }
+
+    #[test]
+    fn test_tx_error_from_transport() {
+        let quic_err =
+            crate::quic::Error::from(s2n_quic::connection::Error::immediate_close("test"));
+        let transport_err = datagram::TxError::from(quic_err);
+        let error: TxError = transport_err.into();
+        assert!(matches!(error, TxError::Transport(_)));
+    }
+
+    #[test]
+    fn test_gated_tx_error_from_tx() {
+        let quic_err =
+            crate::quic::Error::from(s2n_quic::connection::Error::immediate_close("test"));
+        let transport_err = datagram::TxError::from(quic_err);
+        let tx_err = TxError::from(transport_err);
+        let error: GatedTxError = tx_err.into();
+        assert!(matches!(error, GatedTxError::Tx(_)));
+    }
+
+    #[test]
+    fn test_error_conversions() {
+        // Test that error types can be converted correctly through the chain
+        let quic_err =
+            crate::quic::Error::from(s2n_quic::connection::Error::immediate_close("test"));
+        let datagram_tx_err = datagram::TxError::from(quic_err);
+        let codec_tx_err = TxError::from(datagram_tx_err);
+        assert!(matches!(codec_tx_err, TxError::Transport(_)));
+
+        let datagram_rx_err = datagram::RxError::Accept;
+        let codec_rx_err = RxError::from(datagram_rx_err);
+        assert!(matches!(codec_rx_err, RxError::Transport(_)));
+    }
+
+    #[test]
+    fn test_gated_tx_error_gate() {
+        use std::io;
+        let gate_err = Box::new(io::Error::new(io::ErrorKind::Other, "gate error"))
+            as Box<dyn std::error::Error + Send + Sync>;
+        let error = GatedTxError::Gate(gate_err);
+        let display_str = format!("{}", error);
+        assert!(display_str.contains("gate error"));
+    }
+
+    #[test]
+    fn test_rx_error_display() {
+        let error = RxError::Transport(datagram::RxError::Accept);
+        let display_str = format!("{}", error);
+        assert!(display_str.contains("connection closed"));
+    }
+
+    #[test]
+    fn test_tx_error_display() {
+        let quic_err =
+            crate::quic::Error::from(s2n_quic::connection::Error::immediate_close("test"));
+        let transport_err = datagram::TxError::from(quic_err);
+        let error = TxError::Transport(transport_err);
+        let display_str = format!("{}", error);
+        // Just verify it can be displayed without panicking
+        assert!(!display_str.is_empty());
+    }
+}

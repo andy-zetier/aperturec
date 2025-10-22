@@ -1,6 +1,16 @@
-use anyhow::Result;
-use std::future::Future;
+use std::{error, fmt, future::Future, io};
 use tokio::runtime::Runtime as TokioRuntime;
+
+#[derive(Debug)]
+pub struct BuildRuntimeError(io::Error);
+
+impl fmt::Display for BuildRuntimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to build tokio runtime: {}", self.0)
+    }
+}
+
+impl error::Error for BuildRuntimeError {}
 
 /// Call async stuff synchronously on a provided tokio runtime. This trait is implemented on all
 /// types which implement [`Future`], allowing synchronous code to await any future simply by
@@ -62,10 +72,11 @@ where
 }
 
 /// Create a new async runtime with all the tokio features enabled
-pub(crate) fn new_async_rt() -> Result<TokioRuntime> {
-    Ok(tokio::runtime::Builder::new_multi_thread()
+pub(crate) fn new_async_rt() -> Result<TokioRuntime, BuildRuntimeError> {
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?)
+        .build()
+        .map_err(BuildRuntimeError)
 }
 
 #[cfg(test)]
