@@ -49,5 +49,6 @@ jobs:
             exit 0
           fi
       - run: cargo check --workspace
+      - run: cargo check --release --workspace
       - run: cargo clippy --workspace --no-deps -- -Dwarnings
       - run: cargo test --workspace
