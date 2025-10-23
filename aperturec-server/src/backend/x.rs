@@ -812,14 +812,10 @@ impl Backend for X {
         }
     }
 
-    async fn clear_focus(&self) -> Result<()> {
-        self.connection
-            .checked_void_request(x::SetInputFocus {
-                revert_to: x::InputFocus::None,
-                focus: x::Window::none(),
-                time: x::CURRENT_TIME,
-            })
-            .await
+    async fn reset_session_state(&self) -> Result<()> {
+        self.release_pressed_keys().await?;
+        self.clear_focus().await?;
+        Ok(())
     }
 }
 
@@ -834,6 +830,57 @@ impl X {
     pub const DEFAULT_MAX_HEIGHT: usize = Self::DEFAULT_MAX_DISPLAY_COUNT * 2160;
     pub const MIN_WIDTH: usize = 800;
     pub const MIN_HEIGHT: usize = 600;
+
+    async fn clear_focus(&self) -> Result<()> {
+        debug!("Sending SetInputFocus None");
+        self.connection
+            .checked_void_request(x::SetInputFocus {
+                revert_to: x::InputFocus::None,
+                focus: x::Window::none(),
+                time: x::CURRENT_TIME,
+            })
+            .await
+    }
+
+    async fn release_pressed_keys(&self) -> Result<()> {
+        let reply = self
+            .connection
+            .checked_request_with_reply(x::QueryKeymap {})
+            .await?;
+
+        for (index, byte_ref) in reply.keys().iter().enumerate() {
+            let byte = *byte_ref;
+            if byte == 0 {
+                continue;
+            }
+
+            for bit in 0..8 {
+                if byte & (1u8 << bit) == 0 {
+                    continue;
+                }
+
+                let keycode = (index * 8 + bit) as u8;
+                if keycode < self.connection.min_keycode || keycode > self.connection.max_keycode {
+                    continue;
+                }
+
+                debug!("Sending KeyRelease for held keycode {}", keycode);
+                let req = xtest::FakeInput {
+                    r#type: 3,
+                    detail: keycode,
+                    time: x::CURRENT_TIME,
+                    root: self.root_window,
+                    root_x: 0,
+                    root_y: 0,
+                    deviceid: 0,
+                };
+
+                self.connection.checked_void_request(req).await?;
+            }
+        }
+
+        Ok(())
+    }
 
     async fn screen_resources(&self) -> Result<randr::GetScreenResourcesCurrentReply> {
         self.connection

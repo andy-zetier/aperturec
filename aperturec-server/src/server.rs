@@ -391,8 +391,8 @@ impl<B: Backend> AsyncTryTransitionable<SessionInactive<B>, BackendInitialized<B
             )
             .peekable();
 
-            if let Err(e) = self.state.backend.clear_focus().await {
-                warn!(%e, "failed to clear X focus");
+            if let Err(e) = self.state.backend.reset_session_state().await {
+                warn!(%e, "Failed to reset backend session state");
             }
 
             Ok(Server {
@@ -895,6 +895,7 @@ where
                     ct.cancel();
                 }
                 Ok(())= &mut ec_handler_channels.client_inactive_rx, if !cleanup_started => {
+                    debug!("client inactive");
                     if gb_reason.is_none() {
                         gb_reason = Some(cm::ServerGoodbyeReason::InactiveTimeout);
                     }
@@ -937,11 +938,11 @@ where
 
         debug!("Terminating");
         let backend_out = match backend_result.expect("backend result still none") {
-            Ok(be) => {
-                if let Err(e) = be.clear_focus().await {
-                    warn!(%e, "failed to clear X focus");
+            Ok(backend) => {
+                if let Err(e) = backend.reset_session_state().await {
+                    warn!(%e, "Failed to reset backend session state");
                 }
-                Some(be)
+                Some(backend)
             }
             Err(error) => {
                 error!(%error, "Backend unrecoverable");
