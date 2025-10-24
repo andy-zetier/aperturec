@@ -47,7 +47,7 @@ impl AsyncSession {
     }
 
     pub fn remote_addr(&self) -> Result<SocketAddr, io::Error> {
-        Ok(self.mc.as_ref().as_ref().remote_addr()?)
+        Ok(self.cc.as_ref().as_ref().connection().remote_addr()?)
     }
 }
 
@@ -109,7 +109,7 @@ impl Session {
     }
 
     pub fn remote_addr(&self) -> Result<SocketAddr, io::Error> {
-        Ok(self.mc.as_ref().as_ref().remote_addr()?)
+        Ok(self.cc.as_ref().as_ref().connection().remote_addr()?)
     }
 }
 

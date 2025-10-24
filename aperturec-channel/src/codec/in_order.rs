@@ -3,14 +3,20 @@
 //! Built on-top of the [`crate::transport::stream`] API, this provides methods for sending and
 //! receiving messages reliably and in-order.
 
-use super::*;
+use super::{
+    AsyncFlushable, AsyncReceiver, AsyncSender, Flushable, Receiver, Sender, TimeoutReceiver,
+};
 use crate::transport::{self, stream};
 
 use aperturec_protocol::{control, event, tunnel};
 
 use bytes::{Bytes, BytesMut};
 use prost::Message;
-use std::{convert::Infallible, marker::PhantomData};
+use std::{
+    convert::Infallible,
+    marker::PhantomData,
+    time::{Duration, Instant},
+};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Errors that can occur when receiving messages over an in-order channel
@@ -61,13 +67,22 @@ fn encode<SM: Message>(msg: &SM) -> Result<Bytes, prost::EncodeError> {
 mod sync_impls {
     use super::*;
 
-    pub(super) fn receive<T: transport::Receive, RM: Message + Default>(
-        transport: &mut T,
+    /// Internal helper that implements the common receive logic for both blocking and timeout cases.
+    ///
+    /// The `recv_fn` closure should attempt to receive bytes, returning:
+    /// - `Ok(Some(bytes))` when bytes are successfully received
+    /// - `Ok(None)` when a timeout occurs (only applicable for timeout variant)
+    /// - `Err(e)` when an error occurs
+    fn receive_internal<RM, E, F>(
         buf: &mut Vec<u8>,
-    ) -> Result<(RM, usize), RxError>
+        mut recv_fn: F,
+    ) -> Result<Option<(RM, usize)>, RxError>
     where
-        RxError: From<<T as transport::Receive>::Error>,
+        RM: Message + Default,
+        RxError: From<E>,
+        F: FnMut() -> Result<Option<Bytes>, E>,
     {
+        // Decode the length delimiter
         let mut delim_len = 0;
         let msg_len = loop {
             match prost::decode_length_delimiter(&buf[..delim_len]) {
@@ -75,25 +90,65 @@ mod sync_impls {
                 Err(_) => {
                     delim_len += 1;
                     if delim_len > buf.len() {
-                        buf.extend(transport.receive()?);
+                        match recv_fn()? {
+                            Some(bytes) => buf.extend(bytes),
+                            None => return Ok(None),
+                        }
                     }
                 }
             }
         };
 
+        // Receive remaining message bytes
         let total_len = delim_len + msg_len;
         while total_len > buf.len() {
-            buf.extend(transport.receive()?);
+            match recv_fn()? {
+                Some(bytes) => buf.extend(bytes),
+                None => return Ok(None),
+            }
         }
-        let remaining_len = buf.len() - total_len;
 
+        // Decode the message
+        let remaining_len = buf.len() - total_len;
         let msg = RM::decode(&buf[delim_len..total_len])?;
 
+        // Clean up the buffer
         buf.rotate_left(total_len);
         buf[remaining_len..].zeroize();
         buf.truncate(remaining_len);
 
-        Ok((msg, total_len))
+        Ok(Some((msg, total_len)))
+    }
+
+    pub(super) fn receive_timeout<T: transport::TimeoutReceive, RM: Message + Default>(
+        transport: &mut T,
+        buf: &mut Vec<u8>,
+        timeout: Duration,
+    ) -> Result<Option<(RM, usize)>, RxError>
+    where
+        RxError: From<<T as transport::Receive>::Error>,
+    {
+        let start = Instant::now();
+        let mut remaining_time = timeout;
+
+        receive_internal(buf, || {
+            let result = transport.receive_timeout(remaining_time)?;
+            remaining_time = timeout.saturating_sub(Instant::now() - start);
+            Ok(result)
+        })
+    }
+
+    pub(super) fn receive<T: transport::Receive, RM: Message + Default>(
+        transport: &mut T,
+        buf: &mut Vec<u8>,
+    ) -> Result<(RM, usize), RxError>
+    where
+        RxError: From<<T as transport::Receive>::Error>,
+    {
+        // Safe unwrap: blocking receive always returns Some, never None (timeout only applies to timeout variant)
+        receive_internal(buf, || transport.receive().map(Some))
+            .transpose()
+            .unwrap()
     }
 
     pub(super) fn send<T: transport::Transmit, SM: Message>(
@@ -181,6 +236,12 @@ impl<T: transport::Receive, ApiRm, WireRm> ReceiverSimplex<T, ApiRm, WireRm> {
     }
 }
 
+impl<T: transport::Receive, ApiRm, WireRm> AsRef<T> for ReceiverSimplex<T, ApiRm, WireRm> {
+    fn as_ref(&self) -> &T {
+        &self.transport
+    }
+}
+
 impl<T, ApiRm, WireRm> Receiver for ReceiverSimplex<T, ApiRm, WireRm>
 where
     T: transport::Receive,
@@ -195,6 +256,29 @@ where
         let (msg, msg_len) =
             sync_impls::receive::<_, WireRm>(&mut self.transport, &mut self.receive_buf)?;
         Ok((msg.try_into()?, msg_len))
+    }
+}
+
+impl<T, ApiRm, WireRm> TimeoutReceiver for ReceiverSimplex<T, ApiRm, WireRm>
+where
+    T: transport::TimeoutReceive,
+    WireRm: Message + Default,
+    ApiRm: TryFrom<WireRm>,
+    RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::Receive>::Error>,
+{
+    fn receive_with_len_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<(Self::Message, usize)>, Self::Error> {
+        if let Some((msg, msg_len)) = sync_impls::receive_timeout::<_, WireRm>(
+            &mut self.transport,
+            &mut self.receive_buf,
+            timeout,
+        )? {
+            Ok(Some((msg.try_into()?, msg_len)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -216,6 +300,14 @@ impl<T: transport::AsyncReceive, ApiRm, WireRm> AsyncReceiverSimplex<T, ApiRm, W
             _api_rm: PhantomData,
             _wire_rm: PhantomData,
         }
+    }
+}
+
+impl<T: transport::AsyncReceive, ApiRm, WireRm> AsRef<T>
+    for AsyncReceiverSimplex<T, ApiRm, WireRm>
+{
+    fn as_ref(&self) -> &T {
+        &self.transport
     }
 }
 
@@ -252,6 +344,12 @@ impl<T: transport::Transmit, ApiSm, WireSm> SenderSimplex<T, ApiSm, WireSm> {
             _api_sm: PhantomData,
             _wire_sm: PhantomData,
         }
+    }
+}
+
+impl<T: transport::Transmit, ApiSm, WireSm> AsRef<T> for SenderSimplex<T, ApiSm, WireSm> {
+    fn as_ref(&self) -> &T {
+        &self.transport
     }
 }
 
@@ -296,6 +394,12 @@ impl<T: transport::AsyncTransmit, ApiSm, WireSm> AsyncSenderSimplex<T, ApiSm, Wi
             _api_sm: PhantomData,
             _wire_sm: PhantomData,
         }
+    }
+}
+
+impl<T: transport::AsyncTransmit, ApiSm, WireSm> AsRef<T> for AsyncSenderSimplex<T, ApiSm, WireSm> {
+    fn as_ref(&self) -> &T {
+        &self.transport
     }
 }
 
@@ -353,6 +457,14 @@ impl<T: transport::Receive + transport::Transmit, ApiRm, ApiSm, WireRm, WireSm>
     }
 }
 
+impl<T: transport::Receive + transport::Transmit, ApiRm, ApiSm, WireRm, WireSm> AsRef<T>
+    for Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
+{
+    fn as_ref(&self) -> &T {
+        &self.transport
+    }
+}
+
 type DuplexReceiveHalf<T, ApiRm, WireRm> =
     ReceiverSimplex<<T as transport::Splitable>::ReceiveHalf, ApiRm, WireRm>;
 type DuplexSendHalf<T, ApiSm, WireSm> =
@@ -403,6 +515,29 @@ where
         let (msg, msg_len) =
             sync_impls::receive::<_, WireRm>(&mut self.transport, &mut self.receive_buf)?;
         Ok((msg.try_into()?, msg_len))
+    }
+}
+
+impl<T, ApiRm, ApiSm, WireRm, WireSm> TimeoutReceiver for Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
+where
+    T: transport::TimeoutReceive + transport::Transmit,
+    WireRm: Message + Default,
+    ApiRm: TryFrom<WireRm>,
+    RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::Receive>::Error>,
+{
+    fn receive_with_len_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<(Self::Message, usize)>, Self::Error> {
+        if let Some((msg, msg_len)) = sync_impls::receive_timeout::<_, WireRm>(
+            &mut self.transport,
+            &mut self.receive_buf,
+            timeout,
+        )? {
+            Ok(Some((msg.try_into()?, msg_len)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -469,6 +604,14 @@ where
             _wire_rm: PhantomData,
             _wire_sm: PhantomData,
         }
+    }
+}
+
+impl<T: transport::AsyncReceive + transport::AsyncTransmit, ApiRm, ApiSm, WireRm, WireSm> AsRef<T>
+    for AsyncDuplex<T, ApiRm, ApiSm, WireRm, WireSm>
+{
+    fn as_ref(&self) -> &T {
+        &self.transport
     }
 }
 
@@ -754,6 +897,59 @@ pub type AsyncClientTunnelChannelSendHalf = AsyncSenderSimplex<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        codec::test_helpers::{EmptyMessage, LargeMessage, MessageWithOptional, SimpleMessage},
+        transport::{
+            Transmit,
+            stream::tests::{
+                AsyncInMemReceiver, AsyncInMemTransmitter, InMemReceiver, InMemTransmitter,
+                in_mem_async_tx_async_rx, in_mem_async_tx_sync_rx, in_mem_sync_tx_async_rx,
+                in_mem_sync_tx_sync_rx,
+            },
+        },
+    };
+    use std::{sync::Arc, time::Duration};
+    use tokio::runtime::Runtime as TokioRuntime;
+
+    fn build_sync_simplex_pair() -> (
+        SenderSimplex<InMemTransmitter, SimpleMessage, SimpleMessage>,
+        ReceiverSimplex<InMemReceiver, SimpleMessage, SimpleMessage>,
+    ) {
+        let (tx, rx) = in_mem_sync_tx_sync_rx();
+        (SenderSimplex::new(tx), ReceiverSimplex::new(rx))
+    }
+
+    fn build_async_simplex_pair() -> (
+        AsyncSenderSimplex<AsyncInMemTransmitter, SimpleMessage, SimpleMessage>,
+        AsyncReceiverSimplex<AsyncInMemReceiver, SimpleMessage, SimpleMessage>,
+    ) {
+        let (tx, rx) = in_mem_async_tx_async_rx();
+        (AsyncSenderSimplex::new(tx), AsyncReceiverSimplex::new(rx))
+    }
+
+    fn build_large_message_sync_pair() -> (
+        SenderSimplex<InMemTransmitter, LargeMessage, LargeMessage>,
+        ReceiverSimplex<InMemReceiver, LargeMessage, LargeMessage>,
+    ) {
+        let (tx, rx) = in_mem_sync_tx_sync_rx();
+        (SenderSimplex::new(tx), ReceiverSimplex::new(rx))
+    }
+
+    fn build_optional_message_sync_pair() -> (
+        SenderSimplex<InMemTransmitter, MessageWithOptional, MessageWithOptional>,
+        ReceiverSimplex<InMemReceiver, MessageWithOptional, MessageWithOptional>,
+    ) {
+        let (tx, rx) = in_mem_sync_tx_sync_rx();
+        (SenderSimplex::new(tx), ReceiverSimplex::new(rx))
+    }
+
+    fn build_empty_message_sync_pair() -> (
+        SenderSimplex<InMemTransmitter, EmptyMessage, EmptyMessage>,
+        ReceiverSimplex<InMemReceiver, EmptyMessage, EmptyMessage>,
+    ) {
+        let (tx, rx) = in_mem_sync_tx_sync_rx();
+        (SenderSimplex::new(tx), ReceiverSimplex::new(rx))
+    }
 
     #[test]
     fn test_rx_error_is_send_sync() {
@@ -792,7 +988,6 @@ mod tests {
 
     #[test]
     fn test_error_conversions() {
-        // Test that error types can be converted correctly through the chain
         let quic_err =
             crate::quic::Error::from(s2n_quic::connection::Error::immediate_close("test"));
         let stream_tx_err = stream::TxError::from(quic_err);
@@ -802,5 +997,539 @@ mod tests {
         let stream_rx_err = stream::RxError::Empty;
         let codec_rx_err = RxError::from(stream_rx_err);
         assert!(matches!(codec_rx_err, RxError::Transport(_)));
+    }
+
+    #[test]
+    fn test_sync_single_message() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "hello world".to_string(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_multiple_messages_ordered() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let messages = vec![
+            SimpleMessage {
+                data: "first".to_string(),
+            },
+            SimpleMessage {
+                data: "second".to_string(),
+            },
+            SimpleMessage {
+                data: "third".to_string(),
+            },
+            SimpleMessage {
+                data: "fourth".to_string(),
+            },
+        ];
+
+        for msg in &messages {
+            sender.send(msg.clone()).expect("send failed");
+        }
+
+        for expected in &messages {
+            let received = receiver.receive().expect("receive failed");
+            assert_eq!(&received, expected);
+        }
+    }
+
+    #[test]
+    fn test_sync_receive_with_len() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "test message".to_string(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+        let (received, byte_len) = receiver.receive_with_len().expect("receive failed");
+
+        assert_eq!(received, msg);
+        assert!(byte_len > 0);
+        let expected_len = msg.encoded_len() + prost::length_delimiter_len(msg.encoded_len());
+        assert_eq!(byte_len, expected_len);
+    }
+
+    #[test]
+    fn test_sync_empty_message() {
+        let (mut sender, mut receiver) = build_empty_message_sync_pair();
+
+        let msg = EmptyMessage {};
+
+        sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_large_message() {
+        let (mut sender, mut receiver) = build_large_message_sync_pair();
+
+        let payload = vec![0xAB; 1024 * 1024];
+        let msg = LargeMessage {
+            payload: payload.clone(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received.payload.len(), payload.len());
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_very_large_message() {
+        let (mut sender, mut receiver) = build_large_message_sync_pair();
+
+        let payload = vec![0xCD; 10 * 1024 * 1024];
+        let msg = LargeMessage {
+            payload: payload.clone(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received.payload.len(), payload.len());
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_message_with_optional_present() {
+        let (mut sender, mut receiver) = build_optional_message_sync_pair();
+
+        let msg = MessageWithOptional {
+            required_field: "required".to_string(),
+            optional_field: Some("optional".to_string()),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_message_with_optional_absent() {
+        let (mut sender, mut receiver) = build_optional_message_sync_pair();
+
+        let msg = MessageWithOptional {
+            required_field: "required".to_string(),
+            optional_field: None,
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_rapid_messages() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let count = 1000;
+        for i in 0..count {
+            let msg = SimpleMessage {
+                data: format!("message_{}", i),
+            };
+            sender.send(msg).expect("send failed");
+        }
+
+        for i in 0..count {
+            let received = receiver.receive().expect("receive failed");
+            assert_eq!(received.data, format!("message_{}", i));
+        }
+    }
+
+    #[test]
+    fn test_sync_interleaved_send_receive() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        for i in 0..100 {
+            let msg = SimpleMessage {
+                data: format!("msg_{}", i),
+            };
+            sender.send(msg.clone()).expect("send failed");
+            let received = receiver.receive().expect("receive failed");
+            assert_eq!(received, msg);
+        }
+    }
+
+    #[test]
+    fn test_sync_timeout_zero_duration() {
+        let (_sender, mut receiver) = build_sync_simplex_pair();
+
+        let result = receiver
+            .receive_timeout(Duration::ZERO)
+            .expect("timeout should not error");
+
+        assert!(result.is_none(), "should timeout immediately");
+    }
+
+    #[test]
+    fn test_sync_timeout_with_len() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "timeout test".to_string(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+
+        let result = receiver
+            .receive_with_len_timeout(Duration::from_millis(10))
+            .expect("receive failed");
+
+        assert!(result.is_some(), "should receive message");
+        let (received_msg, byte_len) = result.unwrap();
+        assert_eq!(received_msg, msg);
+        assert!(byte_len > 0);
+    }
+
+    #[test]
+    fn test_sync_timeout_with_len_no_data() {
+        let (_sender, mut receiver) = build_sync_simplex_pair();
+
+        let result = receiver
+            .receive_with_len_timeout(Duration::from_millis(10))
+            .expect("timeout should not error");
+
+        assert!(result.is_none(), "should timeout with None");
+    }
+
+    #[test]
+    fn test_sync_multiple_timeouts() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let result1 = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout 1");
+        assert!(result1.is_none());
+
+        sender
+            .send(SimpleMessage {
+                data: "first".to_string(),
+            })
+            .expect("send 1");
+
+        let result2 = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout 2");
+        assert!(result2.is_some());
+        assert_eq!(result2.unwrap().data, "first");
+
+        let result3 = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout 3");
+        assert!(result3.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_async_single_message() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "async hello".to_string(),
+        };
+
+        sender.send(msg.clone()).await.expect("send failed");
+        let received = receiver.receive().await.expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[tokio::test]
+    async fn test_async_multiple_messages_ordered() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let messages = vec![
+            SimpleMessage {
+                data: "async1".to_string(),
+            },
+            SimpleMessage {
+                data: "async2".to_string(),
+            },
+            SimpleMessage {
+                data: "async3".to_string(),
+            },
+        ];
+
+        for msg in &messages {
+            sender.send(msg.clone()).await.expect("send failed");
+        }
+
+        for expected in &messages {
+            let received = receiver.receive().await.expect("receive failed");
+            assert_eq!(&received, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_async_receive_with_len() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "async len test".to_string(),
+        };
+
+        sender.send(msg.clone()).await.expect("send failed");
+        let (received, byte_len) = receiver.receive_with_len().await.expect("receive failed");
+
+        assert_eq!(received, msg);
+        assert!(byte_len > 0);
+    }
+
+    #[tokio::test]
+    async fn test_async_rapid_messages() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let count = 500;
+        for i in 0..count {
+            sender
+                .send(SimpleMessage {
+                    data: format!("async_{}", i),
+                })
+                .await
+                .expect("send failed");
+        }
+
+        for i in 0..count {
+            let received = receiver.receive().await.expect("receive failed");
+            assert_eq!(received.data, format!("async_{}", i));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_async_concurrent_sends() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let send_task = tokio::spawn(async move {
+            for i in 0..100 {
+                sender
+                    .send(SimpleMessage {
+                        data: format!("concurrent_{}", i),
+                    })
+                    .await
+                    .expect("send failed");
+            }
+            sender
+        });
+
+        let mut received_count = 0;
+        for _ in 0..100 {
+            let _msg = receiver.receive().await.expect("receive failed");
+            received_count += 1;
+        }
+
+        assert_eq!(received_count, 100);
+        let _sender = send_task.await.expect("send task failed");
+    }
+
+    #[test]
+    fn test_sync_timeout_during_message_receipt() {
+        use bytes::BytesMut;
+        use prost::Message as ProstMessage;
+
+        let msg = SimpleMessage {
+            data: "test partial timeout".to_string(),
+        };
+        let mut encoded = BytesMut::new();
+        msg.encode_length_delimited(&mut encoded).unwrap();
+        let full_bytes = encoded.freeze();
+
+        let split_point = full_bytes.len() / 2;
+        let first_part = full_bytes.slice(0..split_point);
+        let second_part = full_bytes.slice(split_point..);
+
+        let (mut tx, rx) = in_mem_sync_tx_sync_rx();
+        let mut receiver = ReceiverSimplex::<_, SimpleMessage, SimpleMessage>::new(rx);
+
+        tx.transmit(first_part).expect("send first part");
+
+        let result = receiver
+            .receive_timeout(Duration::from_millis(20))
+            .expect("timeout should not error");
+
+        assert!(
+            result.is_none(),
+            "Should timeout when message is incomplete"
+        );
+
+        tx.transmit(second_part).expect("send second part");
+
+        let received = receiver.receive().expect("should receive complete message");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_timeout_during_length_delimiter() {
+        use bytes::BytesMut;
+        use prost::Message as ProstMessage;
+
+        let msg = SimpleMessage {
+            data: "test delimiter timeout".to_string(),
+        };
+
+        let mut encoded = BytesMut::new();
+        msg.encode_length_delimited(&mut encoded).unwrap();
+        let full_bytes = encoded.freeze();
+
+        let (mut tx, rx) = in_mem_sync_tx_sync_rx();
+        let mut receiver = ReceiverSimplex::<_, SimpleMessage, SimpleMessage>::new(rx);
+
+        let result = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout should not error");
+
+        assert!(result.is_none(), "Should timeout with no data");
+
+        tx.transmit(full_bytes).expect("send complete");
+
+        let received = receiver.receive().expect("should receive");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_timeout_max_duration() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "delayed message".to_string(),
+        };
+
+        let sender_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            sender.send(msg.clone()).expect("send failed");
+        });
+
+        let result = receiver
+            .receive_timeout(Duration::MAX)
+            .expect("receive should not error");
+
+        assert!(
+            result.is_some(),
+            "should receive with Duration::MAX timeout"
+        );
+        sender_thread.join().unwrap();
+    }
+
+    #[test]
+    fn test_sync_timeout_buffer_preservation() {
+        use bytes::BytesMut;
+        use prost::Message as ProstMessage;
+
+        let msg = SimpleMessage {
+            data: "buffer test".to_string(),
+        };
+
+        let mut encoded = BytesMut::new();
+        msg.encode_length_delimited(&mut encoded).unwrap();
+        let full_bytes = encoded.freeze();
+
+        let part1 = full_bytes.slice(0..1);
+        let part2 = full_bytes.slice(1..);
+
+        let (mut tx, rx) = in_mem_sync_tx_sync_rx();
+        let mut receiver = ReceiverSimplex::<_, SimpleMessage, SimpleMessage>::new(rx);
+
+        tx.transmit(part1).expect("send part1");
+
+        let result = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout should not error");
+        assert!(result.is_none(), "should timeout with partial data");
+
+        let result = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout should not error");
+        assert!(result.is_none(), "should timeout again with partial data");
+
+        tx.transmit(part2).expect("send part2");
+
+        let received = receiver.receive().expect("should receive complete message");
+        assert_eq!(
+            received, msg,
+            "buffer should preserve partial data across timeouts"
+        );
+    }
+
+    #[test]
+    fn test_sync_to_async() {
+        let runtime = Arc::new(TokioRuntime::new().expect("runtime"));
+        let (tx, rx) = in_mem_sync_tx_async_rx(runtime.clone());
+
+        let mut sender = SenderSimplex::<_, SimpleMessage, SimpleMessage>::new(tx);
+        let mut receiver = AsyncReceiverSimplex::<_, SimpleMessage, SimpleMessage>::new(rx);
+
+        let msg = SimpleMessage {
+            data: "sync to async".to_string(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+
+        let received =
+            runtime.block_on(async { receiver.receive().await.expect("receive failed") });
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_async_to_sync() {
+        let runtime = Arc::new(TokioRuntime::new().expect("runtime"));
+        let (tx, rx) = in_mem_async_tx_sync_rx(runtime.clone());
+
+        let mut sender = AsyncSenderSimplex::<_, SimpleMessage, SimpleMessage>::new(tx);
+        let mut receiver = ReceiverSimplex::<_, SimpleMessage, SimpleMessage>::new(rx);
+
+        let msg = SimpleMessage {
+            data: "async to sync".to_string(),
+        };
+
+        runtime.block_on(async {
+            sender.send(msg.clone()).await.expect("send failed");
+        });
+
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_mixed_timeout() {
+        let runtime = Arc::new(TokioRuntime::new().expect("runtime"));
+        let (tx, rx) = in_mem_async_tx_sync_rx(runtime.clone());
+
+        let mut sender = AsyncSenderSimplex::<_, SimpleMessage, SimpleMessage>::new(tx);
+        let mut receiver = ReceiverSimplex::<_, SimpleMessage, SimpleMessage>::new(rx);
+
+        let result = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout");
+        assert!(result.is_none());
+
+        let msg = SimpleMessage {
+            data: "mixed".to_string(),
+        };
+        runtime.block_on(async {
+            sender.send(msg.clone()).await.expect("send failed");
+        });
+
+        let result = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("receive failed");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), msg);
     }
 }

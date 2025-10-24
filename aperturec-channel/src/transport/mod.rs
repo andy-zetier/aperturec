@@ -1,6 +1,6 @@
 //! Low-level, byte-oriented API
 use bytes::Bytes;
-use std::error::Error;
+use std::{error::Error, time::Duration};
 
 pub mod datagram;
 pub mod stream;
@@ -9,8 +9,20 @@ pub mod stream;
 pub trait Receive {
     /// The error type returned when receiving fails
     type Error: Error;
-    /// Receive a datagram or return an error
+    /// Receive data or return an error
     fn receive(&mut self) -> Result<Bytes, Self::Error>;
+}
+
+/// A [`Receive`] implementation that can stop waiting once a timeout elapses.
+///
+/// # Timeout Semantics
+///
+/// Returns `Ok(Some(bytes))` when data arrives within the timeout, `Ok(None)` when the timeout
+/// expires without data, and `Err(e)` for transport errors. Timeouts represent best-effort
+/// maximum wait times
+pub trait TimeoutReceive: Receive {
+    /// Wait for up to `timeout` for data, returning `Ok(None)` when no bytes arrive in time.
+    fn receive_timeout(&mut self, timeout: Duration) -> Result<Option<Bytes>, Self::Error>;
 }
 
 /// A trait for types which can send bytes
@@ -46,7 +58,7 @@ pub trait Splitable {
 mod async_variants {
     use super::*;
 
-    #[trait_variant::make(Receive: Send)]
+    #[trait_variant::make(Receive: Send + Sync)]
     #[allow(dead_code)]
     /// Async variant of [`super::Receive`]
     pub trait LocalReceive: Send + Sized {
@@ -54,7 +66,7 @@ mod async_variants {
         async fn receive(&mut self) -> Result<Bytes, Self::Error>;
     }
 
-    #[trait_variant::make(Transmit: Send)]
+    #[trait_variant::make(Transmit: Send + Sync)]
     #[allow(dead_code)]
     /// Async variant of [`super::Transmit`]
     pub trait LocalTransmit: Send + Sized {
@@ -96,7 +108,7 @@ pub use async_variants::Transmit as AsyncTransmit;
 
 mod macros {
     macro_rules! delegate_transport_rx_sync {
-        ($type:ident, $error:ident) => {
+        ($type:ident, $error:ty) => {
             impl crate::transport::Receive for $type {
                 type Error = $error;
                 fn receive(&mut self) -> Result<Bytes, $error> {
@@ -106,8 +118,31 @@ mod macros {
         };
     }
 
+    macro_rules! delegate_transport_timeout_rx_sync {
+        ($type:ident) => {
+            impl crate::transport::TimeoutReceive for $type {
+                fn receive_timeout(
+                    &mut self,
+                    timeout: std::time::Duration,
+                ) -> Result<Option<Bytes>, Self::Error> {
+                    let rt = self.async_rt.clone();
+                    let res = (|| async move {
+                        tokio::time::timeout(timeout, AsyncReceive::receive(&mut self.transport))
+                            .await
+                    })
+                    .syncify_lazy(&rt);
+                    match res {
+                        Ok(Ok(bytes)) => Ok(Some(bytes)),
+                        Ok(Err(err)) => Err(err),
+                        Err(_) => Ok(None),
+                    }
+                }
+            }
+        };
+    }
+
     macro_rules! delegate_transport_rx_async {
-        ($type:ident, $error:ident) => {
+        ($type:ident, $error:ty) => {
             impl crate::transport::AsyncReceive for $type {
                 type Error = $error;
                 async fn receive(&mut self) -> Result<Bytes, $error> {
@@ -118,7 +153,7 @@ mod macros {
     }
 
     macro_rules! delegate_transport_tx_sync {
-        ($type:ident, $error:ident) => {
+        ($type:ident, $error:ty) => {
             impl crate::transport::Transmit for $type {
                 type Error = $error;
                 fn transmit(&mut self, data: Bytes) -> Result<(), $error> {
@@ -129,7 +164,7 @@ mod macros {
     }
 
     macro_rules! delegate_transport_tx_async {
-        ($type:ident, $error:ident) => {
+        ($type:ident, $error:ty) => {
             impl crate::transport::AsyncTransmit for $type {
                 type Error = $error;
                 async fn transmit(&mut self, data: Bytes) -> Result<(), $error> {
@@ -140,7 +175,7 @@ mod macros {
     }
 
     macro_rules! delegate_transport_flush_sync {
-        ($type:ident, $error:ident) => {
+        ($type:ident, $error:ty) => {
             impl crate::transport::Flush for $type {
                 fn flush(&mut self) -> Result<(), $error> {
                     AsyncFlush::flush(&mut self.transport).syncify(&self.async_rt)
@@ -150,7 +185,7 @@ mod macros {
     }
 
     macro_rules! delegate_transport_flush_async {
-        ($type:ident, $error:ident) => {
+        ($type:ident, $error:ty) => {
             impl crate::transport::AsyncFlush for $type {
                 async fn flush(&mut self) -> Result<(), $error> {
                     AsyncFlush::flush(&mut self.transport).await
@@ -202,6 +237,7 @@ mod macros {
     pub(crate) use {
         delegate_transport_flush_async, delegate_transport_flush_sync, delegate_transport_rx_async,
         delegate_transport_rx_sync, delegate_transport_split_async, delegate_transport_split_sync,
-        delegate_transport_tx_async, delegate_transport_tx_sync,
+        delegate_transport_timeout_rx_sync, delegate_transport_tx_async,
+        delegate_transport_tx_sync,
     };
 }

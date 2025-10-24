@@ -55,12 +55,12 @@ impl AsyncSession {
         Ok(AsyncSession { cc, ec, tc, mc })
     }
 
-    pub fn local_addr(&self) -> Result<SocketAddr, io::Error> {
-        Ok(self.mc.as_ref().as_ref().local_addr()?)
+    pub fn local_addr(&self) -> Result<SocketAddr, quic::Error> {
+        Ok(self.cc.as_ref().as_ref().connection().local_addr()?)
     }
 
     pub fn remote_addr(&self) -> Result<SocketAddr, io::Error> {
-        Ok(self.mc.as_ref().as_ref().remote_addr()?)
+        Ok(self.cc.as_ref().as_ref().connection().remote_addr()?)
     }
 }
 
@@ -118,10 +118,10 @@ impl Session {
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, quic::Error> {
-        Ok(self.mc.as_ref().as_ref().local_addr()?)
+        Ok(self.cc.as_ref().as_ref().connection().local_addr()?)
     }
 
     pub fn remote_addr(&self) -> Result<SocketAddr, quic::Error> {
-        Ok(self.mc.as_ref().as_ref().remote_addr()?)
+        Ok(self.cc.as_ref().as_ref().connection().remote_addr()?)
     }
 }

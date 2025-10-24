@@ -140,6 +140,22 @@ mod sync_impls {
         Ok(())
     }
 
+    /// Internal helper for receiving and decoding datagrams with optional timeout.
+    fn do_receive_internal<ApiRm, WireRm, E, F>(
+        mut recv_fn: F,
+    ) -> Result<Option<(ApiRm, usize)>, RxError>
+    where
+        WireRm: Message + Default,
+        ApiRm: TryFrom<WireRm>,
+        RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<E>,
+        F: FnMut() -> Result<Option<Bytes>, E>,
+    {
+        match recv_fn()? {
+            Some(bytes) => Ok(Some(decode(bytes)?)),
+            None => Ok(None),
+        }
+    }
+
     pub(super) fn do_receive<T, ApiRm, WireRm>(
         dg_transport: &mut T,
     ) -> Result<(ApiRm, usize), RxError>
@@ -149,7 +165,21 @@ mod sync_impls {
         ApiRm: TryFrom<WireRm>,
         RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::Receive>::Error>,
     {
-        decode(dg_transport.receive()?)
+        do_receive_internal(|| dg_transport.receive().map(Some))
+            .map(|opt| opt.expect("blocking receive should never return None"))
+    }
+
+    pub(super) fn do_receive_timeout<T, ApiRm, WireRm>(
+        dg_transport: &mut T,
+        timeout: Duration,
+    ) -> Result<Option<(ApiRm, usize)>, RxError>
+    where
+        T: transport::TimeoutReceive,
+        WireRm: Message + Default,
+        ApiRm: TryFrom<WireRm>,
+        RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::Receive>::Error>,
+    {
+        do_receive_internal(|| dg_transport.receive_timeout(timeout))
     }
 }
 
@@ -226,6 +256,21 @@ where
 
     fn receive_with_len(&mut self) -> Result<(Self::Message, usize), RxError> {
         sync_impls::do_receive(&mut self.transport)
+    }
+}
+
+impl<T, ApiRm, WireRm> TimeoutReceiver for ReceiverSimplex<T, ApiRm, WireRm>
+where
+    T: transport::TimeoutReceive,
+    WireRm: Message + Default,
+    ApiRm: TryFrom<WireRm>,
+    RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::Receive>::Error>,
+{
+    fn receive_with_len_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<(Self::Message, usize)>, Self::Error> {
+        sync_impls::do_receive_timeout(&mut self.transport, timeout)
     }
 }
 
@@ -450,6 +495,21 @@ where
     }
 }
 
+impl<T, ApiRm, ApiSm, WireRm, WireSm> TimeoutReceiver for Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
+where
+    T: transport::TimeoutReceive + transport::Transmit,
+    WireRm: Message + Default,
+    ApiRm: TryFrom<WireRm>,
+    RxError: From<<ApiRm as TryFrom<WireRm>>::Error> + From<<T as transport::Receive>::Error>,
+{
+    fn receive_with_len_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<(Self::Message, usize)>, Self::Error> {
+        sync_impls::do_receive_timeout(&mut self.transport, timeout)
+    }
+}
+
 impl<T, ApiRm, ApiSm, WireRm, WireSm> Sender for Duplex<T, ApiRm, ApiSm, WireRm, WireSm>
 where
     T: transport::Receive + transport::Transmit,
@@ -572,6 +632,48 @@ pub type AsyncGatedServerMediaChannel<G> = Gated<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        codec::test_helpers::{EmptyMessage, LargeMessage, MockGate, SimpleMessage},
+        transport::datagram::tests::{
+            AsyncInMemReceiver, AsyncInMemTransmitter, InMemReceiver, InMemTransmitter,
+            in_mem_async_tx_async_rx, in_mem_async_tx_sync_rx, in_mem_sync_tx_async_rx,
+            in_mem_sync_tx_sync_rx,
+        },
+    };
+    use std::{sync::Arc, time::Duration};
+    use tokio::runtime::Runtime as TokioRuntime;
+
+    fn build_sync_simplex_pair() -> (
+        SenderSimplex<InMemTransmitter, SimpleMessage, SimpleMessage>,
+        ReceiverSimplex<InMemReceiver, SimpleMessage, SimpleMessage>,
+    ) {
+        let (tx, rx) = in_mem_sync_tx_sync_rx();
+        (SenderSimplex::new(tx), ReceiverSimplex::new(rx))
+    }
+
+    fn build_async_simplex_pair() -> (
+        AsyncSenderSimplex<AsyncInMemTransmitter, SimpleMessage, SimpleMessage>,
+        AsyncReceiverSimplex<AsyncInMemReceiver, SimpleMessage, SimpleMessage>,
+    ) {
+        let (tx, rx) = in_mem_async_tx_async_rx();
+        (AsyncSenderSimplex::new(tx), AsyncReceiverSimplex::new(rx))
+    }
+
+    fn build_large_message_sync_pair() -> (
+        SenderSimplex<InMemTransmitter, LargeMessage, LargeMessage>,
+        ReceiverSimplex<InMemReceiver, LargeMessage, LargeMessage>,
+    ) {
+        let (tx, rx) = in_mem_sync_tx_sync_rx();
+        (SenderSimplex::new(tx), ReceiverSimplex::new(rx))
+    }
+
+    fn build_empty_message_sync_pair() -> (
+        SenderSimplex<InMemTransmitter, EmptyMessage, EmptyMessage>,
+        ReceiverSimplex<InMemReceiver, EmptyMessage, EmptyMessage>,
+    ) {
+        let (tx, rx) = in_mem_sync_tx_sync_rx();
+        (SenderSimplex::new(tx), ReceiverSimplex::new(rx))
+    }
 
     #[test]
     fn test_rx_error_is_send_sync() {
@@ -619,7 +721,6 @@ mod tests {
 
     #[test]
     fn test_error_conversions() {
-        // Test that error types can be converted correctly through the chain
         let quic_err =
             crate::quic::Error::from(s2n_quic::connection::Error::immediate_close("test"));
         let datagram_tx_err = datagram::TxError::from(quic_err);
@@ -634,8 +735,7 @@ mod tests {
     #[test]
     fn test_gated_tx_error_gate() {
         use std::io;
-        let gate_err = Box::new(io::Error::new(io::ErrorKind::Other, "gate error"))
-            as Box<dyn std::error::Error + Send + Sync>;
+        let gate_err = Box::new(io::Error::other("gate error"));
         let error = GatedTxError::Gate(gate_err);
         let display_str = format!("{}", error);
         assert!(display_str.contains("gate error"));
@@ -655,7 +755,514 @@ mod tests {
         let transport_err = datagram::TxError::from(quic_err);
         let error = TxError::Transport(transport_err);
         let display_str = format!("{}", error);
-        // Just verify it can be displayed without panicking
         assert!(!display_str.is_empty());
+    }
+
+    #[test]
+    fn test_sync_single_datagram() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "hello".to_string(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_multiple_datagrams() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let messages = vec![
+            SimpleMessage {
+                data: "first".to_string(),
+            },
+            SimpleMessage {
+                data: "second".to_string(),
+            },
+            SimpleMessage {
+                data: "third".to_string(),
+            },
+        ];
+
+        for msg in &messages {
+            sender.send(msg.clone()).expect("send failed");
+        }
+
+        let mut received = Vec::new();
+        for _ in 0..messages.len() {
+            received.push(receiver.receive().expect("receive failed"));
+        }
+
+        let mut expected_data: Vec<_> = messages.iter().map(|m| &m.data).collect();
+        let mut received_data: Vec<_> = received.iter().map(|m| &m.data).collect();
+        expected_data.sort();
+        received_data.sort();
+
+        assert_eq!(received_data, expected_data);
+    }
+
+    #[test]
+    fn test_sync_receive_with_len() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "test".to_string(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+        let (received, byte_len) = receiver.receive_with_len().expect("receive failed");
+
+        assert_eq!(received, msg);
+        assert!(byte_len > 0);
+        assert_eq!(byte_len, msg.encoded_len());
+    }
+
+    #[test]
+    fn test_sync_empty_datagram() {
+        let (mut sender, mut receiver) = build_empty_message_sync_pair();
+
+        let msg = EmptyMessage {};
+
+        sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_large_datagram() {
+        let (mut sender, mut receiver) = build_large_message_sync_pair();
+
+        let payload = vec![0xAB; 1024 * 1024];
+        let msg = LargeMessage {
+            payload: payload.clone(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received.payload.len(), payload.len());
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_rapid_datagrams() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let count = 100;
+        for i in 0..count {
+            sender
+                .send(SimpleMessage {
+                    data: format!("datagram_{:03}", i),
+                })
+                .expect("send failed");
+        }
+
+        let mut received_data = Vec::new();
+        for _ in 0..count {
+            let msg = receiver.receive().expect("receive failed");
+            received_data.push(msg.data);
+        }
+
+        assert_eq!(received_data.len(), count);
+        received_data.sort();
+        for (i, data) in received_data.iter().enumerate() {
+            assert_eq!(data, &format!("datagram_{:03}", i));
+        }
+    }
+
+    #[test]
+    fn test_sync_gated_allows_send() {
+        let (sender, mut receiver) = build_sync_simplex_pair();
+        let gate = MockGate::new();
+        let mut gated_sender = sender.gated(gate.clone());
+
+        let msg = SimpleMessage {
+            data: "gated".to_string(),
+        };
+
+        gated_sender.send(msg.clone()).expect("send failed");
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received, msg);
+        assert_eq!(gate.get_call_count(), 1);
+        assert!(gate.get_total_bytes() > 0);
+    }
+
+    #[test]
+    fn test_sync_gated_blocks_send() {
+        let (sender, _receiver) = build_sync_simplex_pair();
+        let gate = MockGate::new();
+        gate.set_blocking(true);
+        let mut gated_sender = sender.gated(gate.clone());
+
+        let msg = SimpleMessage {
+            data: "blocked".to_string(),
+        };
+
+        let result = gated_sender.send(msg);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), GatedTxError::Gate(_)));
+        assert_eq!(gate.get_call_count(), 1);
+    }
+
+    #[test]
+    fn test_sync_gated_byte_count() {
+        let (sender, mut receiver) = build_sync_simplex_pair();
+        let gate = MockGate::new();
+        let mut gated_sender = sender.gated(gate.clone());
+
+        let msg1 = SimpleMessage {
+            data: "short".to_string(),
+        };
+        let msg2 = SimpleMessage {
+            data: "much longer message here".to_string(),
+        };
+
+        gated_sender.send(msg1.clone()).expect("send 1");
+        gated_sender.send(msg2.clone()).expect("send 2");
+
+        let _recv1 = receiver.receive().expect("recv 1");
+        let _recv2 = receiver.receive().expect("recv 2");
+
+        assert_eq!(gate.get_call_count(), 2);
+        let expected_bytes = msg1.encoded_len() + msg2.encoded_len();
+        assert_eq!(gate.get_total_bytes(), expected_bytes);
+    }
+
+    #[test]
+    fn test_sync_gated_multiple_calls() {
+        let (sender, mut receiver) = build_sync_simplex_pair();
+        let gate = MockGate::new();
+        let mut gated_sender = sender.gated(gate.clone());
+
+        let count = 50;
+        for i in 0..count {
+            gated_sender
+                .send(SimpleMessage {
+                    data: format!("msg_{}", i),
+                })
+                .expect("send failed");
+        }
+
+        for _ in 0..count {
+            let _msg = receiver.receive().expect("receive failed");
+        }
+
+        assert_eq!(gate.get_call_count(), count);
+    }
+
+    #[tokio::test]
+    async fn test_async_single_datagram() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "async hello".to_string(),
+        };
+
+        sender.send(msg.clone()).await.expect("send failed");
+        let received = receiver.receive().await.expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[tokio::test]
+    async fn test_async_multiple_datagrams() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let messages = vec![
+            SimpleMessage {
+                data: "async1".to_string(),
+            },
+            SimpleMessage {
+                data: "async2".to_string(),
+            },
+            SimpleMessage {
+                data: "async3".to_string(),
+            },
+        ];
+
+        for msg in &messages {
+            sender.send(msg.clone()).await.expect("send failed");
+        }
+
+        let mut received = Vec::new();
+        for _ in 0..messages.len() {
+            received.push(receiver.receive().await.expect("receive failed"));
+        }
+
+        let mut expected_data: Vec<_> = messages.iter().map(|m| &m.data).collect();
+        let mut received_data: Vec<_> = received.iter().map(|m| &m.data).collect();
+        expected_data.sort();
+        received_data.sort();
+
+        assert_eq!(received_data, expected_data);
+    }
+
+    #[tokio::test]
+    async fn test_async_receive_with_len() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "async len".to_string(),
+        };
+
+        sender.send(msg.clone()).await.expect("send failed");
+        let (received, byte_len) = receiver.receive_with_len().await.expect("receive failed");
+
+        assert_eq!(received, msg);
+        assert_eq!(byte_len, msg.encoded_len());
+    }
+
+    #[tokio::test]
+    async fn test_async_rapid_datagrams() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let count = 200;
+        for i in 0..count {
+            sender
+                .send(SimpleMessage {
+                    data: format!("async_{:03}", i),
+                })
+                .await
+                .expect("send failed");
+        }
+
+        let mut received_data = Vec::new();
+        for _ in 0..count {
+            let msg = receiver.receive().await.expect("receive failed");
+            received_data.push(msg.data);
+        }
+
+        assert_eq!(received_data.len(), count);
+        received_data.sort();
+        for (i, data) in received_data.iter().enumerate() {
+            assert_eq!(data, &format!("async_{:03}", i));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_async_concurrent_sends() {
+        let (mut sender, mut receiver) = build_async_simplex_pair();
+
+        let send_task = tokio::spawn(async move {
+            for i in 0..100 {
+                sender
+                    .send(SimpleMessage {
+                        data: format!("concurrent_{}", i),
+                    })
+                    .await
+                    .expect("send failed");
+            }
+            sender
+        });
+
+        let mut received_data = Vec::new();
+        for _ in 0..100 {
+            let msg = receiver.receive().await.expect("receive failed");
+            received_data.push(msg.data);
+        }
+
+        assert_eq!(received_data.len(), 100);
+        let _sender = send_task.await.expect("send task");
+    }
+
+    #[tokio::test]
+    async fn test_async_gated_allows_send() {
+        let (sender, mut receiver) = build_async_simplex_pair();
+        let gate = MockGate::new();
+        let mut gated_sender = sender.gated(gate.clone());
+
+        let msg = SimpleMessage {
+            data: "async gated".to_string(),
+        };
+
+        gated_sender.send(msg.clone()).await.expect("send failed");
+        let received = receiver.receive().await.expect("receive failed");
+
+        assert_eq!(received, msg);
+        assert_eq!(gate.get_call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_async_gated_blocks_send() {
+        let (sender, _receiver) = build_async_simplex_pair();
+        let gate = MockGate::new();
+        gate.set_blocking(true);
+        let mut gated_sender = sender.gated(gate.clone());
+
+        let msg = SimpleMessage {
+            data: "blocked".to_string(),
+        };
+
+        let result = gated_sender.send(msg).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), GatedTxError::Gate(_)));
+    }
+
+    #[tokio::test]
+    async fn test_async_gated_multiple_concurrent() {
+        let (sender, mut receiver) = build_async_simplex_pair();
+        let gate = MockGate::new();
+        let mut gated_sender = sender.gated(gate.clone());
+
+        let count = 50;
+        let send_task = tokio::spawn(async move {
+            for i in 0..count {
+                gated_sender
+                    .send(SimpleMessage {
+                        data: format!("gated_{}", i),
+                    })
+                    .await
+                    .expect("send failed");
+            }
+            gated_sender
+        });
+
+        for _ in 0..count {
+            let _msg = receiver.receive().await.expect("receive failed");
+        }
+
+        let _sender = send_task.await.expect("send task");
+        assert_eq!(gate.get_call_count(), count);
+    }
+
+    #[test]
+    fn test_sync_to_async() {
+        let runtime = Arc::new(TokioRuntime::new().expect("runtime"));
+        let (tx, rx) = in_mem_sync_tx_async_rx(runtime.clone());
+
+        let mut sender = SenderSimplex::<_, SimpleMessage, SimpleMessage>::new(tx);
+        let mut receiver = AsyncReceiverSimplex::<_, SimpleMessage, SimpleMessage>::new(rx);
+
+        let msg = SimpleMessage {
+            data: "sync to async".to_string(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+
+        let received =
+            runtime.block_on(async { receiver.receive().await.expect("receive failed") });
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_async_to_sync() {
+        let runtime = Arc::new(TokioRuntime::new().expect("runtime"));
+        let (tx, rx) = in_mem_async_tx_sync_rx(runtime.clone());
+
+        let mut sender = AsyncSenderSimplex::<_, SimpleMessage, SimpleMessage>::new(tx);
+        let mut receiver = ReceiverSimplex::<_, SimpleMessage, SimpleMessage>::new(rx);
+
+        let msg = SimpleMessage {
+            data: "async to sync".to_string(),
+        };
+
+        runtime.block_on(async {
+            sender.send(msg.clone()).await.expect("send failed");
+        });
+
+        let received = receiver.receive().expect("receive failed");
+
+        assert_eq!(received, msg);
+    }
+
+    #[test]
+    fn test_sync_timeout_with_len() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "len timeout".to_string(),
+        };
+
+        sender.send(msg.clone()).expect("send failed");
+
+        let result = receiver
+            .receive_with_len_timeout(Duration::from_millis(10))
+            .expect("receive failed");
+
+        assert!(result.is_some(), "should receive datagram");
+        let (received_msg, byte_len) = result.unwrap();
+        assert_eq!(received_msg, msg);
+        assert_eq!(byte_len, msg.encoded_len());
+    }
+
+    #[test]
+    fn test_sync_timeout_with_len_no_datagram() {
+        let (_sender, mut receiver) = build_sync_simplex_pair();
+
+        let result = receiver
+            .receive_with_len_timeout(Duration::from_millis(10))
+            .expect("timeout should not error");
+
+        assert!(result.is_none(), "should timeout with None");
+    }
+
+    #[test]
+    fn test_sync_timeout_zero_duration() {
+        let (_sender, mut receiver) = build_sync_simplex_pair();
+
+        let result = receiver
+            .receive_timeout(Duration::ZERO)
+            .expect("timeout should not error");
+
+        assert!(result.is_none(), "should timeout immediately");
+    }
+
+    #[test]
+    fn test_sync_multiple_timeouts() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let result1 = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout 1");
+        assert!(result1.is_none());
+
+        sender
+            .send(SimpleMessage {
+                data: "first".to_string(),
+            })
+            .expect("send 1");
+
+        let result2 = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout 2");
+        assert!(result2.is_some());
+        assert_eq!(result2.unwrap().data, "first");
+
+        let result3 = receiver
+            .receive_timeout(Duration::from_millis(10))
+            .expect("timeout 3");
+        assert!(result3.is_none());
+    }
+
+    #[test]
+    fn test_sync_timeout_max_duration() {
+        let (mut sender, mut receiver) = build_sync_simplex_pair();
+
+        let msg = SimpleMessage {
+            data: "delayed datagram".to_string(),
+        };
+
+        let sender_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            sender.send(msg.clone()).expect("send failed");
+            sender
+        });
+
+        let result = receiver
+            .receive_timeout(Duration::MAX)
+            .expect("receive should not error");
+
+        assert!(
+            result.is_some(),
+            "should receive with Duration::MAX timeout"
+        );
+        let _sender = sender_thread.join().unwrap();
     }
 }
