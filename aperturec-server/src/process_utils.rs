@@ -109,9 +109,7 @@ delegate_into_stdio!(StderrTracer, inner);
 delegate_into_stdio!(Tracer, pipe_writer);
 
 pub trait DisplayableExitStatus {
-    fn display(&self) -> String {
-        todo!()
-    }
+    fn display(&self) -> String;
 }
 
 impl DisplayableExitStatus for ExitStatus {
