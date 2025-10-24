@@ -52,6 +52,7 @@ pub use codec::out_of_order::ServerMediaChannel as ServerMedia;
 
 pub use codec::{
     AsyncDuplex, AsyncFlushable, AsyncReceiver, AsyncSender, Duplex, Flushable, Receiver, Sender,
+    TimeoutReceiver,
 };
 
 pub use endpoint::{AsyncClient, AsyncServer, Client, Server};

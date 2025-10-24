@@ -3,7 +3,9 @@ use crate::gtk3::show_blocking_error;
 use crate::gtk3::{self, ClientSideItcChannels, GtkUi, ItcChannels, LockState};
 use crate::metrics::EventChannelSendLatency;
 
-use aperturec_channel::{self as channel, Flushable, Receiver as _, Sender as _, Unified};
+use aperturec_channel::{
+    self as channel, Flushable, Receiver as _, Sender as _, TimeoutReceiver as _, Unified,
+};
 use aperturec_graphics::{
     display::{self, Display},
     euclid_collections::*,
@@ -41,6 +43,8 @@ use std::time::Duration;
 use std::{assert, thread};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tracing::*;
+
+const DEFAULT_CHANNEL_TIMEOUT: Duration = Duration::from_millis(1);
 
 //
 // Internal ITC channel messaging
@@ -967,7 +971,7 @@ impl Client {
                 if should_stop.load(Ordering::Relaxed) {
                     break Ok(());
                 }
-                let msg = mc.receive()?;
+                let msg = mc.receive_timeout(DEFAULT_CHANNEL_TIMEOUT)?;
                 mm_rx_tx.send(msg)?;
             };
             should_stop.store(true, Ordering::Relaxed);
@@ -985,7 +989,11 @@ impl Client {
 
                 select! {
                     recv(mm_rx_rx) -> msg_res => {
-                        let Some(msg) = msg_res?.message else {
+                        let Some(msg) = msg_res? else {
+                            continue;
+                        };
+
+                        let Some(msg) = msg.message else {
                             warn!("media message with empty body");
                             continue;
                         };
@@ -1091,8 +1099,9 @@ impl Client {
                 if should_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                match client_cc_read.receive() {
-                    Ok(cm_s2c) => {
+                match client_cc_read.receive_timeout(DEFAULT_CHANNEL_TIMEOUT) {
+                    Ok(None) => continue,
+                    Ok(Some(cm_s2c)) => {
                         let is_server_gb = matches!(cm_s2c, cm_s2c::Message::ServerGoodbye(_));
                         if let Err(err) = control_rx_tx.send(Ok(cm_s2c)) {
                             error!("Failed to send: {}", err);
@@ -1267,7 +1276,9 @@ impl Client {
                 if should_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                let msg = ec_rx.receive()?;
+                let Some(msg) = ec_rx.receive_timeout(DEFAULT_CHANNEL_TIMEOUT)? else {
+                    continue;
+                };
                 trace!(?msg);
 
                 if let em_s2c::Message::DisplayConfiguration(ref display_config) = msg {
