@@ -1,4 +1,4 @@
-pub mod provider;
+pub(crate) mod provider;
 
 /// Errors that can occur during QUIC operations
 #[derive(Debug, thiserror::Error)]

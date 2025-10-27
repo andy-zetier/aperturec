@@ -9,8 +9,8 @@ use std::{convert::Infallible, io, net::AddrParseError};
 mod client;
 mod server;
 
-pub use client::{AsyncClient, Builder as ClientBuilder, Client};
-pub use server::{AsyncServer, Builder as ServerBuilder, Server};
+pub use client::{AsyncClient, Builder as ClientBuilder, Client, ConnectError};
+pub use server::{AcceptError, AsyncServer, Builder as ServerBuilder, Server};
 
 /// Default port the server will bind to
 pub const DEFAULT_SERVER_BIND_PORT: u16 = 46452;

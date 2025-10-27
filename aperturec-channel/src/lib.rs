@@ -1,7 +1,7 @@
 pub mod codec;
 pub mod endpoint;
 pub mod gate;
-mod quic;
+pub mod quic;
 pub mod session;
 pub mod tls;
 pub mod transport;
