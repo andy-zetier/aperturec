@@ -29,7 +29,7 @@ jobs:
           app-id: ${{ vars.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: aperturec,Warpstations-MacOS
-      - uses: googleapis/release-please-action@e5c2aa4f6acd6194e00632c8f262cff67ae17873
+      - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38
         id: release
         with:
           token: ${{ steps.app-token.outputs.token }}

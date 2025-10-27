@@ -91,7 +91,7 @@ jobs:
         run: |
           mkdir -p target/rpm
           cargo generate-rpm -p ${{ matrix.component.crate }} -o target/rpm
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: ${{ matrix.component.name }}-${{ matrix.os.name }}-${{ matrix.arch }}-pkg
           path: |
@@ -136,7 +136,7 @@ jobs:
       - run: |
           chmod +x ci/scripts/create-windows-package.sh
           ci/scripts/create-windows-package.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: client-package-windows-amd64
           path: |
@@ -158,7 +158,7 @@ jobs:
           ci/scripts/create-macos-package.sh
           chmod +x ci/scripts/package-macos-with-all-deps.sh
           ci/scripts/package-macos-with-all-deps.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: client-package-macos
           path: |
