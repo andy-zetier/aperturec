@@ -17,6 +17,7 @@
     <InstallExecuteSequence>
         <RemoveExistingProducts Before="CostInitialize"/>
     </InstallExecuteSequence>
+    <UIRef Id="WixUI_Minimal"/>
     <Media Id="1" Cabinet="cab1.cab" EmbedCab="yes" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">

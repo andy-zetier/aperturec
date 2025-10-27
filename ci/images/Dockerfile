@@ -68,6 +68,7 @@ ARG CLIENT_PKGS_WINDOWS="\
     mingw64-winpthreads-static \
     msitools \
     nasm \
+    pandoc \
     util-linux \
     zip"
 

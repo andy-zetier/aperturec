@@ -24,6 +24,8 @@ cp -r "$GTK_INSTALL_PATH/share/icons" package/share/icons
 
 find package -maxdepth 1 -type f -exec mingw-strip {} +
 
+pandoc -s -f markdown -t rtf -o package/License.rtf LICENSE
+
 (
   cd package
 
@@ -40,6 +42,7 @@ find package -maxdepth 1 -type f -exec mingw-strip {} +
 
   # compile MSI
   wixl -v -a x64 \
+    --ext ui \
     -D SourceDir="$(pwd)/" \
     -D Win64=yes \
     -D Version="${version}" \
