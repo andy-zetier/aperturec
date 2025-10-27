@@ -2,6 +2,8 @@
 //!
 //! # Usage
 //!
+//! ## Basic usage with explicit configuration
+//!
 //! ```c
 //! // Create configuration
 //! AcConfiguration *config;
@@ -43,7 +45,8 @@
 //! ac_monitors_geometry_free(geometry);
 //!
 //! // Connect to server
-//! if (ac_client_connect(client) != AcStatus_Ok) {
+//! AcConnection *connection = ac_client_connect(client);
+//! if (!connection) {
 //!     AcError *error = ac_last_error();
 //!     fprintf(stderr, "Connect error: %s\n", ac_error_as_str(error));
 //!     ac_error_free(error);
@@ -53,27 +56,81 @@
 //!
 //! // Poll for events
 //! AcEvent *event;
-//! while (ac_client_poll_event(client, &event) == AcStatus_Ok) {
+//! while (ac_connection_poll_event(connection, &event) == AcStatus_Ok) {
 //!     // Process event
 //!     ac_event_free(event);
 //! }
 //!
-//! // Cleanup
+//! // Cleanup - connection_free disconnects and frees the connection
+//! ac_connection_free(connection);
 //! ac_client_free(client);
+//! ```
+//!
+//! ## Convenience usage with command-line arguments
+//!
+//! ```c
+//! // Create lock state and monitor geometry
+//! AcLockState *lock_state = ac_lock_state_new(false, false, false);
+//! AcMonitorsGeometry *geometry = ac_monitors_geometry_new();
+//! ac_monitors_geometry_add_monitor_all_usable(geometry, 0, 0, 1920, 1080);
+//!
+//! // Create client directly from command-line arguments
+//! AcClient *client = ac_client_from_args(lock_state, geometry);
+//! if (!client) {
+//!     AcError *error = ac_last_error();
+//!     fprintf(stderr, "Client error: %s\n", ac_error_as_str(error));
+//!     ac_error_free(error);
+//!     ac_lock_state_free(lock_state);
+//!     ac_monitors_geometry_free(geometry);
+//!     return 1;
+//! }
+//!
+//! // Free parameters after successful client creation
+//! ac_lock_state_free(lock_state);
+//! ac_monitors_geometry_free(geometry);
+//!
+//! // Connect and use as above...
+//! AcConnection *connection = ac_client_connect(client);
+//! // ...
+//! ```
+//!
+//! ## Convenience usage with URI
+//!
+//! ```c
+//! // Create lock state and monitor geometry
+//! AcLockState *lock_state = ac_lock_state_new(false, false, false);
+//! AcMonitorsGeometry *geometry = ac_monitors_geometry_new();
+//! ac_monitors_geometry_add_monitor_all_usable(geometry, 0, 0, 1920, 1080);
+//!
+//! // Create client directly from URI
+//! AcClient *client = ac_client_from_uri("aperturec://server:46454", lock_state, geometry);
+//! if (!client) {
+//!     AcError *error = ac_last_error();
+//!     fprintf(stderr, "Client error: %s\n", ac_error_as_str(error));
+//!     ac_error_free(error);
+//!     ac_lock_state_free(lock_state);
+//!     ac_monitors_geometry_free(geometry);
+//!     return 1;
+//! }
+//!
+//! // Free parameters after successful client creation
+//! ac_lock_state_free(lock_state);
+//! ac_monitors_geometry_free(geometry);
+//!
+//! // Connect and use as above...
+//! AcConnection *connection = ac_client_connect(client);
+//! // ...
 //! ```
 //!
 //! # Thread Safety
 //!
-//! Client objects are not thread-safe. Error state is globally shared - retrieve
-//! errors immediately after failures in multi-threaded applications.
-
-use atomicbox::AtomicOptionBox;
-use libc::*;
-use std::{error, ffi::CString, ptr, sync::atomic::Ordering};
+//! `AcClient` and `AcConnection` objects are not thread-safe. Error state is globally
+//! shared - retrieve errors immediately after failures in multi-threaded applications.
 
 // The following types are stubs to eventually be implemented as libclient takes shape. They are
 // here now so that the ffi module can compile without the rest of libclient
 struct Client;
+struct Connection;
 #[derive(Debug, thiserror::Error)]
 enum ConnectionError {}
 struct Event;
@@ -88,6 +145,10 @@ struct Configuration;
 enum ConfigurationError {}
 struct LockState;
 struct MonitorsGeometry;
+
+use atomicbox::AtomicOptionBox;
+use libc::*;
+use std::{error, ffi::CString, ptr, sync::atomic::Ordering};
 
 static LAST_ERROR: AtomicOptionBox<AcError> = AtomicOptionBox::none();
 
@@ -123,7 +184,7 @@ macro_rules! as_ref_checked {
         // SAFETY: We check that the pointer is aligned above and non-null in the as_ref call, but
         // otherwise assume the caller is giving us a valid pointer
         let Some(r) = (unsafe { $p.as_ref() }) else {
-            set_last_error(AcErrorKind::Argument(concat!(stringify!($p), "is null")));
+            set_last_error(AcErrorKind::Argument(concat!(stringify!($p), " is null")));
             return $retval;
         };
         r
@@ -590,35 +651,33 @@ pub unsafe extern "C" fn ac_client_from_uri(
     todo!()
 }
 
-/// Connects to server.
+/// Active connection to ApertureC server. Not thread-safe.
 ///
-/// # Returns
-///
-/// * `AcStatus::Ok` on success
-/// * `AcStatus::Err` on failure - call [`ac_last_error`] for details
-///
-/// # Safety
-///
-/// The caller must ensure `client` is non-null, properly aligned, and points to a valid `AcClient`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_connect(client: *mut AcClient) -> AcStatus {
-    let _client = as_mut_checked!(client);
-    todo!()
-}
+/// Obtained via [`ac_client_connect`]. Free with [`ac_connection_disconnect`] or
+/// [`ac_connection_free`] (which safely disconnects if necessary before freeing).
+pub struct AcConnection(Connection);
 
-/// Disconnects from server. Can reconnect afterward.
+/// Connects client to remote ApertureC server.
+///
+/// Initiates connection and returns an active connection handle. The connection can be
+/// used to send input events and receive display updates.
+///
+/// # Parameters
+///
+/// * `client` - Client to connect
 ///
 /// # Returns
 ///
-/// * `AcStatus::Ok` on success
-/// * `AcStatus::Err` on failure - call [`ac_last_error`] for details
+/// * Pointer to connection on success
+/// * Null on error - call [`ac_last_error`] for details
 ///
 /// # Safety
 ///
-/// The caller must ensure `client` is non-null, properly aligned, and points to a valid `AcClient`.
+/// `client` must be non-null, properly aligned, and point to a valid `AcClient`.
+/// Caller must eventually disconnect and free the returned connection.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_disconnect(client: *mut AcClient) -> AcStatus {
-    let _client = as_mut_checked!(client);
+pub unsafe extern "C" fn ac_client_connect(client: *mut AcClient) -> *mut AcConnection {
+    let _client = as_mut_checked!(client, ptr::null_mut());
     todo!()
 }
 
@@ -630,10 +689,60 @@ pub unsafe extern "C" fn ac_client_disconnect(client: *mut AcClient) -> AcStatus
 ///
 /// # Safety
 ///
-/// Must not be called twice on same pointer or while other threads access the client.
+/// `client` must be a valid pointer previously returned from [`ac_client_new`],
+/// [`ac_client_from_args`], or [`ac_client_from_uri`].
+/// Must not be called twice on same pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ac_client_free(client: *mut AcClient) {
     drop_owned!(client);
+}
+
+/// Disconnects from server and frees the connection.
+///
+/// After calling this function, the connection pointer is invalid and must not be used.
+/// This function disconnects and frees the connection object. If you only want to disconnect
+/// but keep the connection object allocated, use [`ac_connection_disconnect`]. For the common
+/// case of both disconnecting and freeing, use [`ac_connection_free`].
+///
+/// # Parameters
+///
+/// * `connection` - Connection to disconnect and free
+///
+/// # Returns
+///
+/// * `AcStatus::Ok` on success
+/// * `AcStatus::Err` on failure - call [`ac_last_error`] for details
+///
+/// # Safety
+///
+/// `connection` must be non-null, properly aligned, and point to a valid `AcConnection`
+/// previously returned from [`ac_client_connect`].
+/// Must not be called twice on same pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ac_connection_disconnect(connection: *mut AcConnection) -> AcStatus {
+    let _connection = as_mut_checked!(connection);
+    todo!()
+}
+
+/// Frees connection, disconnecting first if necessary.
+///
+/// If the connection is still active, it will be disconnected before being freed.
+/// This function is idempotent-safe for already-disconnected connections and safe
+/// to call instead of [`ac_connection_disconnect`].
+///
+/// # Parameters
+///
+/// * `connection` - Connection to free, or null (no-op)
+///
+/// # Safety
+///
+/// `connection` must be a valid pointer previously returned from [`ac_client_connect`],
+/// or null. Must not be called twice on same pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ac_connection_free(connection: *mut AcConnection) {
+    #[allow(clippy::unused_unit)]
+    let _connection = as_mut_checked!(connection, ());
+    todo!()
 }
 
 /// Client event (inspection functions not yet implemented).
@@ -655,15 +764,15 @@ pub unsafe extern "C" fn ac_event_free(event: *mut AcEvent) {
     drop_owned!(event);
 }
 
-/// FFI wrapper for [`Client::poll_event`].
+/// FFI wrapper for [`Connection::poll_event`].
 ///
-/// See [`Client::poll_event`] for details. If an event is available, it is written to
+/// See [`Connection::poll_event`] for details. If an event is available, it is written to
 /// `event_out`. If no event is available, the function returns successfully but leaves
 /// `event_out` unchanged.
 ///
 /// # Parameters
 ///
-/// * `client` - Pointer to the client. Must be non-null and properly aligned.
+/// * `connection` - Pointer to the connection. Must be non-null and properly aligned.
 /// * `event_out` - Output parameter that receives a pointer to the event if one is available.
 ///   Must be non-null and properly aligned. Events must be freed with [`ac_event_free`].
 ///
@@ -675,27 +784,27 @@ pub unsafe extern "C" fn ac_event_free(event: *mut AcEvent) {
 /// # Safety
 ///
 /// The caller must ensure:
-/// * `client` is non-null, properly aligned, and points to a valid `AcClient`
+/// * `connection` is non-null, properly aligned, and points to a valid `AcConnection`
 /// * `event_out` is non-null, properly aligned, and points to valid memory
 /// * Any event pointer written to `event_out` is eventually freed with [`ac_event_free`]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_poll_event(
-    client: *mut AcClient,
+pub unsafe extern "C" fn ac_connection_poll_event(
+    connection: *mut AcConnection,
     event_out: *mut *mut AcEvent,
 ) -> AcStatus {
-    let _client = as_mut_checked!(client);
+    let _connection = as_mut_checked!(connection);
     let _event_out = as_mut_checked!(event_out);
     todo!()
 }
 
-/// FFI wrapper for [`Client::wait_event`].
+/// FFI wrapper for [`Connection::wait_event`].
 ///
-/// See [`Client::wait_event`] for details. Use [`ac_client_poll_event`] for non-blocking
-/// operation or [`ac_client_wait_event_timeout`] to wait with a timeout.
+/// See [`Connection::wait_event`] for details. Use [`ac_connection_poll_event`] for non-blocking
+/// operation or [`ac_connection_wait_event_timeout`] to wait with a timeout.
 ///
 /// # Parameters
 ///
-/// * `client` - Pointer to the client. Must be non-null and properly aligned.
+/// * `connection` - Pointer to the connection. Must be non-null and properly aligned.
 /// * `event_out` - Output parameter that receives a pointer to the event.
 ///   Must be non-null and properly aligned. Events must be freed with [`ac_event_free`].
 ///
@@ -707,29 +816,29 @@ pub unsafe extern "C" fn ac_client_poll_event(
 /// # Safety
 ///
 /// The caller must ensure:
-/// * `client` is non-null, properly aligned, and points to a valid `AcClient`
+/// * `connection` is non-null, properly aligned, and points to a valid `AcConnection`
 /// * `event_out` is non-null, properly aligned, and points to valid memory
 /// * The event pointer written to `event_out` is eventually freed with [`ac_event_free`]
 /// * The calling thread can safely block until an event arrives
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_wait_event(
-    client: *mut AcClient,
+pub unsafe extern "C" fn ac_connection_wait_event(
+    connection: *mut AcConnection,
     event_out: *mut *mut AcEvent,
 ) -> AcStatus {
-    let _client = as_mut_checked!(client);
+    let _connection = as_mut_checked!(connection);
     let _event_out = as_mut_checked!(event_out);
     todo!()
 }
 
-/// FFI wrapper for [`Client::wait_event_timeout`].
+/// FFI wrapper for [`Connection::wait_event_timeout`].
 ///
-/// See [`Client::wait_event_timeout`] for details. If an event arrives before the timeout,
+/// See [`Connection::wait_event_timeout`] for details. If an event arrives before the timeout,
 /// it is written to `event_out`. If the timeout expires without an event, the function
 /// returns successfully but leaves `event_out` unchanged.
 ///
 /// # Parameters
 ///
-/// * `client` - Pointer to the client. Must be non-null and properly aligned.
+/// * `connection` - Pointer to the connection. Must be non-null and properly aligned.
 /// * `timeout_ms` - Maximum time to wait in milliseconds.
 /// * `event_out` - Output parameter that receives a pointer to the event if one arrives.
 ///   Must be non-null and properly aligned. Events must be freed with [`ac_event_free`].
@@ -742,28 +851,28 @@ pub unsafe extern "C" fn ac_client_wait_event(
 /// # Safety
 ///
 /// The caller must ensure:
-/// * `client` is non-null, properly aligned, and points to a valid `AcClient`
+/// * `connection` is non-null, properly aligned, and points to a valid `AcConnection`
 /// * `event_out` is non-null, properly aligned, and points to valid memory
 /// * Any event pointer written to `event_out` is eventually freed with [`ac_event_free`]
 /// * The calling thread can safely block for up to `timeout_ms` milliseconds
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_wait_event_timeout(
-    client: *mut AcClient,
+pub unsafe extern "C" fn ac_connection_wait_event_timeout(
+    connection: *mut AcConnection,
     _timeout_ms: u64,
     event_out: *mut *mut AcEvent,
 ) -> AcStatus {
-    let _client = as_mut_checked!(client);
+    let _connection = as_mut_checked!(connection);
     let _event_out = as_mut_checked!(event_out);
     todo!()
 }
 
-/// FFI wrapper for [`Client::pointer_move`].
+/// FFI wrapper for [`Connection::pointer_move`].
 ///
-/// See [`Client::pointer_move`] for details.
+/// See [`Connection::pointer_move`] for details.
 ///
 /// # Parameters
 ///
-/// * `client` - Pointer to the client. Must be non-null and properly aligned.
+/// * `connection` - Pointer to the connection. Must be non-null and properly aligned.
 /// * `x` - X coordinate of the mouse pointer position.
 /// * `y` - Y coordinate of the mouse pointer position.
 ///
@@ -775,25 +884,24 @@ pub unsafe extern "C" fn ac_client_wait_event_timeout(
 /// # Safety
 ///
 /// The caller must ensure:
-/// * `client` is non-null, properly aligned, and points to a valid `AcClient`
-/// * The client is connected (via [`ac_client_connect`])
+/// * `connection` is non-null, properly aligned, and points to a valid `AcConnection`
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_pointer_move(
-    client: *mut AcClient,
+pub unsafe extern "C" fn ac_connection_pointer_move(
+    connection: *mut AcConnection,
     _x: u64,
     _y: u64,
 ) -> AcStatus {
-    let _client = as_mut_checked!(client);
+    let _connection = as_mut_checked!(connection);
     todo!()
 }
 
-/// FFI wrapper for [`Client::mouse_button_press`].
+/// FFI wrapper for [`Connection::mouse_button_press`].
 ///
-/// See [`Client::mouse_button_press`] for details.
+/// See [`Connection::mouse_button_press`] for details.
 ///
 /// # Parameters
 ///
-/// * `client` - Pointer to the client. Must be non-null and properly aligned.
+/// * `connection` - Pointer to the connection. Must be non-null and properly aligned.
 /// * `button` - The mouse button that was pressed.
 /// * `x` - X coordinate of the mouse pointer position.
 /// * `y` - Y coordinate of the mouse pointer position.
@@ -806,27 +914,26 @@ pub unsafe extern "C" fn ac_client_pointer_move(
 /// # Safety
 ///
 /// The caller must ensure:
-/// * `client` is non-null, properly aligned, and points to a valid `AcClient`
-/// * The client is connected (via [`ac_client_connect`])
+/// * `connection` is non-null, properly aligned, and points to a valid `AcConnection`
 /// * `button` is a valid `AcMouseButton` value
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_mouse_button_press(
-    client: *mut AcClient,
+pub unsafe extern "C" fn ac_connection_mouse_button_press(
+    connection: *mut AcConnection,
     _button: AcMouseButton,
     _x: u64,
     _y: u64,
 ) -> AcStatus {
-    let _client = as_mut_checked!(client);
+    let _connection = as_mut_checked!(connection);
     todo!()
 }
 
-/// FFI wrapper for [`Client::mouse_button_release`].
+/// FFI wrapper for [`Connection::mouse_button_release`].
 ///
-/// See [`Client::mouse_button_release`] for details.
+/// See [`Connection::mouse_button_release`] for details.
 ///
 /// # Parameters
 ///
-/// * `client` - Pointer to the client. Must be non-null and properly aligned.
+/// * `connection` - Pointer to the connection. Must be non-null and properly aligned.
 /// * `button` - The mouse button that was released.
 /// * `x` - X coordinate of the mouse pointer position.
 /// * `y` - Y coordinate of the mouse pointer position.
@@ -839,27 +946,26 @@ pub unsafe extern "C" fn ac_client_mouse_button_press(
 /// # Safety
 ///
 /// The caller must ensure:
-/// * `client` is non-null, properly aligned, and points to a valid `AcClient`
-/// * The client is connected (via [`ac_client_connect`])
+/// * `connection` is non-null, properly aligned, and points to a valid `AcConnection`
 /// * `button` is a valid `AcMouseButton` value
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_mouse_button_release(
-    client: *mut AcClient,
+pub unsafe extern "C" fn ac_connection_mouse_button_release(
+    connection: *mut AcConnection,
     _button: AcMouseButton,
     _x: u64,
     _y: u64,
 ) -> AcStatus {
-    let _client = as_mut_checked!(client);
+    let _connection = as_mut_checked!(connection);
     todo!()
 }
 
-/// FFI wrapper for [`Client::scroll`].
+/// FFI wrapper for [`Connection::scroll`].
 ///
-/// See [`Client::scroll`] for details on scroll direction semantics.
+/// See [`Connection::scroll`] for details on scroll direction semantics.
 ///
 /// # Parameters
 ///
-/// * `client` - Pointer to the client. Must be non-null and properly aligned.
+/// * `connection` - Pointer to the connection. Must be non-null and properly aligned.
 /// * `delta_x` - Horizontal scroll amount.
 /// * `delta_y` - Vertical scroll amount.
 ///
@@ -871,25 +977,24 @@ pub unsafe extern "C" fn ac_client_mouse_button_release(
 /// # Safety
 ///
 /// The caller must ensure:
-/// * `client` is non-null, properly aligned, and points to a valid `AcClient`
-/// * The client is connected (via [`ac_client_connect`])
+/// * `connection` is non-null, properly aligned, and points to a valid `AcConnection`
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_scroll(
-    client: *mut AcClient,
+pub unsafe extern "C" fn ac_connection_scroll(
+    connection: *mut AcConnection,
     _delta_x: f64,
     _delta_y: f64,
 ) -> AcStatus {
-    let _client = as_mut_checked!(client);
+    let _connection = as_mut_checked!(connection);
     todo!()
 }
 
-/// FFI wrapper for [`Client::key_press`].
+/// FFI wrapper for [`Connection::key_press`].
 ///
-/// See [`Client::key_press`] for details.
+/// See [`Connection::key_press`] for details.
 ///
 /// # Parameters
 ///
-/// * `client` - Pointer to the client. Must be non-null and properly aligned.
+/// * `connection` - Pointer to the connection. Must be non-null and properly aligned.
 /// * `key` - The key that was pressed.
 ///
 /// # Returns
@@ -900,22 +1005,24 @@ pub unsafe extern "C" fn ac_client_scroll(
 /// # Safety
 ///
 /// The caller must ensure:
-/// * `client` is non-null, properly aligned, and points to a valid `AcClient`
-/// * The client is connected (via [`ac_client_connect`])
+/// * `connection` is non-null, properly aligned, and points to a valid `AcConnection`
 /// * `key` is a valid `AcKey` value
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_key_press(client: *mut AcClient, _key: AcKey) -> AcStatus {
-    let _client = as_mut_checked!(client);
+pub unsafe extern "C" fn ac_connection_key_press(
+    connection: *mut AcConnection,
+    _key: AcKey,
+) -> AcStatus {
+    let _connection = as_mut_checked!(connection);
     todo!()
 }
 
-/// FFI wrapper for [`Client::key_release`].
+/// FFI wrapper for [`Connection::key_release`].
 ///
-/// See [`Client::key_release`] for details.
+/// See [`Connection::key_release`] for details.
 ///
 /// # Parameters
 ///
-/// * `client` - Pointer to the client. Must be non-null and properly aligned.
+/// * `connection` - Pointer to the connection. Must be non-null and properly aligned.
 /// * `key` - The key that was released.
 ///
 /// # Returns
@@ -926,11 +1033,13 @@ pub unsafe extern "C" fn ac_client_key_press(client: *mut AcClient, _key: AcKey)
 /// # Safety
 ///
 /// The caller must ensure:
-/// * `client` is non-null, properly aligned, and points to a valid `AcClient`
-/// * The client is connected (via [`ac_client_connect`])
+/// * `connection` is non-null, properly aligned, and points to a valid `AcConnection`
 /// * `key` is a valid `AcKey` value
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ac_client_key_release(client: *mut AcClient, _key: AcKey) -> AcStatus {
-    let _client = as_mut_checked!(client);
+pub unsafe extern "C" fn ac_connection_key_release(
+    connection: *mut AcConnection,
+    _key: AcKey,
+) -> AcStatus {
+    let _connection = as_mut_checked!(connection);
     todo!()
 }
