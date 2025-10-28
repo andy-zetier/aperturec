@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.0.0](https://github.com/Zetier/aperturec/compare/aperturec-channel-v1.0.0...aperturec-channel-v2.0.0) (2025-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* migrate aperturec-channel to concrete error types ([#667](https://github.com/Zetier/aperturec/issues/667))
+
+### Features
+
+* Add receive_timeout and refactor for testing ([#672](https://github.com/Zetier/aperturec/issues/672)) ([c5bcd9b](https://github.com/Zetier/aperturec/commit/c5bcd9b12992957224ed7793f0e2a666ce0cf080))
+* Expose additional errors and modules in channel library ([#677](https://github.com/Zetier/aperturec/issues/677)) ([cb15f14](https://github.com/Zetier/aperturec/commit/cb15f141f121a41ae1474ee7a4d1687b6430f227))
+* Migrate aperturec-channel to concrete error types ([#667](https://github.com/Zetier/aperturec/issues/667)) ([958569b](https://github.com/Zetier/aperturec/commit/958569baa115f7d4aaf483c72944a83a9ac5d5af))
+
+
+### Bug Fixes
+
+* Only have BuildError::KernelValidation on linux ([#670](https://github.com/Zetier/aperturec/issues/670)) ([c4383f4](https://github.com/Zetier/aperturec/commit/c4383f44cd811f80e5e8d669844756daabbf6af3))
+
 ## [1.0.0](https://github.com/Zetier/aperturec/compare/aperturec-channel-v0.2.0...aperturec-channel-v1.0.0) (2025-10-07)
 
 

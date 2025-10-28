@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.0](https://github.com/Zetier/aperturec/compare/aperturec-client-v0.3.0...aperturec-client-v1.0.0) (2025-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* change FFI library to have a client connection object ([#678](https://github.com/Zetier/aperturec/issues/678))
+* migrate aperturec-channel to concrete error types ([#667](https://github.com/Zetier/aperturec/issues/667))
+
+### Features
+
+* Add client ffi module behind ffi-lib feature ([#661](https://github.com/Zetier/aperturec/issues/661)) ([b9fd592](https://github.com/Zetier/aperturec/commit/b9fd592c4a8f2038f2edb09e1cf53e3b1db06249))
+* Migrate aperturec-channel to concrete error types ([#667](https://github.com/Zetier/aperturec/issues/667)) ([958569b](https://github.com/Zetier/aperturec/commit/958569baa115f7d4aaf483c72944a83a9ac5d5af))
+
+
+### Code Refactoring
+
+* Change FFI library to have a client connection object ([#678](https://github.com/Zetier/aperturec/issues/678)) ([4f954e0](https://github.com/Zetier/aperturec/commit/4f954e0d1c65ea6597d110a950d22e5c6e1dcb4a))
+
 ## [0.3.0](https://github.com/Zetier/aperturec/compare/aperturec-client-v0.2.1...aperturec-client-v0.3.0) (2025-10-07)
 
 

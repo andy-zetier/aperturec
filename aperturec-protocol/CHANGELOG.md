@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/Zetier/aperturec/compare/aperturec-protocol-v1.0.0...aperturec-protocol-v1.1.0) (2025-10-27)
+
+
+### Features
+
+* Refactor WrappedOptionalConvertError to exist in proto crate root ([#666](https://github.com/Zetier/aperturec/issues/666)) ([f99eeb1](https://github.com/Zetier/aperturec/commit/f99eeb1f49e3365d510dbe904ceb95160596a4f7))
+
 ## [1.0.0](https://github.com/Zetier/aperturec/compare/aperturec-protocol-v0.1.0...aperturec-protocol-v1.0.0) (2025-10-07)
 
 

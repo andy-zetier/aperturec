@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.0.0](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.7...aperturec-server-v2.0.0) (2025-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* migrate aperturec-channel to concrete error types ([#667](https://github.com/Zetier/aperturec/issues/667))
+
+### Features
+
+* Add reset_session_state to backend ([#671](https://github.com/Zetier/aperturec/issues/671)) ([3158163](https://github.com/Zetier/aperturec/commit/31581632c5ad508197163545ca1dffab767a78eb))
+* Migrate aperturec-channel to concrete error types ([#667](https://github.com/Zetier/aperturec/issues/667)) ([958569b](https://github.com/Zetier/aperturec/commit/958569baa115f7d4aaf483c72944a83a9ac5d5af))
+
+
+### Bug Fixes
+
+* Remove default impl in process_utils ([#673](https://github.com/Zetier/aperturec/issues/673)) ([c96d6f5](https://github.com/Zetier/aperturec/commit/c96d6f5470ec95f8fd17c01994df57fa7d0adab8))
+
 ## [1.1.7](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.6...aperturec-server-v1.1.7) (2025-10-07)
 
 
