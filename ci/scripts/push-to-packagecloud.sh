@@ -41,8 +41,11 @@ get_packagecloud_distro() {
         *ubuntu-24*)
             echo "ubuntu/noble"
             ;;
-        *fedora-41*)
-            echo "fedora/41"
+        *fedora-42*)
+            echo "fedora/42"
+            ;;
+        *fedora-43*)
+            echo "fedora/43"
             ;;
         *centos-stream9*)
             echo "el/9"

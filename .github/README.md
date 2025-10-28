@@ -18,7 +18,7 @@ Creates release artifacts for all platforms. Runs on:
 - Manual trigger via `workflow_dispatch`
 
 Builds and packages:
-- **Linux**: Client and server for Ubuntu 22/24, Fedora 41, CentOS Stream 9 (amd64 and arm64)
+- **Linux**: Client and server for Ubuntu 22/24, Fedora 42/43, CentOS Stream 9 (amd64 and arm64)
 - **Windows**: Client for amd64 (cross-compiled from Linux)
 - **macOS**: Client for arm64
 

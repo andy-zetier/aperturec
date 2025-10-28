@@ -53,7 +53,7 @@ ARG PE_UTIL_PKGS="\
 ARG CLIENT_PKGS_WINDOWS="\
     azure-cli \
     boost \
-    java-1.8.0-openjdk \
+    java-latest-openjdk \
     jq \
     mingw64-cairo \
     mingw64-freetype \
@@ -79,21 +79,24 @@ ENV APT_INSTALL="apt install -y --no-install-recommends --no-install-suggests"
 ENV APT_CLEAN="rm -rf /var/lib/apt/lists/*"
 ENV DEBIAN_FRONTEND=noninteractive
 RUN $APT_UPDATE && $APT_INSTALL ${BASE_PKGS_DEBIAN} && $APT_CLEAN
+ENV CC="clang"
+ENV CXX="clang++"
 
 FROM ${IMAGE_UPSTREAM} AS base-image-fedora
 ARG BASE_PKGS_FEDORA
 ENV DNF_INSTALL="dnf install --setopt=install_weak_deps=False -y"
 ENV DNF_CLEAN="dnf clean all"
 WORKDIR /root
-
 RUN dnf config-manager --set-enabled crb || true
 RUN bash -c ' \
     if dnf list available "clang-19.*" >/dev/null 2>&1; then \
         $DNF_INSTALL "clang-19.*" ${BASE_PKGS_FEDORA}; \
-    else \
-        $DNF_INSTALL "clang-18.*" ${BASE_PKGS_FEDORA}; \
+    elif dnf list available "clang19" >/dev/null 2>&1; then \
+        $DNF_INSTALL "clang19" ${BASE_PKGS_FEDORA}; \
     fi \
     && $DNF_CLEAN'
+ENV CC="clang-19"
+ENV CXX="clang++-19"
 
 FROM base-image-${OS_VARIANT} AS base-rust-image
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c rustfmt
@@ -112,8 +115,6 @@ FROM rust-image-${OS_VARIANT} AS rust-image
 
 FROM rust-image AS fips-capable-image
 ARG ARCHITECTURE
-ENV CC="clang"
-ENV CXX="clang++"
 RUN curl -sSf https://dl.google.com/go/go1.22.2.linux-${ARCHITECTURE}.tar.gz | tar -xz -C /usr/local
 ENV PATH="$PATH:/usr/local/go/bin"
 

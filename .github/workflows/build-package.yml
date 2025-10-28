@@ -24,7 +24,8 @@ jobs:
         os:
           - { name: ubuntu-22, upstream: "docker.io/library/ubuntu:22.04", variant: debian }
           - { name: ubuntu-24, upstream: "docker.io/library/ubuntu:24.04", variant: debian }
-          - { name: fedora-41, upstream: "docker.io/library/fedora:41", variant: fedora }
+          - { name: fedora-42, upstream: "docker.io/library/fedora:42", variant: fedora }
+          - { name: fedora-43, upstream: "docker.io/library/fedora:43", variant: fedora }
           - { name: centos-stream9, upstream: "quay.io/centos/centos:stream9", variant: fedora }
         arch: [amd64, arm64]
         component: [client, server]
@@ -68,7 +69,8 @@ jobs:
         os:
           - { name: ubuntu-22, variant: debian }
           - { name: ubuntu-24, variant: debian }
-          - { name: fedora-41, variant: fedora }
+          - { name: fedora-42, variant: fedora }
+          - { name: fedora-43, variant: fedora }
           - { name: centos-stream9, variant: fedora }
         arch: [amd64, arm64]
         component:
@@ -110,7 +112,7 @@ jobs:
         uses: ./.github/actions/build-docker-image
         with:
           target: client-image-windows
-          upstream_image: docker.io/library/fedora:40
+          upstream_image: docker.io/library/fedora:43
           os_variant: fedora
           os_name: windows
           registry_password: ${{ secrets.GITHUB_TOKEN }}
