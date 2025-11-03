@@ -1,0 +1,90 @@
+name: Interactive Session
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Target runner"
+        required: true
+        type: choice
+        options:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+      container_image:
+        description: "Linux only: container image (e.g. ghcr.io/cachix/devenv:latest). Leave empty to run on host."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # YAML anchors for steps are defined in the `linux-container` job's `steps:` section below (lines 30-60).
+  # These anchors are then reused in the steps of subsequent jobs.
+  linux-container:
+    if: inputs.runner == 'ubuntu-latest' && inputs.container_image != '' && inputs.container_image != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    container: ${{ inputs.container_image }}
+    steps:
+      - &checkout_step
+        name: Checkout current branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - &start_tmate_step
+        name: Start tmate session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+          detached: true
+
+      - &show_info_step
+        name: Show tmate connection info
+        shell: bash
+        run: |
+          echo "Waiting for tmate session to be ready..."
+          while [ ! -S /tmp/tmate.sock ]; do sleep 1; done
+          sleep 2
+          echo "=================================================="
+          echo "  🟢 TMATE SESSION READY"
+          echo "--------------------------------------------------"
+          echo "SSH COMMAND:"
+          tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}'
+          echo ""
+          echo "WEB URL:"
+          tmate -S /tmp/tmate.sock display -p '#{tmate_web}'
+          echo "=================================================="
+          while true; do sleep 30; done
+
+  # Linux host job reuses anchors
+  linux-host:
+    if: inputs.runner == 'ubuntu-latest' && (inputs.container_image == '' || inputs.container_image == null)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - *checkout_step
+      - *start_tmate_step
+      - *show_info_step
+
+  macos:
+    if: inputs.runner == 'macos-latest'
+    runs-on: macos-latest
+    timeout-minutes: 360
+    steps:
+      - *checkout_step
+      - *start_tmate_step
+      - *show_info_step
+
+  windows:
+    if: inputs.runner == 'windows-latest'
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - *checkout_step
+      - *start_tmate_step
+      - *show_info_step
+
