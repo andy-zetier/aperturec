@@ -18,7 +18,7 @@ aperturec-utils = { path = "../aperturec-utils" }
 
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive", "env", "string"] }
-console-subscriber = "0.4"
+console-subscriber = "0.5"
 derive_builder = "0.20"
 derive_more = { version = "2.0", features = ["debug"] }
 flate2 = { version = "1.1", features = ["zlib-ng"], default-features = false }
