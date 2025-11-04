@@ -34,16 +34,24 @@ if [ -z "$AUTHORIZED_KEYS" ]; then
 fi
 
 if [ "$PLATFORM" = "windows" ]; then
-  ADMIN_KEYS_FILE="/c/ProgramData/ssh/administrators_authorized_keys"
-  echo "$AUTHORIZED_KEYS" > "$ADMIN_KEYS_FILE"
-  icacls.exe "C:\ProgramData\ssh\administrators_authorized_keys" //inheritance:r //grant "SYSTEM:(F)" //grant "Administrators:(F)"
+  ADMIN_KEYS_FILE_BASH="/c/ProgramData/ssh/administrators_authorized_keys"
+  ADMIN_KEYS_FILE_WIN="C:/ProgramData/ssh/administrators_authorized_keys"
+  ADMIN_KEYS_FILE_ICACLS="C:\ProgramData\ssh\administrators_authorized_keys"
 
-  powershell.exe -Command "Start-Service sshd"
+  echo "$AUTHORIZED_KEYS" > "$ADMIN_KEYS_FILE_BASH"
+  icacls.exe "$ADMIN_KEYS_FILE_ICACLS" //inheritance:r //grant "SYSTEM:(F)" //grant "Administrators:(F)"
 
   SSHD_CONFIG="/c/ProgramData/ssh/sshd_config"
-  cp "$SSHD_CONFIG" "${SSHD_CONFIG}.backup"
-  sed -i -e '/^#*Port /d' -e '/^#*PubkeyAuthentication /d' -e '/^#*PasswordAuthentication /d' "$SSHD_CONFIG"
-  echo -e "Port $SSH_PORT\nPubkeyAuthentication yes\nPasswordAuthentication no" >> "$SSHD_CONFIG"
+  [ -f "$SSHD_CONFIG" ] && cp "$SSHD_CONFIG" "${SSHD_CONFIG}.backup"
+
+  cat > "$SSHD_CONFIG" <<EOF
+Port $SSH_PORT
+PubkeyAuthentication yes
+PasswordAuthentication no
+AuthorizedKeysFile $ADMIN_KEYS_FILE_WIN
+Subsystem sftp sftp-server.exe
+EOF
+
   powershell.exe -Command "Restart-Service sshd"
 
   USERNAME="runneradmin"
