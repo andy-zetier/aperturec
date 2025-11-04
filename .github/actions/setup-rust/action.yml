@@ -18,6 +18,10 @@ inputs:
     description: 'Home directory for Rust installation (defaults to /root for Docker-based builds)'
     default: '/root'
     required: false
+  save-cache:
+    description: 'Whether to save cache (true/false). Defaults to saving only on main branch.'
+    default: 'auto'
+    required: false
 runs:
   using: 'composite'
   steps:
@@ -41,6 +45,6 @@ runs:
     - name: Cache Rust dependencies
       uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0
       with:
-        save-if: ${{ github.ref == 'refs/heads/main' }}
+        save-if: ${{ inputs.save-cache == 'auto' && github.ref == 'refs/heads/main' || inputs.save-cache == 'true' }}
         shared-key: ${{ inputs.cache-key }}
         cache-bin: false

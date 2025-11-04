@@ -1,0 +1,77 @@
+name: Interactive Session
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Target runner"
+        required: true
+        type: choice
+        options:
+          - ubuntu-latest
+          - ubuntu-24.04
+          - ubuntu-22.04
+          - ubuntu-2404-l-arm
+          - macos-latest
+          - macos-15
+          - macos-15-xlarge
+          - macos-15-large
+          - macos-15-intel
+          - macos-14
+          - macos-14-xlarge
+          - macos-14-large
+          - macos-26
+          - macos-26-xlarge
+          - windows-latest
+          - windows-2025
+          - windows-2022
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    if: startsWith(inputs.runner, 'ubuntu-')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - &checkout_step
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ${{ contains(inputs.runner, 'arm') && 'ubuntu-24-arm64' || contains(inputs.runner, '22') && 'ubuntu-22-amd64' || 'ubuntu-24-amd64' }}
+          save-cache: false
+          install-home: ${{ runner.temp }}/..
+      - &start_ssh_step
+        shell: bash
+        run: |
+          chmod +x ci/scripts/setup-ssh-cloudflared.sh
+          ci/scripts/setup-ssh-cloudflared.sh
+
+  macos:
+    if: startsWith(inputs.runner, 'macos-')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - *checkout_step
+      - uses: ./.github/actions/setup-macos-build
+        with:
+          cache-key: macos
+          save-cache: false
+      - *start_ssh_step
+
+  windows:
+    if: startsWith(inputs.runner, 'windows-')
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - *checkout_step
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0
+        with:
+          save-if: false
+          shared-key: windows
+          cache-bin: false
+      - *start_ssh_step
