@@ -13,6 +13,7 @@ name = "aperturec-client"
 path = "src/main.rs"
 
 [dependencies]
+gtk4 = "0.10"
 
 [package.metadata.deb]
 name = "aperturec-client"

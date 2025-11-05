@@ -19,9 +19,9 @@ jobs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       server_release_created: ${{ steps.release.outputs['aperturec-server--release_created'] }}
       server_tag_name: ${{ steps.release.outputs['aperturec-server--tag_name'] }}
-      client_release_created: ${{ steps.release.outputs['aperturec-client-gtk3--release_created'] }}
-      client_tag_name: ${{ steps.release.outputs['aperturec-client-gtk3--tag_name'] }}
-      client_version: ${{ steps.release.outputs['aperturec-client-gtk3--version'] }}
+      client_release_created: ${{ steps.release.outputs['aperturec-client-gtk4--release_created'] }}
+      client_tag_name: ${{ steps.release.outputs['aperturec-client-gtk4--tag_name'] }}
+      client_version: ${{ steps.release.outputs['aperturec-client-gtk4--version'] }}
     steps:
       - uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf
         id: app-token
@@ -74,7 +74,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ci/scripts/attach-release-artifacts.sh \
-            "aperturec-client-gtk3" \
+            "aperturec-client-gtk4" \
             "${{ needs.release-please.outputs.client_tag_name }}" \
             "./artifacts"
       - run: |
@@ -93,7 +93,7 @@ jobs:
           PACKAGECLOUD_TOKEN: ${{ secrets.PACKAGECLOUD_TOKEN }}
         run: |
           ci/scripts/push-to-packagecloud.sh \
-            "aperturec-client-gtk3" \
+            "aperturec-client-gtk4" \
             "${{ needs.release-please.outputs.client_tag_name }}" \
             "./artifacts"
       - if: needs.release-please.outputs.client_release_created == 'true'
