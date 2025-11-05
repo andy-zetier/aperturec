@@ -2,6 +2,7 @@
 members = [
   "aperturec-channel",
   "aperturec-client-gtk3",
+  "aperturec-client-gtk4",
   "aperturec-client",
   "aperturec-graphics",
   "aperturec-metrics",
