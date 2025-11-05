@@ -148,9 +148,9 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: windows
-      - run: cargo check -p aperturec-client-gtk3
-      - run: cargo build -p aperturec-client-gtk3 --all-targets --target x86_64-pc-windows-gnu
-      - run: cargo build -p aperturec-client-gtk3 --target x86_64-pc-windows-gnu --release
+      - run: cargo check -p aperturec-client-gtk4
+      - run: cargo build -p aperturec-client-gtk4 --all-targets --target x86_64-pc-windows-gnu
+      - run: cargo build -p aperturec-client-gtk4 --target x86_64-pc-windows-gnu --release
 
   full-warmup-macos:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -160,6 +160,6 @@ jobs:
       - uses: ./.github/actions/setup-macos-build
         with:
           cache-key: macos
-      - run: cargo check -p aperturec-client-gtk3
-      - run: cargo build -p aperturec-client-gtk3 --all-targets
-      - run: cargo build -p aperturec-client-gtk3 --release
+      - run: cargo check -p aperturec-client-gtk4
+      - run: cargo build -p aperturec-client-gtk4 --all-targets
+      - run: cargo build -p aperturec-client-gtk4 --release
