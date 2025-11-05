@@ -5,7 +5,7 @@ set -euxo pipefail
 # derive product version from root Cargo.toml
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT_DIR=$(dirname "$(dirname "$SCRIPT_DIR")")
-SRC_DIR="${ROOT_DIR}/aperturec-client-gtk3"
+SRC_DIR="${ROOT_DIR}/aperturec-client-gtk4"
 version=$(
   grep -m1 '^version *= *"' "$SRC_DIR/Cargo.toml" \
     | sed -E 's/.*version *= *"([^"]+)".*/\1/'
@@ -18,7 +18,7 @@ for DLL in $(peldd package/*.exe -t --ignore-errors)
     do cp "$DLL" package
 done
 
-mkdir -p package/share/{themes,gtk-3.0,glib-2.0}
+mkdir -p package/share/{themes,gtk-4.0,glib-2.0}
 cp -r "$GTK_INSTALL_PATH/share/glib-2.0/schemas" package/share/glib-2.0/
 cp -r "$GTK_INSTALL_PATH/share/icons" package/share/icons
 

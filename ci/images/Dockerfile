@@ -5,10 +5,11 @@ ARG ARCHITECTURE=$TARGETARCH
 # Package lists for different image types and OS variants
 # Client and server packages
 ARG CLIENT_PKGS_DEBIAN="\
-    libgtk-3-dev \
+    libgtk-4-dev \
+    lsb-release \
     tzdata"
 ARG CLIENT_PKGS_FEDORA="\
-    gtk3-devel \
+    gtk4-devel \
     tzdata"
 ARG SERVER_PKGS_DEBIAN="\
     libxcb1-dev \
@@ -61,7 +62,7 @@ ARG CLIENT_PKGS_WINDOWS="\
     mingw64-gcc \
     mingw64-gcc-c++ \
     mingw64-glib2-static \
-    mingw64-gtk3 \
+    mingw64-gtk4 \
     mingw64-harfbuzz \
     mingw64-openssl \
     mingw64-pango \

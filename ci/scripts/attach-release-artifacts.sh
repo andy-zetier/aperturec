@@ -7,7 +7,7 @@ ARTIFACTS_DIR="${3:-./artifacts}"
 
 if [[ -z "$PACKAGE_NAME" || -z "$RELEASE_TAG" ]]; then
     echo "Usage: $0 <package_name> <release_tag> [artifacts_dir]"
-    echo "  package_name: aperturec-server or aperturec-client-gtk3"
+    echo "  package_name: aperturec-server or aperturec-client-gtk4"
     echo "  release_tag: The git tag for the release"
     echo "  artifacts_dir: Directory containing downloaded artifacts (default: ./artifacts)"
     exit 1
@@ -82,7 +82,7 @@ case "$PACKAGE_NAME" in
         upload_linux_packages "server"
         ;;
 
-    aperturec-client-gtk3)
+    aperturec-client-gtk4)
         upload_linux_packages "client"
 
         for pkg in "$ARTIFACTS_DIR"/client-package-macos/*.{tar.gz,zip} "$ARTIFACTS_DIR"/client-package-windows-amd64/*.msi; do
@@ -96,7 +96,7 @@ case "$PACKAGE_NAME" in
 
     *)
         echo "Error: Unknown package name: $PACKAGE_NAME"
-        echo "Supported packages: aperturec-server, aperturec-client-gtk3"
+        echo "Supported packages: aperturec-server, aperturec-client-gtk4"
         exit 1
         ;;
 esac

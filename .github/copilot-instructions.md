@@ -1,6 +1,6 @@
 # ApertureC Development Instructions
 
-ApertureC is a Rust workspace containing a QUIC-based remote desktop server and GTK3 client application. The project provides low-latency screen sharing and control capabilities with advanced graphics optimization.
+ApertureC is a Rust workspace containing a QUIC-based remote desktop server and GTK4 client application. The project provides low-latency screen sharing and control capabilities with advanced graphics optimization.
 
 Always reference these instructions first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
 
@@ -9,7 +9,7 @@ Always reference these instructions first and fallback to search or bash command
 ### System Dependencies
 Install required system dependencies before building:
 ```bash
-sudo apt update && sudo apt install -y libgtk-3-dev libglib2.0-dev pkg-config protobuf-compiler build-essential
+sudo apt update && sudo apt install -y libgtk-4-dev libglib2.0-dev pkg-config protobuf-compiler build-essential
 ```
 
 ### Build Commands
@@ -18,7 +18,7 @@ sudo apt update && sudo apt install -y libgtk-3-dev libglib2.0-dev pkg-config pr
   - `cargo check` - Initial compilation check and dependency download (takes ~6 minutes)
   - `cargo build --release` - Full release build (takes ~20-25 minutes). NEVER CANCEL. Set timeout to 45+ minutes.
   - `cargo build --release -p aperturec-server` - Build only the server (takes ~15-20 minutes). NEVER CANCEL.
-  - `cargo build --release -p aperturec-client-gtk3` - Build only the client (takes ~15-20 minutes). NEVER CANCEL.
+  - `cargo build --release -p aperturec-client-gtk4` - Build only the client (takes ~15-20 minutes). NEVER CANCEL.
 
 ### Test Commands
 - `cargo test --workspace` - Run all tests (takes ~15-20 minutes). NEVER CANCEL. Set timeout to 30+ minutes.
@@ -50,10 +50,10 @@ cargo run -p aperturec-server -- \
 #### Client
 ```bash
 # Basic client startup (requires build first)
-cargo run -p aperturec-client-gtk3 -- --help
+cargo run -p aperturec-client-gtk4 -- --help
 
 # Connect to local server
-cargo run -p aperturec-client-gtk3 -- connect 127.0.0.1:46452
+cargo run -p aperturec-client-gtk4 -- connect 127.0.0.1:46452
 ```
 
 ## Validation
@@ -71,7 +71,7 @@ Always test these scenarios after making changes:
 
 3. **Application Functionality** (if X11 environment available):
    - Start server with test application: `cargo run -p aperturec-server -- "xterm"`
-   - Connect with client: `cargo run -p aperturec-client-gtk3 -- connect 127.0.0.1:46452`
+   - Connect with client: `cargo run -p aperturec-client-gtk4 -- connect 127.0.0.1:46452`
    - Verify you can see and interact with the remote application
 
 4. **Code Quality**:
@@ -90,7 +90,7 @@ The CI pipeline (.github/workflows/ci.yml) will fail if:
 
 ### Key Workspace Crates
 - `aperturec-server/` - QUIC server application with X11 capture
-- `aperturec-client-gtk3/` - GTK3 client application
+- `aperturec-client-gtk4/` - GTK4 client application
 - `aperturec-client/` - Core client library
 - `aperturec-channel/` - QUIC network layer (s2n-quic based)
 - `aperturec-graphics/` - Graphics processing and optimization
@@ -118,7 +118,7 @@ The `aperturec-protocol/` crate auto-generates Rust code from `.proto` files in 
 ├── Cargo.lock                 # Dependency lock file
 ├── deny.toml                  # Dependency policy
 ├── aperturec-server/          # Server application
-├── aperturec-client-gtk3/     # GTK3 client application
+├── aperturec-client-gtk4/     # GTK4 client application
 ├── aperturec-client/          # Client library
 ├── aperturec-channel/         # QUIC networking
 ├── aperturec-graphics/        # Graphics processing
@@ -134,19 +134,19 @@ The `aperturec-protocol/` crate auto-generates Rust code from `.proto` files in 
 ### Environment Requirements
 - **Rust**: 1.89.0+ (2024 edition required)
 - **System**: Linux with X11 support
-- **Dependencies**: GTK3, GLib, protobuf-compiler, pkg-config
+- **Dependencies**: GTK4, GLib, protobuf-compiler, pkg-config
 - **Optional**: Xvfb for headless testing
 - **Network**: QUIC networking requires modern Linux (kernel 4.18+)
 
 ### Performance Notes
 - Release builds enable LTO and optimizations, significantly increasing build time
 - Server includes X11 capture and graphics processing - requires display server
-- Client uses GTK3 for UI - requires GUI environment
+- Client uses GTK4 for UI - requires GUI environment
 - Network layer uses AWS s2n-quic for high-performance QUIC
 - Graphics processing uses hardware acceleration when available
 
 ### Troubleshooting
-- **Build fails with glib-sys errors**: Install GTK3 development packages
+- **Build fails with glib-sys errors**: Install GTK4 development packages
 - **Missing protobuf compiler**: Install `protobuf-compiler` package
 - **X11 connection errors**: Server needs X11 display (use Xvfb for headless)
 - **QUIC connection issues**: Check firewall and kernel version (4.18+ required)

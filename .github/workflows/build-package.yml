@@ -74,7 +74,7 @@ jobs:
           - { name: centos-stream9, variant: fedora }
         arch: [amd64, arm64]
         component:
-          - { name: client, crate: aperturec-client-gtk3 }
+          - { name: client, crate: aperturec-client-gtk4 }
           - { name: server, crate: aperturec-server }
     container:
       # Use the specific Docker image built for this OS/arch/component with digest
@@ -133,7 +133,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: windows
-      - run: cargo build --release -p aperturec-client-gtk3 --target x86_64-pc-windows-gnu
+      - run: cargo build --release -p aperturec-client-gtk4 --target x86_64-pc-windows-gnu
       - run: cp target/x86_64-pc-windows-gnu/release/aperturec-client.exe ./
       - run: |
           chmod +x ci/scripts/create-windows-package.sh
@@ -154,7 +154,7 @@ jobs:
       - uses: ./.github/actions/setup-macos-build
         with:
           cache-key: macos
-      - run: cargo build --release -p aperturec-client-gtk3
+      - run: cargo build --release -p aperturec-client-gtk4
       - run: |
           chmod +x ci/scripts/create-macos-package.sh
           ci/scripts/create-macos-package.sh
