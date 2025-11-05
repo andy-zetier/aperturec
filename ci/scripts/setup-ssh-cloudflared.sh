@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euxo pipefail
+set -euo pipefail
 
 SSH_PORT="${SSH_PORT:-2222}"
 WORK_DIR="$(pwd)"
