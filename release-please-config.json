@@ -4,7 +4,6 @@
   "release-type": "rust",
   "packages": {
     "aperturec-server": {},
-    "aperturec-client-gtk3": {},
     "aperturec-client-gtk4": {},
     "aperturec-channel": {},
     "aperturec-client": {},
