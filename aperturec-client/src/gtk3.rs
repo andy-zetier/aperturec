@@ -1347,10 +1347,16 @@ impl WindowInternals {
             }),
         );
         drawing_area.connect_key_press_event(glib::clone!(@strong workspace => move |_, key| {
+            if intercept_caps_lock(&workspace, key) {
+                return glib::Propagation::Stop;
+            }
             signal_handlers::key_press(&workspace, key);
             glib::Propagation::Stop
         }));
         drawing_area.connect_key_release_event(glib::clone!(@strong workspace => move |_, key| {
+            if intercept_caps_lock(&workspace, key) {
+                return glib::Propagation::Stop;
+            }
             signal_handlers::key_release(&workspace, key);
             glib::Propagation::Stop
         }));
@@ -1448,6 +1454,22 @@ impl WindowInternals {
             );
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+// Synthesize press/release on macOS since GTK3 doesn't report a full press/release pair
+fn intercept_caps_lock(workspace: &UiWorkspace, key: &gdk::EventKey) -> bool {
+    let is_caps_lock = key.keyval() == gdk::keys::constants::Caps_Lock;
+    if is_caps_lock {
+        signal_handlers::key_press(workspace, key);
+        signal_handlers::key_release(workspace, key);
+    }
+    is_caps_lock
+}
+
+#[cfg(not(target_os = "macos"))]
+fn intercept_caps_lock(_: &UiWorkspace, _: &gdk::EventKey) -> bool {
+    false
 }
 
 struct SingleDisplayWindow {
