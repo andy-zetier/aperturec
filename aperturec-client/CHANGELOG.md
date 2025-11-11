@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.0.0...aperturec-client-v1.0.1) (2025-11-11)
+
+
+### Bug Fixes
+
+* Send synthetic caps lock keystroke on macos ([#695](https://github.com/Zetier/aperturec/issues/695)) ([bcc4d62](https://github.com/Zetier/aperturec/commit/bcc4d62855b6ff21668dfe266b4bdb70208674fc))
+
 ## [1.0.0](https://github.com/Zetier/aperturec/compare/aperturec-client-v0.3.0...aperturec-client-v1.0.0) (2025-10-27)
 
 

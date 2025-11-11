@@ -1,5 +1,7 @@
 # Changelog
 
+## [1.0.16](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.15...aperturec-client-gtk3-v1.0.16) (2025-11-11)
+
 ## [1.0.15](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.14...aperturec-client-gtk3-v1.0.15) (2025-10-27)
 
 ## [1.0.14](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.13...aperturec-client-gtk3-v1.0.14) (2025-10-07)
