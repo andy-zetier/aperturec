@@ -1,9 +1,8 @@
 use crate::prelude::*;
 
-use image::{GrayImage, Luma};
+use image::{GrayImage, ImageBuffer, Luma};
 use imageproc::region_labelling::{Connectivity, connected_components};
 use ndarray::prelude::*;
-use nshare::*;
 use std::cmp::{max, min};
 use std::collections::BTreeMap;
 
@@ -29,6 +28,12 @@ fn sampled_diff_image<const SAMPLE_GRID_SIZE: usize>(
             Luma([u8::MAX])
         }
     })
+}
+
+fn image_luma_view(image: &ImageBuffer<Luma<u32>, Vec<u32>>) -> ArrayView2<'_, u32> {
+    let (width, height) = image.dimensions();
+    ArrayView2::from_shape((height as usize, width as usize), image.as_raw())
+        .expect("ImageBuffer's raw data length must match its width * height")
 }
 
 fn region_bounds(labeled_regions: ArrayView2<u32>) -> BTreeMap<u32, Box2D> {
@@ -117,7 +122,7 @@ pub fn diff_rectangle_cover(
     }
     let ccs = connected_components(&diff_image, Connectivity::Four, Luma([0_u8]));
 
-    region_bounds(ccs.as_ndarray2())
+    region_bounds(image_luma_view(&ccs))
         .into_values()
         .map(|mut b| {
             b.min.x *= SAMPLE_GRID_SIZE;
