@@ -9,7 +9,7 @@ use aperturec_graphics::prelude::*;
 use aperturec_utils::{args, warn_early};
 
 use anyhow::{Result, anyhow, ensure};
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 use gethostname::gethostname;
 use openssl::x509::X509;
 use secrecy::SecretString;
@@ -66,8 +66,12 @@ impl From<ResolutionGroup> for client::DisplayMode {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version, about)]
+#[command(author, about, disable_version_flag = true)]
 struct Args {
+    /// Print version information
+    #[arg(short = 'V', long = "version", action = clap::ArgAction::SetTrue)]
+    version: bool,
+
     #[clap(flatten)]
     resolution: ResolutionGroup,
 
@@ -166,7 +170,7 @@ fn args_from_uri(uri: &str) -> Result<Args> {
     )?)
 }
 
-pub fn run() -> Result<()> {
+pub fn run(frontend_name: &str, frontend_version: &str) -> Result<()> {
     let args = if env::args().count() == 2 {
         let arg1 = env::args().nth(1).unwrap();
         if let Ok(parsed) = args_from_uri(&arg1) {
@@ -190,13 +194,23 @@ pub fn run() -> Result<()> {
         Args::parse()
     };
 
+    let version = format!(
+        "{} v{} ({} v{})",
+        frontend_name,
+        frontend_version,
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+    );
+
+    if args.version {
+        println!("{version}");
+        return Ok(());
+    }
+
     let (log_layer, _guard) = args.log.as_tracing_layer()?;
     tracing_subscriber::registry().with(log_layer).init();
 
-    info!(
-        "ApertureC Client Startup v{}",
-        Args::command().get_version().expect("get_version"),
-    );
+    info!("{version}");
 
     let config = {
         // Scope config_builder to ensure it is dropped and any auth-token leaves memory
