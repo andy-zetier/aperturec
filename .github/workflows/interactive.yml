@@ -45,6 +45,19 @@ jobs:
           cache-key: ${{ contains(inputs.runner, 'arm') && 'ubuntu-24-arm64' || contains(inputs.runner, '22') && 'ubuntu-22-amd64' || 'ubuntu-24-amd64' }}
           save-cache: false
           install-home: ${{ runner.temp }}/..
+      - name: Ensure Cargo available in login shells
+        shell: bash
+        run: |
+          if [ -f "$HOME/.cargo/env" ]; then
+            for file in "$HOME/.bash_profile" "$HOME/.bashrc"; do
+              if [ -f "$file" ]; then
+                if grep -vq 'cargo/env' "$file"; then
+                  printf '\nsource "$HOME/.cargo/env"  # This loads cargo\n' >> "$file"
+                  break
+                fi
+              fi
+            done
+          fi
       - &start_ssh_step
         shell: bash
         run: |

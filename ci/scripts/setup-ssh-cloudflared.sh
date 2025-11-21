@@ -133,12 +133,25 @@ check_connections() {
 }
 
 HAD_CONNECTION=false
+START_TIME=$(date +%s)
+MAX_WAIT_SECONDS=$((3 * 60))
 
 while kill -0 "$CLOUDFLARED_PID" 2>/dev/null; do
   if check_connections; then
-    [ "$HAD_CONNECTION" = false ] && HAD_CONNECTION=true
-  elif [ "$HAD_CONNECTION" = true ]; then
-    exit 0
+    if [ "$HAD_CONNECTION" = false ]; then
+      HAD_CONNECTION=true
+      echo "SSH connection established."
+    fi
+  else
+    if [ "$HAD_CONNECTION" = true ]; then
+      echo "No active SSH sessions detected. Shutting down."
+      exit 0
+    fi
+    NOW=$(date +%s)
+    if [ $((NOW - START_TIME)) -ge $MAX_WAIT_SECONDS ]; then
+      echo "No SSH connections within $MAX_WAIT_SECONDS seconds. Shutting down."
+      exit 1
+    fi
   fi
   sleep 2
 done
