@@ -10,7 +10,7 @@ aperturec-protocol = { path = "../aperturec-protocol" }
 aperturec-metrics = { path = "../aperturec-metrics" }
 aperturec-utils = { path = "../aperturec-utils" }
 
-bytes = "1.6"
+bytes = "1.11"
 futures = "0.3"
 openssl = { version = "0.10" }
 paste = "1.0"
@@ -25,11 +25,11 @@ tracing = "0.1"
 zeroize = "1.8"
 
 [target.'cfg(unix)'.dependencies.s2n-quic]
-version = "1.68"
+version = "1.69"
 features = ["provider-tls-fips", "provider-tls-rustls"]
 
 [target.'cfg(windows)'.dependencies.s2n-quic]
-version = "1.68"
+version = "1.69"
 features = ["provider-tls-rustls"]
 
 [dev-dependencies]

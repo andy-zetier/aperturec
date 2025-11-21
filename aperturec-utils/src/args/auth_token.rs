@@ -21,7 +21,7 @@ pub struct AuthTokenFileArgGroup {
 impl AuthTokenFileArgGroup {
     pub fn into_token(self) -> Result<Option<SecretString>, AuthTokenError> {
         if let Some(path) = self.auth_token_file {
-            let auth_token = if path == PathBuf::from("-") {
+            let auth_token = if path.as_os_str() == "-" {
                 SecretString::from(
                     io::read_to_string(io::stdin())
                         .map_err(AuthTokenError::ReadFromStdin)?
