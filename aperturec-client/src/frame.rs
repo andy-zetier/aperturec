@@ -498,14 +498,21 @@ pub struct CompleteFrame {
     decoded_fragments: Vec<DecodedFragmentData>,
 }
 
+/// Screen update with pixel data to render.
+///
+/// Represents a rectangular region of pixels that should be drawn to the screen.
 #[derive(Debug)]
 pub struct Draw {
+    /// Frame sequence number.
     pub frame: usize,
+    /// Top-left position in screen coordinates.
     pub origin: Point,
+    /// Decoded pixel data in 24-bit RGB format.
     pub pixels: Pixel24Map,
 }
 
 impl Draw {
+    /// Returns the rectangular area covered by this draw operation.
     pub fn area(&self) -> Rect {
         Rect::new(self.origin, self.pixels.size())
     }
