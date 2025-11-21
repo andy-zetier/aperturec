@@ -308,6 +308,7 @@ pub fn get_monitors_geometry() -> Result<MonitorsGeometry> {
 enum Action {
     Refresh,
     Disconnect,
+    Grab,
     Window,
     SingleMonitorFullscreen,
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -323,6 +324,7 @@ impl Action {
         match self {
             Action::Refresh => "Refresh",
             Action::Disconnect => "Disconnect",
+            Action::Grab => "Toggle Keyboard Grab",
             Action::Window => "Windowed Mode",
             Action::SingleMonitorFullscreen => "Single Monitor Fullscreen Mode",
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -335,6 +337,7 @@ impl Action {
         match self {
             Action::Refresh => &["<Ctrl><Primary>F5"],
             Action::Disconnect => &["<Ctrl><Primary>F12"],
+            Action::Grab => &["<Ctrl><Primary>G"],
             Action::Window => &["<Ctrl><Primary>W"],
             Action::SingleMonitorFullscreen => &["<Ctrl><Primary>F"],
         }
@@ -342,6 +345,7 @@ impl Action {
         match self {
             Action::Refresh => &["<Ctrl><Alt>F5", "<Ctrl><Alt><Shift>F5"],
             Action::Disconnect => &["<Ctrl><Alt>F12", "<Ctrl><Alt><Shift>F12"],
+            Action::Grab => &["<Ctrl><Alt>G", "<Ctrl><Alt><Shift>G"],
             Action::Window => &["<Ctrl><Alt>W", "<Ctrl><Alt><Shift>W"],
             Action::SingleMonitorFullscreen => &["<Ctrl><Alt>Return"],
             #[cfg(not(target_os = "windows"))]
@@ -516,6 +520,12 @@ impl GtkUi {
             action_tx,
             initial_monitors_geometry,
         )?);
+
+        workspace
+            .grab_manager
+            .borrow_mut()
+            .set_grab(initial_display_mode.is_fullscreen());
+
         let windows = Rc::new(RefCell::new(Windows::new(
             app.clone(),
             workspace.clone(),
@@ -644,6 +654,9 @@ impl GtkUi {
                         debug!("Switching to windowed mode");
                         windows.borrow_mut().window();
                     }
+                    Action::Grab => {
+                        workspace.grab_manager.borrow_mut().toggle_grab();
+                    }
                 }
                 glib::ControlFlow::Continue
             }),
@@ -754,6 +767,98 @@ impl GtkUi {
     }
 }
 
+struct GrabManager {
+    grab_requested: bool,
+    focused_window: Option<gdk::Window>,
+    grab_window: Option<gdk::Window>,
+}
+
+impl GrabManager {
+    fn new() -> Self {
+        GrabManager {
+            grab_requested: false,
+            focused_window: None,
+            grab_window: None,
+        }
+    }
+
+    fn set_grab(&mut self, grab_requested: bool) {
+        self.grab_requested = grab_requested;
+        if self.grab_requested {
+            if let Err(err) = self.grab_keyboard() {
+                warn!(%err, "Failed to grab keyboard");
+            }
+        } else {
+            self.ungrab_keyboard();
+        }
+    }
+
+    fn toggle_grab(&mut self) {
+        self.set_grab(!self.grab_requested);
+    }
+
+    fn ensure_grab(&mut self, window: Option<gdk::Window>) {
+        self.focused_window = window;
+        if self.grab_requested
+            && let Err(err) = self.grab_keyboard()
+        {
+            warn!(%err, "Failed to grab keyboard");
+        }
+    }
+
+    fn with_default_seat<T, F>(f: F) -> Result<T>
+    where
+        F: FnOnce(&gdk::Seat) -> Result<T>,
+    {
+        let display =
+            gdk::Display::default().ok_or_else(|| anyhow!("Failed to get default GTK display"))?;
+        let seat = display
+            .default_seat()
+            .ok_or_else(|| anyhow!("Failed to get default seat"))?;
+        f(&seat)
+    }
+
+    fn grab_keyboard(&mut self) -> Result<()> {
+        let window = self
+            .focused_window
+            .as_ref()
+            .ok_or_else(|| anyhow!("No focused window"))?
+            .clone();
+
+        self.ungrab_keyboard();
+
+        Self::with_default_seat(|seat| {
+            match seat.grab(
+                &window,
+                gdk::SeatCapabilities::KEYBOARD,
+                true,
+                None,
+                None,
+                None,
+            ) {
+                gdk::GrabStatus::Success => {
+                    debug!("Keyboard grab Window {:?}", window.as_ptr());
+                    window.focus(0);
+                    self.grab_window = Some(window);
+                    Ok(())
+                }
+                status => Err(anyhow!("Failed to grab keyboard: {:?}", status)),
+            }
+        })
+    }
+
+    fn ungrab_keyboard(&mut self) {
+        if let Some(window) = self.grab_window.take() {
+            debug!("Keyboard ungrab Window {:?}", window.as_ptr());
+            Self::with_default_seat(|seat| {
+                seat.ungrab();
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+}
+
 struct UiWorkspace {
     event_tx: Sender<EventMessage>,
     monitors_geometry: RefCell<MonitorsGeometry>,
@@ -764,6 +869,7 @@ struct UiWorkspace {
     held_keys: RefCell<BTreeSet<u16>>,
     shutdown_started: Cell<bool>,
     scroll_accumulator: Cell<(f64, f64)>,
+    grab_manager: RefCell<GrabManager>,
 }
 
 impl UiWorkspace {
@@ -783,6 +889,7 @@ impl UiWorkspace {
             lock_state: Cell::new(LockState::get_current()),
             shutdown_started: false.into(),
             scroll_accumulator: Cell::new((0.0, 0.0)),
+            grab_manager: RefCell::new(GrabManager::new()),
         })
     }
 }
@@ -1183,10 +1290,6 @@ fn create_application_menu() -> gio::Menu {
 
     let view_menu = gio::Menu::new();
     view_menu.append(
-        Some(Action::Refresh.label()),
-        Some(&Action::Refresh.qualified_name()),
-    );
-    view_menu.append(
         Some(Action::Window.label()),
         Some(&Action::Window.qualified_name()),
     );
@@ -1199,6 +1302,18 @@ fn create_application_menu() -> gio::Menu {
         Some(Action::MultiMonitorFullscreen.label()),
         Some(&Action::MultiMonitorFullscreen.qualified_name()),
     );
+
+    let view_control_menu = gio::Menu::new();
+    view_control_menu.append(
+        Some(Action::Grab.label()),
+        Some(&Action::Grab.qualified_name()),
+    );
+    view_control_menu.append(
+        Some(Action::Refresh.label()),
+        Some(&Action::Refresh.qualified_name()),
+    );
+
+    view_menu.append_section(None, &view_control_menu);
 
     menu.append_submenu(Some("View"), &view_menu);
     menu
@@ -1328,14 +1443,15 @@ impl WindowInternals {
             gtk::Layout::builder()
                 .can_focus(true)
                 .events(
-                    gdk::EventMask::KEY_PRESS_MASK
-                        | gdk::EventMask::KEY_RELEASE_MASK
-                        | gdk::EventMask::BUTTON_PRESS_MASK
+                    gdk::EventMask::BUTTON_PRESS_MASK
                         | gdk::EventMask::BUTTON_RELEASE_MASK
-                        | gdk::EventMask::SCROLL_MASK
-                        | gdk::EventMask::SMOOTH_SCROLL_MASK
+                        | gdk::EventMask::ENTER_NOTIFY_MASK
+                        | gdk::EventMask::FOCUS_CHANGE_MASK
+                        | gdk::EventMask::KEY_PRESS_MASK
+                        | gdk::EventMask::KEY_RELEASE_MASK
                         | gdk::EventMask::POINTER_MOTION_MASK
-                        | gdk::EventMask::FOCUS_CHANGE_MASK,
+                        | gdk::EventMask::SCROLL_MASK
+                        | gdk::EventMask::SMOOTH_SCROLL_MASK,
                 )
                 .app_paintable(false)
                 .build(),
@@ -1363,6 +1479,12 @@ impl WindowInternals {
         drawing_area.connect_button_press_event(
             glib::clone!(@strong workspace => move |_, button| {
                 signal_handlers::button_press(&workspace, button);
+                glib::Propagation::Stop
+            }),
+        );
+        drawing_area.connect_enter_notify_event(
+            glib::clone!(@strong workspace, @strong app_window => move |_, _| {
+                workspace.grab_manager.borrow_mut().ensure_grab(app_window.window());
                 glib::Propagation::Stop
             }),
         );
