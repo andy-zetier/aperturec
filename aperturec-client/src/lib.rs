@@ -9,7 +9,7 @@ use aperturec_graphics::prelude::*;
 use aperturec_utils::{args, warn_early};
 
 use anyhow::{Result, anyhow, ensure};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use gethostname::gethostname;
 use openssl::x509::X509;
 use secrecy::SecretString;
@@ -193,7 +193,10 @@ pub fn run() -> Result<()> {
     let (log_layer, _guard) = args.log.as_tracing_layer()?;
     tracing_subscriber::registry().with(log_layer).init();
 
-    info!("ApertureC Client Startup");
+    info!(
+        "ApertureC Client Startup v{}",
+        Args::command().get_version().expect("get_version"),
+    );
 
     let config = {
         // Scope config_builder to ensure it is dropped and any auth-token leaves memory
