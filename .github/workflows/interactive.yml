@@ -36,7 +36,7 @@ jobs:
     timeout-minutes: 360
     steps:
       - &checkout_step
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6.0.0
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0

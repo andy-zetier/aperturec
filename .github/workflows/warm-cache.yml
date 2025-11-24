@@ -23,7 +23,7 @@ jobs:
     outputs:
       image_ref: ${{ steps.build.outputs.image_ref }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
       - id: build
         uses: ./.github/actions/build-docker-image
         with:
@@ -40,7 +40,7 @@ jobs:
     container:
       image: ${{ needs.quick-warmup-image.outputs.image_ref }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: ubuntu-24-amd64
@@ -62,7 +62,7 @@ jobs:
           - { name: centos-stream9, upstream: "quay.io/centos/centos:stream9", variant: fedora }
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
       - id: build
         uses: ./.github/actions/build-docker-image
         with:
@@ -108,7 +108,7 @@ jobs:
     container:
       image: ${{ fromJSON(needs.collect-warmup-image-refs.outputs.images).image_ref[format('{0}-{1}', matrix.os.name, matrix.arch)] }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: ${{ matrix.os.name }}-${{ matrix.arch }}
@@ -122,7 +122,7 @@ jobs:
     outputs:
       image_ref: ${{ steps.build.outputs.image_ref }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
       - id: build
         uses: ./.github/actions/build-docker-image
         with:
@@ -139,7 +139,7 @@ jobs:
     container:
       image: ${{ needs.full-warmup-windows-image.outputs.image_ref }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: windows
@@ -151,7 +151,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3
       - uses: ./.github/actions/setup-macos-build
         with:
           cache-key: macos
