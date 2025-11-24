@@ -28,7 +28,6 @@ derive_builder = "0.20"
 derive_more = { version = "2.1", features = ["display"] }
 flate2 = { version = "1.1", features = ["zlib-ng"], default-features = false }
 gethostname = "1.1"
-gtk = "0.18"
 jxl-sys = "0.1"
 keycode = "1.0.0"
 libc = { version = "0.2", optional = true }

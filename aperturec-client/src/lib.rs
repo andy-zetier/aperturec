@@ -1,29 +1,25 @@
-// Public modules
 pub mod args;
 pub mod config;
 pub mod state;
 
-// Internal modules (private by default, expose what's needed)
 mod channels;
-pub mod client;
 #[cfg(feature = "ffi-lib")]
 pub mod ffi;
 pub mod frame;
-pub mod gtk3;
 pub mod metrics;
 
-// Re-exports for convenience
-pub use crate::channels::event::Cursor;
-pub use crate::frame::Draw;
-pub use aperturec_metrics::exporters::Exporter as MetricsExporter;
+use crate::args::Args;
+use crate::channels::event::Cursor;
+use crate::frame::Draw;
 
 use aperturec_graphics::{display::*, prelude::*};
+use aperturec_metrics::exporters::Exporter as MetricsExporter;
 use aperturec_protocol::control;
-use aperturec_utils::{self as utils, warn_early};
+use aperturec_utils::warn_early;
 use config::Configuration;
 use state::LockState;
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::Result;
 use clap::Parser;
 use crossbeam::channel::RecvError;
 use gethostname::gethostname;
@@ -32,20 +28,11 @@ use secrecy::SecretString;
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::iter;
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
-use std::thread;
 use std::time::Duration;
 use tracing::*;
 use tracing_subscriber::prelude::*;
-use url::Url;
 
 /// Display mode for the client window or fullscreen configuration.
-///
-/// Note: This enum is temporarily duplicated from `client::DisplayMode`.
-/// The duplication will be resolved when the implementation is completed by
-/// migrating the client module to use this public API version.
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum DisplayMode {
     /// Windowed mode with specified dimensions.
@@ -55,6 +42,8 @@ pub enum DisplayMode {
     /// Multi-monitor fullscreen spanning all enabled displays.
     MultiFullscreen,
 }
+
+const DEFAULT_RESOLUTION: Size = Size::new(800, 600);
 
 /// Reason for connection termination.
 #[derive(Debug)]
@@ -368,163 +357,16 @@ impl Connection {
     }
 }
 
-fn parse_resolution(s: &str) -> Result<Size, String> {
-    let re = regex::Regex::new(r"^(\d+)[xX](\d+)$").expect("build regex");
-    let Some((_, [width, height])) = re.captures(s).map(|c| c.extract()) else {
-        return Err("Resolution must be in the form WIDTHxHEIGHT".to_string());
-    };
-    let width = width.parse().map_err(|w| format!("Invalid width: '{w}'"))?;
-    let height = height
-        .parse()
-        .map_err(|h| format!("Invalid height: '{h}'"))?;
-    Ok(Size::new(width, height))
-}
-
-#[derive(Debug, clap::Args)]
-#[group(required = false, multiple = false)]
-struct ResolutionGroup {
-    /// Display size specified as WIDTHxHEIGHT
-    #[arg(short, long, default_value = format!("{:?}", gtk3::DEFAULT_RESOLUTION), value_parser = parse_resolution)]
-    resolution: Size,
-
-    /// Set resolution to your displays' current sizes and startup in multi-monitor fullscreen
-    /// mode. Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
-    #[arg(short, long, action = clap::ArgAction::SetTrue)]
-    fullscreen: bool,
-
-    /// Set resolution to the current display's size and startup in single-monitor fullscreen mode.
-    /// Single-monitor fullscreen mode can be toggled at any time with Ctrl+Alt+Shift+Enter
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    single_fullscreen: bool,
-}
-
-impl From<ResolutionGroup> for client::DisplayMode {
-    fn from(g: ResolutionGroup) -> Self {
-        if g.fullscreen {
-            client::DisplayMode::MultiFullscreen
-        } else if g.single_fullscreen {
-            client::DisplayMode::SingleFullscreen
-        } else {
-            client::DisplayMode::Windowed { size: g.resolution }
-        }
-    }
-}
-
-#[derive(Parser, Debug)]
-#[command(author, about, disable_version_flag = true)]
-struct Args {
-    /// Print version information
-    #[arg(short = 'V', long = "version", action = clap::ArgAction::SetTrue)]
-    version: bool,
-
-    #[clap(flatten)]
-    resolution: ResolutionGroup,
-
-    /// Maximum number of decoders to use
-    #[arg(short, long, default_value_t = thread::available_parallelism().unwrap())]
-    decoder_max: NonZeroUsize,
-
-    /// Program to launch and display on connection.
-    ///
-    /// If left unspecified, the client will open the server-specified root program, resuming any
-    /// previous state. If specified, the client will force the server to launch a new instance of
-    /// the specified program, which will be killed on client disconnect.
-    ///
-    /// Specifying this argument requires the server to have set `--allow-client-exec`.
-    #[arg(index = 2)]
-    program_cmdline: Option<String>,
-
-    /// Hostname or IP address of the server, optionally including a control port. Eg. mybox.com,
-    /// 10.10.10.10:46454, myotherbox.io:12345, [::1]
-    #[arg(index = 1)]
-    server_address: String,
-
-    /// Additional TLS certificates to enable connections to servers that are not serving
-    /// certificates signed by already installed CAs
-    #[arg(short, long, default_values_os_t = Vec::<PathBuf>::new())]
-    additional_tls_certificates: Vec<PathBuf>,
-
-    /// Disable server certificate validation. Similar to `curl -k / --insecure`
-    #[arg(short = 'k', long, action)]
-    insecure: bool,
-
-    /// Specifies that connections to the given TCP port on the client side are to be forwarded to
-    /// the given host and port on the server side. Arguments are given in the form
-    /// `[bind_address:]bind_port:forward_address:forward_port`
-    ///
-    /// If `bind_address` is left unspecified, the socket will bind to 0.0.0.0.
-    #[arg(short = 'L', long)]
-    local: Vec<client::PortForwardArg>,
-
-    /// Specifies that connections to the given TCP port on the server side are to be forwarded to
-    /// the given host and port on the client side. Arguments are given in the form
-    /// `[bind_address:]bind_port:forward_address:forward_port`
-    ///
-    /// If `bind_address` is left unspecified, the socket will bind to 0.0.0.0. If `bind_port` is
-    /// set to 0, the server will dynamically allocate a bind port and log it.
-    #[arg(short = 'R', long)]
-    remote: Vec<client::PortForwardArg>,
-
-    #[clap(flatten)]
-    log: utils::args::log::LogArgGroup,
-
-    #[clap(flatten)]
-    auth_token: utils::args::auth_token::AuthTokenAllArgGroup,
-
-    #[clap(flatten)]
-    metrics: utils::args::metrics::MetricsArgGroup,
-}
-
-fn args_from_uri(uri: &str) -> Result<Args> {
-    const URI_SCHEME: &str = "aperturec";
-
-    let parsed_uri = Url::parse(uri)?;
-    ensure!(
-        parsed_uri.scheme() == URI_SCHEME,
-        "URI scheme should be '{}', is '{}'",
-        URI_SCHEME,
-        parsed_uri.scheme()
-    );
-    ensure!(parsed_uri.username() == "", "URI provides username");
-    ensure!(parsed_uri.fragment().is_none(), "URI provides fragment");
-
-    let mut host = parsed_uri
-        .host_str()
-        .ok_or(anyhow!("URI provides no host"))?
-        .to_string();
-    if let Some(port) = parsed_uri.port() {
-        host = format!("{host}:{port}");
-    }
-    let args = parsed_uri.query_pairs().flat_map(|(k, v)| {
-        let k = if k.len() == 1 {
-            format!("-{k}")
-        } else {
-            format!("--{k}")
-        };
-
-        if v.is_empty() {
-            vec![k]
-        } else {
-            vec![k, v.to_string()]
-        }
-    });
-    Ok(Args::try_parse_from(
-        iter::once(env!("CARGO_PKG_NAME").to_string())
-            .chain(iter::once(host))
-            .chain(args),
-    )?)
-}
-
-pub fn run(frontend_name: &str, frontend_version: &str) -> Result<()> {
+pub fn run() -> Result<()> {
     let args = if env::args().count() == 2 {
         let arg1 = env::args().nth(1).unwrap();
-        if let Ok(parsed) = args_from_uri(&arg1) {
+        if let Ok(parsed) = Args::from_uri(&arg1) {
             parsed
         } else if let Ok(uri) = env::var("AC_URI") {
             warn_early!(
                 "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
             );
-            args_from_uri(&uri)?
+            Args::from_uri(&uri)?
         } else {
             Args::parse()
         }
@@ -534,32 +376,19 @@ pub fn run(frontend_name: &str, frontend_version: &str) -> Result<()> {
                 "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
             );
         }
-        args_from_uri(&uri)?
+        Args::from_uri(&uri)?
     } else {
         Args::parse()
     };
 
-    let version = format!(
-        "{} v{} ({} v{})",
-        frontend_name,
-        frontend_version,
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION"),
-    );
-
-    if args.version {
-        println!("{version}");
-        return Ok(());
-    }
-
     let (log_layer, _guard) = args.log.as_tracing_layer()?;
     tracing_subscriber::registry().with(log_layer).init();
 
-    info!("{version}");
+    info!("ApertureC Client Startup");
 
     let config = {
         // Scope config_builder to ensure it is dropped and any auth-token leaves memory
-        let mut config_builder = client::ConfigurationBuilder::default();
+        let mut config_builder = config::ConfigurationBuilder::default();
         let auth_token = match args.auth_token.into_token()? {
             Some(token) => token,
             None => SecretString::from(rpassword::prompt_password(format!(
@@ -572,7 +401,7 @@ pub fn run(frontend_name: &str, frontend_version: &str) -> Result<()> {
             .name(gethostname().into_string().unwrap())
             .server_addr(args.server_address)
             .auth_token(auth_token)
-            .initial_display_mode(args.resolution.into())
+            .initial_display_mode(args.resolution)
             .allow_insecure_connection(args.insecure)
             .client_bound_tunnel_reqs(args.local)
             .server_bound_tunnel_reqs(args.remote);
@@ -596,10 +425,7 @@ pub fn run(frontend_name: &str, frontend_version: &str) -> Result<()> {
         metrics::setup_client_metrics();
     }
 
-    client::run_client(config.clone())?;
-    aperturec_metrics::stop();
-
-    Ok(())
+    unimplemented!("run client and teardown metrics on completion");
 }
 
 #[cfg(feature = "ffi-lib")]
