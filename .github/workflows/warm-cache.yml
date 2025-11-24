@@ -36,7 +36,7 @@ jobs:
   quick-warmup:
     if: github.event_name == 'push'
     needs: quick-warmup-image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-l
     container:
       image: ${{ needs.quick-warmup-image.outputs.image_ref }}
     steps:
@@ -94,7 +94,7 @@ jobs:
   full-warmup-linux:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: [full-warmup-linux-images, collect-warmup-image-refs]
-    runs-on: ${{ (matrix.arch == 'arm64' && 'ubuntu-2404-l-arm') || 'ubuntu-latest' }}
+    runs-on: ${{ (matrix.arch == 'arm64' && 'ubuntu-2404-l-arm') || 'ubuntu-latest-l' }}
     strategy:
       fail-fast: false
       matrix:
