@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.17](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.16...aperturec-client-gtk3-v1.0.17) (2025-11-24)
+
+
+### Bug Fixes
+
+* Require x11 GDK backend for uri handler ([#708](https://github.com/Zetier/aperturec/issues/708)) ([6227f9f](https://github.com/Zetier/aperturec/commit/6227f9fd14c69794d288eecb5c0f35c274126679))
+
 ## [1.0.16](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.15...aperturec-client-gtk3-v1.0.16) (2025-11-11)
 
 ## [1.0.15](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.14...aperturec-client-gtk3-v1.0.15) (2025-10-27)

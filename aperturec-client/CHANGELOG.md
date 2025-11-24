@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.0.1...aperturec-client-v1.1.0) (2025-11-24)
+
+
+### Features
+
+* Add gtk3 keyboard grab ([#694](https://github.com/Zetier/aperturec/issues/694)) ([b923087](https://github.com/Zetier/aperturec/commit/b9230873bd0f8e861b077bc32b0c18516de29dfc))
+
+
+### Bug Fixes
+
+* Restore client version logging ([#706](https://github.com/Zetier/aperturec/issues/706)) ([30a4fa5](https://github.com/Zetier/aperturec/commit/30a4fa5beeab0e2f1e99e3cc0de1229c58136f81))
+
 ## [1.0.1](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.0.0...aperturec-client-v1.0.1) (2025-11-11)
 
 
