@@ -21,11 +21,11 @@ pub trait SenderExt<T> {
     ///
     /// Unlike the standard `send` method, this does not return an error.
     /// Instead, it logs a warning when the receiver has been dropped or disconnected.
-    fn send_warn(&self, msg: T);
+    fn send_or_warn(&self, msg: T);
 }
 
 impl<T> SenderExt<T> for crossbeam::channel::Sender<T> {
-    fn send_warn(&self, msg: T) {
+    fn send_or_warn(&self, msg: T) {
         self.send(msg)
             .unwrap_or_else(|e| warn!(%e, "failed to send internal message"));
     }
