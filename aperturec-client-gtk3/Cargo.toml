@@ -15,8 +15,6 @@ path = "src/main.rs"
 [dependencies]
 aperturec-client = { path = "../aperturec-client" }
 
-anyhow = "1.0"
-
 [package.metadata.deb]
 name = "aperturec-client"
 copyright = "2024, Zetier Inc."

@@ -13,7 +13,6 @@ clap = { version = "4.5", features = ["derive", "env", "string"] }
 directories = "6.0"
 file-rotate = "0.8"
 jxl-sys = "0.1"
-git-version = "0.3"
 ouroboros = "0.18"
 num = "0.4"
 rayon = "1.11"
