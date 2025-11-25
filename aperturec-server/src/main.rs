@@ -204,8 +204,9 @@ async fn main() -> Result<()> {
     tracing_subscriber::registry().with(layers).init();
 
     info!(
-        "ApertureC Server Startup v{}",
-        Args::command().get_version().expect("get_version"),
+        "{} v{}",
+        env!("CARGO_PKG_NAME"),
+        Args::command().get_version().expect("get_version")
     );
 
     let metrics_exporters = args.metrics.to_exporters(env!("CARGO_CRATE_NAME"));
