@@ -454,11 +454,10 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
 
         let mut backend = pin!(&mut self.state.backend);
         let mut session = tokio::select! {
-            session_res = &mut self.state.session_stream.try_next() => {
+            session_res = &mut self.state.session_stream.next() => {
                 match session_res {
-                    Ok(Some(session)) => session,
-                    Ok(None) => return_recover!(self, "Authenticated session stream empty"),
-                    Err(e) => return_recover!(self, "Failed accepting new sessions: {}", e),
+                    Some(session) => session,
+                    None => return_recover!(self, "Authenticated session stream ended unexpectedly"),
                 }
             }
             root_process_es_res = backend.wait_root_process() => {

@@ -27,11 +27,11 @@ pub struct AuthenticatedSession {
 
 pub struct AuthenticatedStream {
     bind_addr: SocketAddr,
-    inner: BoxStream<'static, Result<AuthenticatedSession>>,
+    inner: BoxStream<'static, AuthenticatedSession>,
 }
 
 impl Stream for AuthenticatedStream {
-    type Item = Result<AuthenticatedSession>;
+    type Item = AuthenticatedSession;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         pin!(&mut self.inner).poll_next_unpin(cx)
@@ -54,13 +54,26 @@ impl AuthenticatedStream {
             .hash_password(auth_token.expose_secret().as_ref(), &*SALT)
             .expect("hash auth token");
         let bind_addr = channel_server.local_addr()?;
-        let inner = stream::try_unfold(channel_server, move |mut channel_server| {
+        let inner = stream::unfold(channel_server, move |mut channel_server| {
             let auth_token_hash = auth_token_hash.clone();
             async move {
                 loop {
                     info!("Listening for client");
-                    let unauthed_session = channel_server.accept().await?;
-                    let remote_addr = unauthed_session.remote_addr()?;
+                    let unauthed_session = match channel_server.accept().await {
+                        Ok(us) => us,
+                        Err(channel::endpoint::AcceptError::Session(error)) => {
+                            warn!(%error, "failed accepting new connection");
+                            continue;
+                        }
+                        Err(channel::endpoint::AcceptError::Closed) => break None,
+                    };
+                    let remote_addr = match unauthed_session.remote_addr() {
+                        Ok(ra) => ra,
+                        Err(error) => {
+                            warn!(%error, "failed getting remote address for new connection");
+                            continue;
+                        }
+                    };
                     let client_addr = remote_addr.ip().to_string();
                     let client_port = remote_addr.port();
 
@@ -97,7 +110,7 @@ impl AuthenticatedStream {
                     let authed_session = AuthenticatedSession {
                         cc, ec, mc, tc, client_init: client_init.clone(), remote_addr
                     };
-                    break Ok(Some((authed_session, channel_server)));
+                    break Some((authed_session, channel_server));
                 }
             }
         }).boxed();
