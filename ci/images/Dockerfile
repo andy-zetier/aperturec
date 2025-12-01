@@ -24,17 +24,21 @@ ARG SERVER_PKGS_FEDORA="\
 ARG BASE_PKGS_DEBIAN="\
     build-essential \
     ca-certificates \
-    clang \
     cmake \
     curl \
     git \
+    gnupg \
     libprotobuf-dev \
     libssl-dev \
+    lsb-release \
     pkg-config \
     protobuf-compiler \
+    software-properties-common \
+    wget \
     xvfb"
 ARG BASE_PKGS_FEDORA="\
     cmake \
+    dnf-plugins-core \
     gcc \
     git \
     openssl-devel \
@@ -78,9 +82,13 @@ ENV APT_UPDATE="apt update"
 ENV APT_INSTALL="apt install -y --no-install-recommends --no-install-suggests"
 ENV APT_CLEAN="rm -rf /var/lib/apt/lists/*"
 ENV DEBIAN_FRONTEND=noninteractive
+ENV OPENSSL_FORCE_FIPS_MODE=0
 RUN $APT_UPDATE && $APT_INSTALL ${BASE_PKGS_DEBIAN} && $APT_CLEAN
-ENV CC="clang"
-ENV CXX="clang++"
+RUN wget https://apt.llvm.org/llvm.sh && \
+    chmod +x llvm.sh && \
+    ./llvm.sh 19 && \
+    rm llvm.sh && \
+    $APT_CLEAN
 
 FROM ${IMAGE_UPSTREAM} AS base-image-fedora
 ARG BASE_PKGS_FEDORA
@@ -88,17 +96,28 @@ ENV DNF_INSTALL="dnf install --setopt=install_weak_deps=False -y"
 ENV DNF_CLEAN="dnf clean all"
 WORKDIR /root
 RUN dnf config-manager --set-enabled crb || true
-RUN bash -c ' \
-    if dnf list available "clang-19.*" >/dev/null 2>&1; then \
-        $DNF_INSTALL "clang-19.*" ${BASE_PKGS_FEDORA}; \
-    elif dnf list available "clang19" >/dev/null 2>&1; then \
-        $DNF_INSTALL "clang19" ${BASE_PKGS_FEDORA}; \
-    fi \
-    && $DNF_CLEAN'
-ENV CC="clang-19"
-ENV CXX="clang++-19"
+RUN $DNF_INSTALL ${BASE_PKGS_FEDORA}
+RUN . /etc/os-release && \
+    ARCH=$(rpm --eval '%{_arch}') && \
+    if [ "$ID" = "centos" ]; then \
+        COPR_TARGET="centos-stream-${VERSION_ID}-${ARCH}"; \
+    else \
+        COPR_TARGET="${ID}-${VERSION_ID}-${ARCH}"; \
+    fi && \
+    dnf copr enable -y @fedora-llvm-team/llvm-snapshots "$COPR_TARGET" && \
+    if dnf list --available clang-19 >/dev/null 2>&1; then \
+        CLANG_PKG="clang-19"; \
+    elif dnf list --available clang19 >/dev/null 2>&1; then \
+        CLANG_PKG="clang19"; \
+    else \
+        echo "Failed to locate clang 19 packages for $COPR_TARGET" >&2; \
+        exit 1; \
+    fi && \
+    $DNF_INSTALL $CLANG_PKG && $DNF_CLEAN
 
 FROM base-image-${OS_VARIANT} AS base-rust-image
+ENV CC="clang-19"
+ENV CXX="clang++-19"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c rustfmt
 ENV PATH="/root/.cargo/bin:$PATH"
 RUN rustup default stable
