@@ -882,10 +882,9 @@ impl Client {
                             Some(TunnelState::HalfClosed) => {
                                 trace!("closing second half");
                                 tunnels.insert((tid, sid), TunnelState::FullyClosed);
-                            },
-                            Some(TunnelState::FullyClosed) => {
                                 closes_to_server_tx.send((tid, sid))?;
-                            }
+                            },
+                            Some(TunnelState::FullyClosed) => trace!("fully closed"),
                             None => warn!("non-existent"),
                         }
                         Ok::<_, Error>(())
