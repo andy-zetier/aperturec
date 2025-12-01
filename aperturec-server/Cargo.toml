@@ -50,7 +50,7 @@ regex = "1.12.2"
 zerocopy = "0.8"
 
 [dev-dependencies]
-criterion = "0.7"
+criterion = "0.8"
 serial_test = "3.2"
 tempfile = "3.23"
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
