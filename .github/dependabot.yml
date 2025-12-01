@@ -13,6 +13,8 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    allow:
+      - dependency-type: "all"
     groups:
       cargo-minor-and-patch:
         update-types: ["minor", "patch"]
