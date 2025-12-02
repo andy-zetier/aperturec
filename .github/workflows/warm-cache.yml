@@ -45,6 +45,7 @@ jobs:
         with:
           cache-key: ubuntu-24-amd64
       - run: cargo check --workspace
+      - run: cargo check --workspace --release
       - run: cargo build --workspace --all-targets
       - run: cargo build --workspace --release
 
@@ -113,6 +114,7 @@ jobs:
         with:
           cache-key: ${{ matrix.os.name }}-${{ matrix.arch }}
       - run: cargo check --workspace
+      - run: cargo check --workspace --release
       - run: cargo build --workspace --all-targets
       - run: cargo build --workspace --release
 
