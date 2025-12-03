@@ -6,16 +6,13 @@ ARG ARCHITECTURE=$TARGETARCH
 # Client and server packages
 ARG CLIENT_PKGS_DEBIAN="\
     libgtk-3-dev \
-    lsb-release \
     tzdata"
 ARG CLIENT_PKGS_FEDORA="\
     gtk3-devel \
     tzdata"
 ARG SERVER_PKGS_DEBIAN="\
     libxcb1-dev \
-    lsb-release \
-    mesa-utils \
-    ubuntu-session"
+    mesa-utils"
 ARG SERVER_PKGS_FEDORA="\
     glx-utils \
     libxcb-devel"
