@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.0.0...aperturec-server-v2.0.1) (2025-12-03)
+
+
+### Bug Fixes
+
+* Properly handle failures in accepting new sessions ([#721](https://github.com/Zetier/aperturec/issues/721)) ([5edca36](https://github.com/Zetier/aperturec/commit/5edca366f7856e78da2e4b7ea435ba8ea07e3c75))
+
 ## [2.0.0](https://github.com/Zetier/aperturec/compare/aperturec-server-v1.1.7...aperturec-server-v2.0.0) (2025-10-27)
 
 

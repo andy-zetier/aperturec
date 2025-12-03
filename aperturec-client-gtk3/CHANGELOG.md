@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.18](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.17...aperturec-client-gtk3-v1.0.18) (2025-12-03)
+
+
+### Bug Fixes
+
+* Remove various unused dependencies ([#716](https://github.com/Zetier/aperturec/issues/716)) ([2980ca9](https://github.com/Zetier/aperturec/commit/2980ca9ba46804b8f4639bd91356649899d582fe))
+
 ## [1.0.17](https://github.com/Zetier/aperturec/compare/aperturec-client-gtk3-v1.0.16...aperturec-client-gtk3-v1.0.17) (2025-11-24)
 
 

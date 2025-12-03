@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/Zetier/aperturec/compare/aperturec-utils-v0.1.2...aperturec-utils-v0.1.3) (2025-12-03)
+
+
+### Bug Fixes
+
+* Remove various unused dependencies ([#716](https://github.com/Zetier/aperturec/issues/716)) ([2980ca9](https://github.com/Zetier/aperturec/commit/2980ca9ba46804b8f4639bd91356649899d582fe))
+
 ## [0.1.2](https://github.com/Zetier/aperturec/compare/aperturec-utils-v0.1.1...aperturec-utils-v0.1.2) (2025-10-07)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.1.0...aperturec-client-v1.1.1) (2025-12-03)
+
+
+### Bug Fixes
+
+* Close tunnel properly on client close ([#729](https://github.com/Zetier/aperturec/issues/729)) ([8337170](https://github.com/Zetier/aperturec/commit/8337170f8ccadd7505232c039ba6ef75c849ad3f))
+
 ## [1.1.0](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.0.1...aperturec-client-v1.1.0) (2025-11-24)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/Zetier/aperturec/compare/aperturec-graphics-v0.1.0...aperturec-graphics-v0.1.1) (2025-12-03)
+
+
+### Bug Fixes
+
+* Update cargo dependencies ([#730](https://github.com/Zetier/aperturec/issues/730)) ([999b3b7](https://github.com/Zetier/aperturec/commit/999b3b7570fb7a3b14f92d43289ea0b2fe66fcda))
+
 ## 0.1.0 (2025-09-17)
 
 
