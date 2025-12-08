@@ -116,6 +116,10 @@ pub trait Pixel32MapExt: PixelMap<Pixel = Pixel32> {
     fn simd_eq(&self, other: &impl PixelMap<Pixel = Pixel32>) -> bool {
         let a = self.as_ndarray();
         let b = other.as_ndarray();
+        // Bail out early on shape mismatch so we don't ignore extra rows/cols.
+        if a.dim() != b.dim() {
+            return false;
+        }
         Zip::from(a.rows())
             .and(b.rows())
             .fold_while(true, |acc, a, b| {
@@ -354,6 +358,28 @@ mod tests {
         assert!(
             !a.simd_eq(&b),
             "simd_eq should detect a single-pixel difference"
+        );
+    }
+
+    #[test]
+    fn simd_eq_false_mismatched_height() {
+        let row = Pixel32::default();
+        let a = Array2::from_elem((1, 4), row);
+        let b = Array2::from_elem((2, 4), row);
+        assert!(
+            !a.simd_eq(&b) && !b.simd_eq(&a),
+            "Different heights must not compare equal"
+        );
+    }
+
+    #[test]
+    fn simd_eq_false_width_multiple_of_chunk() {
+        // Widths that differ by a SIMD chunk should not compare equal.
+        let a = Array2::from_elem((2, 16), Pixel32::default());
+        let b = Array2::from_elem((2, 24), Pixel32::default());
+        assert!(
+            !a.simd_eq(&b) && !b.simd_eq(&a),
+            "Extra columns must be detected even when rows share initial chunks"
         );
     }
 }
