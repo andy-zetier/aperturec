@@ -346,7 +346,7 @@ def run_test_for_branch(branch, test_dir, duration, skip_clone=False, clone_sour
             print(f"\n=== Cloning remote repo for branch '{branch}' into '{branch_dir}' ===")
             clone_cmd = [
                 "git", "clone", "-b", branch,
-                "git@gitlab.zetier.com:aperturec/aperturec.git",
+                "git@github.com:Zetier/aperturec.git",
                 branch_dir
             ]
         print(" ".join(clone_cmd))
