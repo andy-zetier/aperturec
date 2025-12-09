@@ -7,10 +7,12 @@ use futures::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpSocket, lookup_host};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
+use tokio::time::sleep;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
@@ -41,6 +43,8 @@ pub struct Running {
 
 #[derive(State, Debug)]
 pub struct Terminated;
+
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn generate_responses(
     requests: &BTreeMap<u64, Description>,
@@ -136,6 +140,7 @@ impl Transitionable<Running> for Task<Created> {
         let (data_from_client_tx, mut data_from_client_rx) = mpsc::unbounded_channel();
         let (closes_from_client_tx, mut closes_from_client_rx) = mpsc::unbounded_channel();
         let (opens_from_client_tx, mut opens_from_client_rx) = mpsc::unbounded_channel();
+        let (drain_timeout_tx, mut drain_timeout_rx) = mpsc::unbounded_channel();
 
         let (server_bound_tunnels, client_bound_tunnels) = self.state.tunnels.into_iter().fold(
             (BTreeMap::new(), BTreeMap::new()),
@@ -262,6 +267,8 @@ impl Transitionable<Running> for Task<Created> {
                                     else => break Ok::<_, Error>(()),
                                 }
                             };
+                            // Loop finished; send FIN to close the write side of the TCP connection.
+                            let _ = tcp_stream.shutdown().await;
                             (tid, sid, res)
                         });
                         abort_handles.insert((tid, sid), ah);
@@ -306,12 +313,26 @@ impl Transitionable<Running> for Task<Created> {
                     }.instrument(trace_span!("data-from-client")).await,
 
                     Some((tid, sid)) = closes_from_client_rx.recv() => async {
-                        trace!(tid, sid);
+                        trace!(tid, sid, "client closed stream; half-closing write side");
+                        // Drop the write channel so the per-stream task sees sender closure,
+                        // stops writing, and drains reads until EOF; FIN is sent when the task exits.
+                        txs.remove(&(tid, sid));
+                        if abort_handles.contains_key(&(tid, sid)) {
+                            let drain_timeout_tx = drain_timeout_tx.clone();
+                            tokio::spawn(async move {
+                                sleep(DRAIN_TIMEOUT).await;
+                                let _ = drain_timeout_tx.send((tid, sid));
+                            });
+                        }
+                    }.instrument(trace_span!("closes-from-client")).await,
+
+                    Some((tid, sid)) = drain_timeout_rx.recv() => async {
+                        trace!(tid, sid, "drain timeout reached; aborting stream");
                         if let Some(ah) = abort_handles.remove(&(tid, sid)) {
                             ah.abort();
                         }
                         txs.remove(&(tid, sid));
-                    }.instrument(trace_span!("closes-from-client")).await,
+                    }.instrument(trace_span!("drain-timeout")).await,
 
                     Some((tid, sid)) = closes_to_client_rx.recv() => async {
                         trace!(tid, sid);
