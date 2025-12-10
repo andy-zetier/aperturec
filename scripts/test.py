@@ -142,14 +142,14 @@ def build_server(test_dir):
 
 def build_client(test_dir):
     """
-    Build aperturec-client (release mode), twice.
+    Build aperturec-client-gtk3 (release mode), twice.
     """
     for i in range(2):
-        print("Building aperturec-client (attempt {})...".format(i+1))
-        cmd = ["cargo", "build", "--release", "-p", "aperturec-client"]
+        print("Building aperturec-client-gtk3 (attempt {})...".format(i+1))
+        cmd = ["cargo", "build", "--release", "-p", "aperturec-client-gtk3"]
         ret = subprocess.run(cmd, cwd=test_dir)
         if ret.returncode != 0:
-            raise RuntimeError("Build of aperturec-client failed on attempt {}.".format(i+1))
+            raise RuntimeError("Build of aperturec-client-gtk3 failed on attempt {}.".format(i+1))
 
 ###############################################################################
 # Server Management
@@ -307,7 +307,7 @@ def start_client(
     client_metrics_path = os.path.join(test_dir, "client_metrics.csv")
 
     client_cmd = [
-        "cargo", "run", "-p", "aperturec-client", "--release", "--",
+        "cargo", "run", "-p", "aperturec-client-gtk3", "--release", "--",
         "-vvv",
         "--fullscreen",
         "--auth-token-file={}".format(auth_token_path),
