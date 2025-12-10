@@ -7,12 +7,10 @@ use futures::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpSocket, lookup_host};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tokio::time::sleep;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
@@ -43,8 +41,6 @@ pub struct Running {
 
 #[derive(State, Debug)]
 pub struct Terminated;
-
-const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn generate_responses(
     requests: &BTreeMap<u64, Description>,
@@ -140,7 +136,6 @@ impl Transitionable<Running> for Task<Created> {
         let (data_from_client_tx, mut data_from_client_rx) = mpsc::unbounded_channel();
         let (closes_from_client_tx, mut closes_from_client_rx) = mpsc::unbounded_channel();
         let (opens_from_client_tx, mut opens_from_client_rx) = mpsc::unbounded_channel();
-        let (drain_timeout_tx, mut drain_timeout_rx) = mpsc::unbounded_channel();
 
         let (server_bound_tunnels, client_bound_tunnels) = self.state.tunnels.into_iter().fold(
             (BTreeMap::new(), BTreeMap::new()),
@@ -182,7 +177,7 @@ impl Transitionable<Running> for Task<Created> {
         js.spawn(async move {
             let mut stream_tasks = JoinSet::new();
             let mut txs = BTreeMap::new();
-            let mut abort_handles = BTreeMap::new();
+            let mut closed_by_client = BTreeSet::new();
 
             loop {
                 tokio::select! {
@@ -240,12 +235,23 @@ impl Transitionable<Running> for Task<Created> {
                         trace!(tid, sid);
                         let (to_tx, mut to_tx_rx) = mpsc::channel::<Vec<u8>>(1);
                         let data_to_client_tx = data_to_client_tx.clone();
-                        let ah = stream_tasks.spawn(async move {
+                        stream_tasks.spawn(async move {
+                            trace!(tid, sid, "stream task started");
                             let res = loop {
                                 tokio::select! {
-                                    Some(data) = to_tx_rx.recv() => {
-                                        if let Err(e) = tcp_stream.write_all(&data).await {
-                                            break Err(e.into());
+                                    biased;
+                                    res = to_tx_rx.recv() => {
+                                        match res {
+                                            Some(data) => {
+                                                if let Err(e) = tcp_stream.write_all(&data).await {
+                                                    break Err(e.into());
+                                                }
+                                                trace!(tid, sid, write_len = data.len(), "wrote to local peer");
+                                            }
+                                            None => {
+                                                trace!(tid, sid, "writer channel closed; closing socket immediately");
+                                                break Ok(());
+                                            }
                                         }
                                     }
                                     Ok(()) = tcp_stream.readable() => {
@@ -256,12 +262,14 @@ impl Transitionable<Running> for Task<Created> {
                                             Err(e) => break Err(e.into()),
                                         };
                                         if nbytes == 0 {
+                                            trace!(tid, sid, "read EOF");
                                             break Ok(());
                                         } else {
                                             data.truncate(nbytes);
                                             if let Err(e) = data_to_client_tx.send((tid, sid, data)) {
                                                 break Err(e.into());
                                             }
+                                            trace!(tid, sid, read_len = nbytes, "read from local peer");
                                         }
                                     }
                                     else => break Ok::<_, Error>(()),
@@ -269,9 +277,9 @@ impl Transitionable<Running> for Task<Created> {
                             };
                             // Loop finished; send FIN to close the write side of the TCP connection.
                             let _ = tcp_stream.shutdown().await;
+                            trace!(tid, sid, "stream task exiting; FIN sent");
                             (tid, sid, res)
                         });
-                        abort_handles.insert((tid, sid), ah);
                         txs.insert((tid, sid), to_tx);
                         if server_bound_tids.contains(&tid) {
                             opens_to_client_tx.send((tid, sid))?;
@@ -284,9 +292,12 @@ impl Transitionable<Running> for Task<Created> {
                         if let Err(e) = res {
                             debug!(%e);
                         }
-                        closes_to_client_tx.send((tid, sid))?;
+                        if !closed_by_client.remove(&(tid, sid)) {
+                            closes_to_client_tx.send((tid, sid))?;
+                        } else {
+                            trace!(tid, sid, "client initiated close; not sending CloseTcpStream");
+                        }
                         txs.remove(&(tid, sid));
-                        abort_handles.remove(&(tid, sid));
                         Ok::<_, Error>(())
                     }.instrument(trace_span!("stream-task-result")).await?,
 
@@ -316,23 +327,12 @@ impl Transitionable<Running> for Task<Created> {
                         trace!(tid, sid, "client closed stream; half-closing write side");
                         // Drop the write channel so the per-stream task sees sender closure,
                         // stops writing, and drains reads until EOF; FIN is sent when the task exits.
-                        txs.remove(&(tid, sid));
-                        if abort_handles.contains_key(&(tid, sid)) {
-                            let drain_timeout_tx = drain_timeout_tx.clone();
-                            tokio::spawn(async move {
-                                sleep(DRAIN_TIMEOUT).await;
-                                let _ = drain_timeout_tx.send((tid, sid));
-                            });
+                        if txs.remove(&(tid, sid)).is_some() {
+                            closed_by_client.insert((tid, sid));
+                        } else {
+                            trace!(tid, sid, "stream already gone; skipping client-close marker");
                         }
                     }.instrument(trace_span!("closes-from-client")).await,
-
-                    Some((tid, sid)) = drain_timeout_rx.recv() => async {
-                        trace!(tid, sid, "drain timeout reached; aborting stream");
-                        if let Some(ah) = abort_handles.remove(&(tid, sid)) {
-                            ah.abort();
-                        }
-                        txs.remove(&(tid, sid));
-                    }.instrument(trace_span!("drain-timeout")).await,
 
                     Some((tid, sid)) = closes_to_client_rx.recv() => async {
                         trace!(tid, sid);
