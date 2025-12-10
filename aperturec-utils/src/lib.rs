@@ -1,4 +1,5 @@
 pub mod args;
+pub mod channels;
 pub mod continuity;
 pub mod cpu_bound;
 pub mod jxl;
