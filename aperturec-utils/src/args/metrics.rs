@@ -22,14 +22,7 @@ pub struct MetricsArgGroup {
 }
 
 impl MetricsArgGroup {
-    pub fn requested(&self) -> bool {
-        self.metrics_log
-            || self.metrics_csv.is_some()
-            || self.metrics_prometheus.is_some()
-            || self.metrics_pushgateway.is_some()
-    }
-
-    pub fn to_exporters(self, name: &str) -> Vec<Exporter> {
+    pub fn to_exporters(&self, name: &str) -> Vec<Exporter> {
         let mut exporters: Vec<Exporter> = vec![];
         if self.metrics_log {
             match LogExporter::new(Level::DEBUG) {
@@ -37,20 +30,20 @@ impl MetricsArgGroup {
                 Err(err) => warn!("Failed to setup Log exporter: {}, disabling", err),
             }
         }
-        if let Some(path) = self.metrics_csv {
-            match CsvExporter::new(path) {
+        if let Some(ref path) = self.metrics_csv {
+            match CsvExporter::new(path.clone()) {
                 Ok(csve) => exporters.push(Exporter::Csv(csve)),
                 Err(err) => warn!("Failed to setup CSV exporter: {}, disabling", err),
             }
         }
-        if let Some(url) = self.metrics_pushgateway {
+        if let Some(ref url) = self.metrics_pushgateway {
             match PushgatewayExporter::new(url.to_owned(), name.to_owned(), std::process::id()) {
                 Ok(pge) => exporters.push(Exporter::Pushgateway(pge)),
                 Err(err) => warn!("Failed to setup Pushgateway exporter: {}, disabling", err),
             }
         }
-        if let Some(bind_addr) = self.metrics_prometheus {
-            match PrometheusExporter::new(&bind_addr) {
+        if let Some(ref bind_addr) = self.metrics_prometheus {
+            match PrometheusExporter::new(bind_addr) {
                 Ok(pe) => exporters.push(Exporter::Prometheus(pe)),
                 Err(err) => warn!("Failed to setup Prometheus exporter: {}, disabling", err),
             }
