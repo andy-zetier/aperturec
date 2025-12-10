@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/Zetier/aperturec/compare/aperturec-graphics-v0.1.1...aperturec-graphics-v0.1.2) (2025-12-10)
+
+
+### Bug Fixes
+
+* Bail out simd_eq when shapes differ and add tests ([#743](https://github.com/Zetier/aperturec/issues/743)) ([8277395](https://github.com/Zetier/aperturec/commit/8277395c8545c7085c7a081965c89813384122fc))
+
 ## [0.1.1](https://github.com/Zetier/aperturec/compare/aperturec-graphics-v0.1.0...aperturec-graphics-v0.1.1) (2025-12-03)
 
 

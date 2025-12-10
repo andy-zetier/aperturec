@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.2](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.0.1...aperturec-server-v2.0.2) (2025-12-10)
+
+
+### Bug Fixes
+
+* Allow TCP streams to drain naturally on client close ([#746](https://github.com/Zetier/aperturec/issues/746)) ([d82b82f](https://github.com/Zetier/aperturec/commit/d82b82f929525bd37b28e7fc97afb03b8238aeb7))
+* Close tunnels without draining on client initialization ([#747](https://github.com/Zetier/aperturec/issues/747)) ([eb4200e](https://github.com/Zetier/aperturec/commit/eb4200e337568e67173d2b48c16c0469bd9b98b3))
+
 ## [2.0.1](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.0.0...aperturec-server-v2.0.1) (2025-12-03)
 
 
