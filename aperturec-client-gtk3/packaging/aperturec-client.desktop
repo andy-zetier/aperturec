@@ -1,6 +1,0 @@
-[Desktop Entry]
-Name=ApertureC Client
-Exec=env GDK_BACKEND=x11 AC_URI=%u /usr/bin/aperturec-client
-Type=Application
-Terminal=false
-MimeType=x-scheme-handler/aperturec;
