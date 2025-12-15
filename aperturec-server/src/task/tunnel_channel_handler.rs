@@ -68,6 +68,7 @@ pub fn generate_responses(
                         SocketAddr::V4(_) => TcpSocket::new_v4(),
                         SocketAddr::V6(_) => TcpSocket::new_v6(),
                     }?;
+                    socket.set_reuseaddr(true)?;
                     socket.bind(sa)?;
                     let mut desc = desc.clone();
                     let local_addr = socket.local_addr()?;
