@@ -25,11 +25,11 @@ tracing = "0.1"
 zeroize = "1.8"
 
 [target.'cfg(unix)'.dependencies.s2n-quic]
-version = "1.69"
+version = "1.70"
 features = ["provider-tls-fips", "provider-tls-rustls"]
 
 [target.'cfg(windows)'.dependencies.s2n-quic]
-version = "1.69"
+version = "1.70"
 features = ["provider-tls-rustls"]
 
 [dev-dependencies]

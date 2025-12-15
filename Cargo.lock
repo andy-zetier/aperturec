@@ -211,7 +211,7 @@ dependencies = [
  "ndarray",
  "test-log",
  "thiserror 2.0.17",
- "wide 1.0.2",
+ "wide 1.1.0",
 ]
 
 [[package]]
@@ -812,9 +812,9 @@ checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
 name = "cmake"
-version = "0.1.54"
+version = "0.1.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
+checksum = "b042e5d8a74ae91bb0961acd039822472ec99f8ab0948cbf6d1369588f8be586"
 dependencies = [
  "cc",
 ]
@@ -939,9 +939,9 @@ dependencies = [
 
 [[package]]
 name = "criterion"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0dfe5e9e71bdcf4e4954f7d14da74d1cdb92a3a07686452d1509652684b1aab"
+checksum = "4d883447757bb0ee46f233e9dc22eb84d93a9508c9b868687b274fc431d886bf"
 dependencies = [
  "alloca",
  "anes",
@@ -964,9 +964,9 @@ dependencies = [
 
 [[package]]
 name = "criterion-plot"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5de36c2bee19fba779808f92bf5d9b0fa5a40095c277aba10c458a12b35d21d6"
+checksum = "ed943f81ea2faa8dcecbbfa50164acf95d555afec96a27871663b300e387b2e4"
 dependencies = [
  "cast",
  "itertools 0.13.0",
@@ -1291,7 +1291,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2082,9 +2082,9 @@ checksum = "7aedcccd01fc5fe81e6b489c15b247b8b0690feb23304303a9e560f37efc560a"
 
 [[package]]
 name = "icu_properties"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e93fcd3157766c0c8da2f8cff6ce651a31f0810eaa1c51ec363ef790bbb5fb99"
+checksum = "020bfc02fe870ec3a66d93e677ccca0562506e5872c650f893269e08615d74ec"
 dependencies = [
  "icu_collections",
  "icu_locale_core",
@@ -2096,9 +2096,9 @@ dependencies = [
 
 [[package]]
 name = "icu_properties_data"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02845b3647bb045f1100ecd6480ff52f34c35f82d9880e029d329c21d1054899"
+checksum = "616c294cf8d725c6afcd8f55abc17c56464ef6211f9ed59cccffe534129c77af"
 
 [[package]]
 name = "icu_provider"
@@ -3483,9 +3483,9 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "reqwest"
-version = "0.12.24"
+version = "0.12.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d0946410b9f7b082a427e4ef5c8ff541a88b357bc6c637c40db3a68ac70a36f"
+checksum = "b6eff9328d40131d43bd911d42d79eb6a47312002a4daefc9e37f17e74a7701a"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3583,7 +3583,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3649,7 +3649,7 @@ dependencies = [
  "security-framework 3.5.1",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3684,9 +3684,9 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
 name = "s2n-codec"
-version = "0.69.0"
+version = "0.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ce62ab2534380ee20a32ce169c733df8462ef9821489ae8df8603c1d9e89574"
+checksum = "193a5e83c37045e40ceace33909dc9ffbd851759bb8ce635177bbd99eee252dc"
 dependencies = [
  "byteorder",
  "bytes",
@@ -3695,9 +3695,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic"
-version = "1.69.0"
+version = "1.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62cfd37e7de6e7d73a8c55996a1389d27d6bbe377e565440ef4980252062bf09"
+checksum = "b8fd6bde72c758fafa3f367e0bbf9ed6943b9af1b3b111762c4b4814c89a7e61"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -3721,9 +3721,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-core"
-version = "0.69.0"
+version = "0.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d36dc08b73cea81834036fa54ba9cf4ad91ede5a31543d0ad64a63f7e99d15db"
+checksum = "fa06e120dcd0143e032d48aaaeb33d423f668fada8a4981a9b3c83ddb47afe18"
 dependencies = [
  "atomic-waker",
  "byteorder",
@@ -3742,9 +3742,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-crypto"
-version = "0.69.0"
+version = "0.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da8e47e0db3b85012cdcb7a95490639893fa60ea0d680730424839d2c268e23c"
+checksum = "93ac836b66d97d743b330a9f71c1b1086c6937857c8add773663c95e372c391e"
 dependencies = [
  "aws-lc-rs",
  "cfg-if",
@@ -3756,9 +3756,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-platform"
-version = "0.69.0"
+version = "0.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "218ddcd7677c8dee8fc48e6f4daaeecb63c7c5b28b21d2429a53fcbf326b55ce"
+checksum = "824c99668fd77ba06ebe325073222562d1169093431f0d12c3c2de3a2be154e8"
 dependencies = [
  "cfg-if",
  "futures",
@@ -3771,9 +3771,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-rustls"
-version = "0.69.0"
+version = "0.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc59fae30cffc275a6e798c00996f3e56dc74371bd685e112e66a231ced86c4a"
+checksum = "bfd7506a6d59ad0bc8b63c6cf87ac5d43a770e5f1661cdb4448c2fa0824481e1"
 dependencies = [
  "bytes",
  "rustls",
@@ -3785,9 +3785,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-tls"
-version = "0.69.0"
+version = "0.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c07cbf6def21eb2a688155e2df5d0762543a6fadd05aa3cc585fcd81f9197c1c"
+checksum = "f73830020078034497aa8c201b7aff356418071f2c2ae778856f8da0f090daf3"
 dependencies = [
  "bytes",
  "errno",
@@ -3800,9 +3800,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-tls-default"
-version = "0.69.0"
+version = "0.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc06de38a8600fe4a38a2f1a36a68a87e711f9e85b0d947ba580b4525fd1a298"
+checksum = "c87d3dea19c63ffc9bf812b646f87ad3ffbf90ba86663b6ce8ecb588db8327a8"
 dependencies = [
  "s2n-quic-rustls",
  "s2n-quic-tls",
@@ -3810,9 +3810,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-quic-transport"
-version = "0.69.0"
+version = "0.70.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfbd2465236f7ce448f082a33bdc2e85ef62a7ce68c7eef79e4d90dc1b3eec0c"
+checksum = "6a3746a3e1f1d20fb2378ca74ac541246c779fbf732ba0c8b169ad9d2f57cbf6"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -3828,9 +3828,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-tls"
-version = "0.3.31"
+version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d03395575ba3afa4d228a4da7d06c700e2481e8a0434584ffb18e212aa0f9edc"
+checksum = "cd013ab79f09fbac0f3726cb06d303e7d8c394690cf7d896efab5e8a9d4ec96f"
 dependencies = [
  "errno",
  "hex",
@@ -3841,9 +3841,9 @@ dependencies = [
 
 [[package]]
 name = "s2n-tls-sys"
-version = "0.3.31"
+version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e28a422923eb8b729544583ed1fbd313723c3e1b7fdb6c5ce0ca405d9c219094"
+checksum = "dcd872bece22c51f3b649f1640b964e30218f25c3f74c5fff6f28ea1b81353b8"
 dependencies = [
  "aws-lc-rs",
  "cc",
@@ -4115,9 +4115,9 @@ dependencies = [
 
 [[package]]
 name = "simd-adler32"
-version = "0.3.7"
+version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d66dc143e6b11c1eddc06d5c423cfc97062865baf299914ab64caa38182078fe"
+checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
 
 [[package]]
 name = "siphasher"
@@ -4297,7 +4297,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4653,9 +4653,9 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cf146f99d442e8e68e585f5d798ccd3cad9a7835b917e09728880a862706456"
+checksum = "d4e6559d53cc268e5031cd8429d05415bc4cb4aefc4aa5d6cc35fbf5b924a1f8"
 dependencies = [
  "bitflags 2.10.0",
  "bytes",
@@ -5038,9 +5038,9 @@ dependencies = [
 
 [[package]]
 name = "wide"
-version = "1.0.2"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbace5de6cfc4866f684318ad85761c89380cfb191982ae96aa65c295bf5897e"
+checksum = "8afd0e867c652e7c27e88620e1fbf073ad060a919235f50b64f273d9d4092931"
 dependencies = [
  "bytemuck",
  "safe_arch 1.0.0",
@@ -5068,7 +5068,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
