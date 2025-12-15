@@ -1,12 +1,13 @@
 use crate::axis;
 use crate::geometry::*;
 
+use bytemuck::{Pod, Zeroable};
 use ndarray::{ArcArray2, AssignElem, Data, DataMut, FoldWhile, Zip, prelude::*};
 use std::mem;
 use wide::{CmpEq, u32x8};
 
 /// A 24-bit pixel in B-G-R order (no alpha channel).
-#[derive(PartialEq, Debug, Default, Clone, Copy)]
+#[derive(PartialEq, Debug, Default, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct Pixel24 {
     pub blue: u8,
@@ -73,7 +74,7 @@ pub type Pixel24MapShared = ArcArray2<Pixel24>;
 /// The `#[repr(C, align(4))]` ensures 4-byte alignment so that
 /// rows of `Pixel32` can be safely reinterpreted as `u32` chunks
 /// for SIMD comparisons.
-#[derive(PartialEq, Debug, Default, Clone, Copy)]
+#[derive(PartialEq, Debug, Default, Clone, Copy, Pod, Zeroable)]
 #[repr(C, align(4))]
 pub struct Pixel32 {
     pub blue: u8,
@@ -236,6 +237,62 @@ mod tests {
     use super::*;
     use ndarray::Array2;
     use std::mem::MaybeUninit;
+
+    #[test]
+    fn bytemuck_pixel24_cast_slice_round_trip() {
+        let bytes = [1u8, 2, 3, 4, 5, 6];
+        let pixels: &[Pixel24] = bytemuck::cast_slice(&bytes);
+        let expected = [
+            Pixel24 {
+                blue: 1,
+                green: 2,
+                red: 3,
+            },
+            Pixel24 {
+                blue: 4,
+                green: 5,
+                red: 6,
+            },
+        ];
+        assert_eq!(pixels, &expected[..]);
+
+        let bytes_round_trip: &[u8] = bytemuck::cast_slice(pixels);
+        assert_eq!(bytes_round_trip, &bytes[..]);
+    }
+
+    #[test]
+    fn bytemuck_pixel32_cast_slice_round_trip() {
+        let pixels = [
+            Pixel32 {
+                blue: 1,
+                green: 2,
+                red: 3,
+                alpha: 4,
+            },
+            Pixel32 {
+                blue: 5,
+                green: 6,
+                red: 7,
+                alpha: 8,
+            },
+        ];
+
+        let bytes: &[u8] = bytemuck::cast_slice(&pixels);
+        let expected_bytes = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(bytes, &expected_bytes[..]);
+
+        let pixels_round_trip: &[Pixel32] = bytemuck::cast_slice(bytes);
+        assert_eq!(pixels_round_trip, &pixels[..]);
+    }
+
+    #[test]
+    fn bytemuck_zeroed_pixels_are_all_zero() {
+        let p24 = <Pixel24 as bytemuck::Zeroable>::zeroed();
+        assert_eq!(p24, Pixel24::default());
+
+        let p32 = <Pixel32 as bytemuck::Zeroable>::zeroed();
+        assert_eq!(p32, Pixel32::default());
+    }
 
     #[test]
     fn pixel24_eqs_pixel32_when_alpha_is_max() {
