@@ -546,7 +546,6 @@ macro_rules! time {
 #[cfg(test)]
 mod test {
     use crate::MetricsInitializer;
-    use crate::time;
     use std::sync::Once;
     use std::sync::atomic::{AtomicBool, Ordering};
     use test_log::test;

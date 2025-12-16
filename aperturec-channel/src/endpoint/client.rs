@@ -14,7 +14,6 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::runtime::Runtime as TokioRuntime;
-use tracing::*;
 
 #[cfg(any(test, debug_assertions))]
 use rustls::KeyLogFile;
@@ -210,7 +209,7 @@ impl Builder {
         {
             tls_config.key_log = Arc::new(KeyLogFile::new());
             if env::var(tls::SSLKEYLOGFILE_VAR).is_ok() {
-                warn!("Key logging enabled! This should never happen in production!");
+                tracing::warn!("Key logging enabled! This should never happen in production!");
             }
         }
 
