@@ -12,12 +12,14 @@ use aperturec_metrics::time;
 use flate2::{Compression, write::DeflateEncoder};
 use futures::{prelude::*, stream::FuturesUnordered};
 use ndarray::{ArcArray2, prelude::*};
+use r2d2::{ManageConnection, Pool};
+use std::convert::Infallible;
 use std::ffi::c_void;
-use std::io::Write;
+use std::io::{self, Write};
 use std::mem::{self, MaybeUninit};
 use std::ptr;
 use std::slice;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -30,10 +32,53 @@ pub enum Command {
 mod compression {
     use super::*;
 
+    #[derive(Debug)]
+    pub(super) struct ZlibManager;
+
+    #[derive(Debug)]
+    pub(super) struct JxlManager;
+
+    impl ManageConnection for ZlibManager {
+        type Connection = zlib::Compressor;
+        type Error = Infallible;
+
+        fn connect(&self) -> Result<Self::Connection, Self::Error> {
+            Ok(zlib::Compressor::default())
+        }
+
+        fn is_valid(&self, _conn: &mut Self::Connection) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn has_broken(&self, _conn: &mut Self::Connection) -> bool {
+            false
+        }
+    }
+
+    impl ManageConnection for JxlManager {
+        type Connection = jxl::Compressor;
+        type Error = io::Error;
+
+        fn connect(&self) -> Result<Self::Connection, Self::Error> {
+            jxl::Compressor::new().map_err(io::Error::other)
+        }
+
+        fn is_valid(&self, _conn: &mut Self::Connection) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn has_broken(&self, _conn: &mut Self::Connection) -> bool {
+            false
+        }
+    }
+
+    type ZlibPool = Pool<ZlibManager>;
+    type JxlPool = Pool<JxlManager>;
+
     pub enum Scheme {
         Raw,
-        Zlib(Arc<Mutex<zlib::Compressor>>),
-        Jpegxl(Arc<Mutex<jxl::Compressor>>),
+        Zlib(&'static ZlibPool),
+        Jpegxl(&'static JxlPool),
     }
 
     impl Scheme {
@@ -48,13 +93,11 @@ mod compression {
                     )
                 })
                 .await),
-                Scheme::Zlib(zlib_compressor) => {
-                    let zlib_compressor = zlib_compressor.clone();
+                Scheme::Zlib(zlib_pool) => {
+                    let zlib_pool = *zlib_pool;
                     cpu_bound::spawn(move || {
-                        let mut zlib_compressor = time!(
-                            EncoderLockLatency,
-                            zlib_compressor.lock().expect("poisoned zlib compressor")
-                        );
+                        let mut zlib_compressor = time!(EncoderLockLatency, zlib_pool.get())
+                            .map_err(anyhow::Error::from)?;
                         time!(
                             TimeInCompression,
                             zlib_compressor.compress(raw_data.slice(area.as_slice()))
@@ -62,13 +105,11 @@ mod compression {
                     })
                     .await
                 }
-                Scheme::Jpegxl(jxl_compressor) => {
-                    let jxl_compressor = jxl_compressor.clone();
+                Scheme::Jpegxl(jxl_pool) => {
+                    let jxl_pool = *jxl_pool;
                     cpu_bound::spawn(move || {
-                        let mut jxl_compressor = time!(
-                            EncoderLockLatency,
-                            jxl_compressor.lock().expect("poisoned jxl compressor")
-                        );
+                        let mut jxl_compressor = time!(EncoderLockLatency, jxl_pool.get())
+                            .map_err(anyhow::Error::from)?;
                         time!(
                             TimeInCompression,
                             jxl_compressor.compress(raw_data.slice(area.as_slice()))
@@ -94,15 +135,58 @@ mod compression {
         fn try_from(codec: Codec) -> Result<Self, Self::Error> {
             match codec {
                 Codec::Raw => Ok(Scheme::Raw),
-                Codec::Zlib => Ok(Scheme::Zlib(Arc::new(Mutex::new(
-                    zlib::Compressor::default(),
-                )))),
-                Codec::Jpegxl => Ok(Scheme::Jpegxl(Arc::new(
-                    Mutex::new(jxl::Compressor::new()?),
-                ))),
+                Codec::Zlib => Ok(Scheme::Zlib(shared_zlib_pool()?)),
+                Codec::Jpegxl => Ok(Scheme::Jpegxl(shared_jxl_pool()?)),
                 _ => bail!("Unsupported codec"),
             }
         }
+    }
+
+    fn pool_size() -> u32 {
+        std::thread::available_parallelism()
+            .map(|nz| nz.get() as u32)
+            .unwrap_or(1)
+    }
+
+    fn shared_zlib_pool() -> Result<&'static ZlibPool> {
+        static ZLIB_POOL: OnceLock<ZlibPool> = OnceLock::new();
+        if let Some(pool) = ZLIB_POOL.get() {
+            return Ok(pool);
+        }
+
+        let pool = build_pool(ZlibManager)?;
+        match ZLIB_POOL.set(pool) {
+            Ok(()) => ZLIB_POOL
+                .get()
+                .ok_or_else(|| anyhow!("Zlib pool missing after initialization")),
+            Err(_) => ZLIB_POOL
+                .get()
+                .ok_or_else(|| anyhow!("Zlib pool missing after initialization")),
+        }
+    }
+
+    fn shared_jxl_pool() -> Result<&'static JxlPool> {
+        static JXL_POOL: OnceLock<JxlPool> = OnceLock::new();
+        if let Some(pool) = JXL_POOL.get() {
+            return Ok(pool);
+        }
+
+        let pool = build_pool(JxlManager)?;
+        match JXL_POOL.set(pool) {
+            Ok(()) => JXL_POOL
+                .get()
+                .ok_or_else(|| anyhow!("Jxl pool missing after initialization")),
+            Err(_) => JXL_POOL
+                .get()
+                .ok_or_else(|| anyhow!("Jxl pool missing after initialization")),
+        }
+    }
+
+    fn build_pool<M: ManageConnection>(manager: M) -> Result<Pool<M>> {
+        Pool::builder()
+            .max_size(pool_size())
+            .build(manager)
+            .map_err(anyhow::Error::from)
     }
 
     fn do_compress_optimize_contig<C, F: FnOnce(&[u8]) -> C>(
