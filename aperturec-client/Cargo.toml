@@ -49,6 +49,7 @@ tracing-subscriber = "0.3"
 url = "2.5"
 
 [dev-dependencies]
+serial_test = "3.2"
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
 
 [build-dependencies]
