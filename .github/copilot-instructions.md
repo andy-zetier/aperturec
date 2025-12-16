@@ -21,10 +21,10 @@ sudo apt update && sudo apt install -y libgtk-3-dev libglib2.0-dev pkg-config pr
   - `cargo build --release -p aperturec-client-gtk3` - Build only the client (takes ~15-20 minutes). NEVER CANCEL.
 
 ### Test Commands
-- `cargo test --workspace` - Run all tests (takes ~15-20 minutes). NEVER CANCEL. Set timeout to 30+ minutes.
-- `cargo test -p aperturec-channel` - Test network layer
-- `cargo test -p aperturec-graphics` - Test graphics processing
-- `cargo test -p aperturec-state-machine` - Test state machine library
+- `cargo nextest run --workspace` - Run all tests (takes ~15-20 minutes). NEVER CANCEL. Set timeout to 30+ minutes.
+- `cargo nextest run -p aperturec-channel` - Test network layer
+- `cargo nextest run -p aperturec-graphics` - Test graphics processing
+- `cargo nextest run -p aperturec-state-machine` - Test state machine library
 
 ### Development Commands
 - `cargo fmt --all` - Format all code (required before commits)
@@ -66,7 +66,7 @@ Always test these scenarios after making changes:
    - Run `cargo build --release` and verify both server and client binaries are created in `target/release/`
 
 2. **Test Validation**:
-   - Run `cargo test --workspace` and ensure all tests pass
+   - Run `cargo nextest run --workspace` and ensure all tests pass
    - Pay special attention to network tests in `aperturec-channel`
 
 3. **Application Functionality** (if X11 environment available):
@@ -83,7 +83,7 @@ Always test these scenarios after making changes:
 The CI pipeline (.github/workflows/ci.yml) will fail if:
 - Code is not formatted (`cargo fmt --all` required)
 - Clippy warnings exist (`cargo clippy` required)
-- Tests fail (`cargo test --workspace` required)
+- Tests fail (`cargo nextest run --workspace` required)
 - Dependencies have security/license issues (`cargo deny check` required)
 
 ## Project Structure
@@ -156,7 +156,7 @@ The `aperturec-protocol/` crate auto-generates Rust code from `.proto` files in 
 Based on testing on GitHub Actions runners:
 - **cargo check**: ~6 minutes (first run with dependency download)
 - **cargo build --release**: ~20-25 minutes (NEVER CANCEL - set 45+ minute timeout)
-- **cargo test --workspace**: ~15-20 minutes (NEVER CANCEL - set 30+ minute timeout)
+- **cargo nextest run --workspace**: ~15-20 minutes (NEVER CANCEL - set 30+ minute timeout)
 - **cargo clippy**: ~8-12 minutes
 - Subsequent builds are faster due to incremental compilation
 

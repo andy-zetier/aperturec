@@ -51,4 +51,4 @@ jobs:
       - run: cargo check --workspace
       - run: cargo clippy --workspace --no-deps -- -Dwarnings
       - run: cargo check --release --workspace && cargo clean --release
-      - run: cargo test --workspace
+      - run: cargo nextest run --workspace

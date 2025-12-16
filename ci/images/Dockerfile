@@ -120,6 +120,7 @@ ENV PATH="/root/.cargo/bin:$PATH"
 RUN rustup default stable
 RUN rustup component add clippy
 RUN cargo install cargo-deny
+RUN cargo install cargo-nextest --locked
 
 FROM base-rust-image AS rust-image-debian
 RUN cargo install cargo-deb
