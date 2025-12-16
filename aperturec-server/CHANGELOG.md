@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.0.3...aperturec-server-v2.1.0) (2025-12-16)
+
+
+### Features
+
+* Add shared compressor pools for zlib and jpegxl ([#763](https://github.com/Zetier/aperturec/issues/763)) ([995e9a5](https://github.com/Zetier/aperturec/commit/995e9a5ffb7db3079e65a391f068af20404739b6))
+
 ## [2.0.3](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.0.2...aperturec-server-v2.0.3) (2025-12-16)
 
 ## [2.0.2](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.0.1...aperturec-server-v2.0.2) (2025-12-10)
