@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.1.4](https://github.com/Zetier/aperturec/compare/aperturec-utils-v0.1.3...aperturec-utils-v0.1.4) (2025-12-16)
+
 ## [0.1.3](https://github.com/Zetier/aperturec/compare/aperturec-utils-v0.1.2...aperturec-utils-v0.1.3) (2025-12-03)
 
 

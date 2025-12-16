@@ -1,5 +1,7 @@
 # Changelog
 
+## [2.0.3](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.0.2...aperturec-server-v2.0.3) (2025-12-16)
+
 ## [2.0.2](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.0.1...aperturec-server-v2.0.2) (2025-12-10)
 
 

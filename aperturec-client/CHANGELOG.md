@@ -1,5 +1,7 @@
 # Changelog
 
+## [1.1.3](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.1.2...aperturec-client-v1.1.3) (2025-12-16)
+
 ## [1.1.2](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.1.1...aperturec-client-v1.1.2) (2025-12-10)
 
 ## [1.1.1](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.1.0...aperturec-client-v1.1.1) (2025-12-03)

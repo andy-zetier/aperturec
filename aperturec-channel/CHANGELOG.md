@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.3](https://github.com/Zetier/aperturec/compare/aperturec-channel-v2.0.2...aperturec-channel-v2.0.3) (2025-12-16)
+
+
+### Bug Fixes
+
+* Remove unused use ([#759](https://github.com/Zetier/aperturec/issues/759)) ([6b82b55](https://github.com/Zetier/aperturec/commit/6b82b55dac0897726f9bc50f3328da2f0eaf3389))
+
 ## [2.0.2](https://github.com/Zetier/aperturec/compare/aperturec-channel-v2.0.1...aperturec-channel-v2.0.2) (2025-12-10)
 
 ## [2.0.1](https://github.com/Zetier/aperturec/compare/aperturec-channel-v2.0.0...aperturec-channel-v2.0.1) (2025-12-03)

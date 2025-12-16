@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/Zetier/aperturec/compare/aperturec-metrics-v0.1.0...aperturec-metrics-v0.1.1) (2025-12-16)
+
+
+### Bug Fixes
+
+* Remove unused use ([#759](https://github.com/Zetier/aperturec/issues/759)) ([6b82b55](https://github.com/Zetier/aperturec/commit/6b82b55dac0897726f9bc50f3328da2f0eaf3389))
+
 ## 0.1.0 (2025-09-26)
 
 
