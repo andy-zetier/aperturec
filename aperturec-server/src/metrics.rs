@@ -13,6 +13,8 @@ create_metric!(TrackingBufferDisjointAreas);
 create_metric!(TrackingBufferUpdates);
 create_metric!(BackendEvent);
 create_metric!(ClientActivityEvent);
+create_metric!(DroppedInvalidKeycode);
+create_metric!(DroppedEventSendError);
 create_metric!(DisplayWidth);
 create_metric!(DisplayHeight);
 create_metric!(RefreshCount);
@@ -100,6 +102,8 @@ pub fn setup_server_metrics() {
     TrackingBufferUpdates::register();
     BackendEvent::register();
     ClientActivityEvent::register();
+    DroppedInvalidKeycode::register();
+    DroppedEventSendError::register();
     DisplayWidth::register();
     DisplayHeight::register();
     CaptureLatency::register();
@@ -118,4 +122,6 @@ pub fn clear_session_metrics() {
     RefreshCount::clear();
     RateLimitTotalBytes::clear();
     RateLimitBlockedBytes::clear();
+    DroppedInvalidKeycode::clear();
+    DroppedEventSendError::clear();
 }

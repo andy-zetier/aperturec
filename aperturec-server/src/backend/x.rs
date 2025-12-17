@@ -1,5 +1,5 @@
 use crate::backend::{Backend, CursorChange, CursorImage, Event, LockState, SetDisplaysSuccess};
-use crate::metrics::{BackendEvent, DisplayHeight, DisplayWidth};
+use crate::metrics::{BackendEvent, DisplayHeight, DisplayWidth, DroppedInvalidKeycode};
 use crate::process_utils::{self, DisplayableExitStatus};
 
 use aperturec_graphics::{display::*, geometry::*, prelude::*};
@@ -546,6 +546,7 @@ impl Backend for X {
             Event::Key { key, is_depressed } => {
                 let keycode = key as x::Keycode;
                 if keycode > self.connection.max_keycode || keycode < self.connection.min_keycode {
+                    DroppedInvalidKeycode::inc();
                     warn!(
                         "Received key event for key outside range ({},{}): {}. Dropping the event.",
                         self.connection.min_keycode, self.connection.max_keycode, keycode

@@ -1,5 +1,5 @@
 use crate::backend::Event;
-use crate::metrics::ClientActivityEvent;
+use crate::metrics::{ClientActivityEvent, DroppedEventSendError};
 use crate::server;
 
 use anyhow::{Result, anyhow, bail};
@@ -134,15 +134,21 @@ impl Transitionable<Running> for Task<Created> {
                                     ClientActivityEvent::inc();
                                     sleep.set(time::sleep(timeout));
                                 }
-                                self.state.event_tx.send(msg.try_into()?).await?
-                            },
+                                let event: Event = msg.try_into()?;
+                                if let Err(e) = self.state.event_tx.send(event).await {
+                                    DroppedEventSendError::inc();
+                                    bail!("EC failed forwarding event: {e}");
+                                }
+                            }
                             Err(e) => bail!("EC Rx error: {e}"),
                         }
                     }
                     _ = rx_ct.cancelled() => {
                         while let Some(Ok(msg)) = ec_rx.receive().now_or_never() {
-
-                            let _ = self.state.event_tx.send(msg.try_into()?).await;
+                            let event: Event = msg.try_into()?;
+                            if self.state.event_tx.send(event).await.is_err() {
+                                DroppedEventSendError::inc();
+                            }
                         }
                         break Ok(());
                     }
