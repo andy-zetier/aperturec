@@ -21,6 +21,8 @@ use gtk4::{
     prelude::*,
 };
 #[cfg(target_os = "macos")]
+use glib::translate::IntoGlib;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use keycode::{KeyMap, KeyMapping};
 use std::{
     cell::{Cell, RefCell},
@@ -65,7 +67,7 @@ fn map_gdk_key(keyval: gdk::Key, raw_keycode: u32) -> Option<u32> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn map_gdk_key(_keyval: gdk::Key, keycode: u32) -> Option<u32> {
     Some(keycode)
 }
@@ -107,7 +109,7 @@ fn convert_win_virtual_key_to_scan_code(virtual_key: u32) -> anyhow::Result<u16>
 }
 
 #[cfg(target_os = "windows")]
-fn map_gdk_key(keyval: gdk::Key, raw_keycode: u32) -> Option<u32> {
+fn map_gdk_key(_keyval: gdk::Key, raw_keycode: u32) -> Option<u32> {
     let scancode = match convert_win_virtual_key_to_scan_code(raw_keycode) {
         Ok(sc) => sc,
         Err(err) => {
@@ -204,6 +206,7 @@ impl Monitors {
 
             #[cfg(target_os = "windows")]
             {
+                warn!("{:?} ignored on windows, defaulting to 800x600", mon);
                 Rect::new(Point::new(0, 0), Size::new(800, 600))
                 // unimplemented!("unsure about how to get the monitors on windows")
                 // gdkrect2rect(gdk4_win32::Win32Monitor::workarea(mon))
