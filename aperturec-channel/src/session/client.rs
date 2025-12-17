@@ -1,4 +1,4 @@
-use super::Result;
+use super::{Handle, Result};
 use crate::transport::{datagram, stream};
 use crate::util::Syncify;
 use crate::*;
@@ -117,11 +117,19 @@ impl Session {
         Ok(Session { cc, ec, tc, mc })
     }
 
+    fn quic_connection(&self) -> s2n_quic::connection::Handle {
+        self.cc.as_ref().as_ref().connection()
+    }
+
     pub fn local_addr(&self) -> Result<SocketAddr, quic::Error> {
-        Ok(self.cc.as_ref().as_ref().connection().local_addr()?)
+        Ok(self.quic_connection().local_addr()?)
     }
 
     pub fn remote_addr(&self) -> Result<SocketAddr, quic::Error> {
-        Ok(self.cc.as_ref().as_ref().connection().remote_addr()?)
+        Ok(self.quic_connection().remote_addr()?)
+    }
+
+    pub fn handle(&self) -> Handle {
+        Handle(self.quic_connection())
     }
 }

@@ -1,19 +1,11 @@
-use crate::channels::NETWORK_CHANNEL_TIMEOUT;
-
-use aperturec_channel::{self as channel, Sender as _, TimeoutReceiver as _};
+use aperturec_channel::{self as channel, Receiver as _, Sender as _};
 use aperturec_protocol::control::{
     self as proto, client_to_server as c2s, server_to_client as s2c,
 };
 use aperturec_utils::channels::SenderExt;
 
 use crossbeam::channel::{Receiver, Sender, bounded, select_biased};
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-};
+use std::thread;
 use tracing::*;
 
 #[derive(Debug)]
@@ -114,20 +106,14 @@ pub fn setup(
 ) {
     let (mut cc_rx, mut cc_tx) = client_cc.split();
 
-    let should_stop = Arc::new(AtomicBool::new(false));
-    let should_stop_read = should_stop.clone();
     let (from_network_tx, from_network_rx) = bounded(0);
 
     let network_rx_thread = thread::spawn(move || {
         let _s = debug_span!("cc-network-rx").entered();
         debug!("started");
         loop {
-            if should_stop_read.load(Ordering::Acquire) {
-                break;
-            }
-            match cc_rx.receive_timeout(NETWORK_CHANNEL_TIMEOUT) {
-                Ok(None) => continue,
-                Ok(Some(msg)) => from_network_tx.send_or_warn(Ok(msg)),
+            match cc_rx.receive() {
+                Ok(msg) => from_network_tx.send_or_warn(Ok(msg)),
                 Err(err) => {
                     from_network_tx.send_or_warn(Err(err));
                     break;
@@ -184,7 +170,6 @@ pub fn setup(
                 }
             }
         }
-        should_stop.store(true, Ordering::Release);
         if let Err(error) = network_rx_thread.join() {
             warn!("cc-network-rx panicked: {error:?}");
         }

@@ -28,6 +28,17 @@ pub enum Error {
     Quic(#[from] quic::Error),
 }
 
+#[derive(Debug, Clone)]
+pub struct Handle(s2n_quic::connection::Handle);
+
+impl Handle {
+    pub fn close(&self) {
+        let explicit_close =
+            s2n_quic::application::Error::new(0).expect("create explicit close error");
+        self.0.close(explicit_close);
+    }
+}
+
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// A trait for a synchronous unified session which can be broken into component channels;

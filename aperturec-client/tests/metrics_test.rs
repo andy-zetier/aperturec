@@ -1,4 +1,4 @@
-use aperturec_client::{init_metrics, metrics_initialized, MetricsError};
+use aperturec_client::{MetricsError, init_metrics, metrics_initialized};
 use aperturec_metrics::exporters::{Exporter as MetricsExporter, LogExporter};
 use serial_test::serial;
 use tracing::Level;

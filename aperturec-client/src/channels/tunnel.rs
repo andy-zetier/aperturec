@@ -1,31 +1,25 @@
-use aperturec_channel::{self as channel, Sender as _, TimeoutReceiver};
+use aperturec_channel::{self as channel, Receiver as _, Sender as _};
 use aperturec_protocol::tunnel as proto;
-use aperturec_utils::channels::SenderExt;
-use aperturec_utils::info_always;
+use aperturec_utils::{channels::SenderExt, info_always};
 
-use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, bounded, select_biased};
-use socket2::Socket;
+use crossbeam::channel::{Receiver, Sender, bounded, select_biased};
+use mio::{
+    Events, Interest, Poll, Token, Waker,
+    net::{TcpListener, TcpStream},
+};
 use std::{
     collections::BTreeMap,
     io::{self, Read, Write},
-    net::{IpAddr, Ipv4Addr, TcpListener, TcpStream, ToSocketAddrs},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream as StdTcpStream, ToSocketAddrs},
+    sync::Arc,
     thread::{self, JoinHandle},
-    time::Duration,
 };
 use tracing::*;
-
-const TCP_NETWORK_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Lifecycle of a TCP stream that backs a logical tunnel stream.
 ///
 /// Streams always start in `Opening`, move to `Opened` once the TCP socket is fully established,
 /// and then advance through `HalfClosed` and `FullyClosed` as either side tears down the socket.
-/// The shared `should_terminate` flag is carried across the active states to let the read/write
-/// worker threads know when the coordinator has requested shutdown.
 enum State {
     /// The tunnel stream exists at the QUIC layer but the TCP socket is not ready yet.
     ///
@@ -34,15 +28,13 @@ enum State {
     Opening {
         /// Bytes delivered by the remote side before the TCP socket was established locally.
         queued: Vec<u8>,
-        /// Shared signal used by the coordinator to ask the read/write threads to exit.
-        should_terminate: Arc<AtomicBool>,
     },
     /// Stream is fully established and actively forwarding bytes between TCP and the tunnel.
     Opened {
         /// Channel feeding the write thread with data destined for the TCP socket.
         to_tx: Sender<Vec<u8>>,
-        /// Shared signal used by the coordinator to ask the read/write threads to exit.
-        should_terminate: Arc<AtomicBool>,
+        /// Handle used to forcefully wake/blocking read during shutdown.
+        stream: Arc<TcpStream>,
         read_thread: JoinHandle<()>,
         write_thread: JoinHandle<()>,
     },
@@ -81,16 +73,13 @@ pub enum ChannelError {
 enum StreamError {
     #[error(transparent)]
     IO(#[from] io::Error),
-    #[error("internal channel disconnected")]
-    Disconnected,
 }
 
 #[derive(Debug)]
 enum StreamState {
     Started {
         id: Id,
-        rh: TcpStream,
-        wh: TcpStream,
+        stream: Arc<TcpStream>,
     },
     Finished {
         id: Id,
@@ -128,14 +117,6 @@ fn tcp_data(id: impl Into<Id>, data: Vec<u8>) -> proto::Message {
         .expect("build tunnel message")
 }
 
-fn configure_split_stream(stream: TcpStream) -> io::Result<(TcpStream, TcpStream)> {
-    stream.set_nonblocking(false)?;
-    stream.set_read_timeout(TCP_NETWORK_TIMEOUT.into())?;
-    let rh = stream.try_clone()?;
-    let wh = stream;
-    Ok((rh, wh))
-}
-
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, derive_new::new)]
 struct Id {
     tunnel: u64,
@@ -168,13 +149,7 @@ fn handle_open_from_server(
         return;
     }
 
-    streams.insert(
-        id,
-        State::Opening {
-            queued: vec![],
-            should_terminate: Arc::new(AtomicBool::new(false)),
-        },
-    );
+    streams.insert(id, State::Opening { queued: vec![] });
 
     let to_quic_tx = to_quic_tx.clone();
     let stream_state_tx = stream_state_tx.clone();
@@ -187,7 +162,7 @@ fn handle_open_from_server(
                 Vec::default().into_iter()
             }
         }
-        .map(TcpStream::connect)
+        .map(StdTcpStream::connect)
         .filter_map(Result::ok);
 
         let Some(stream) = stream_iter.next() else {
@@ -195,30 +170,17 @@ fn handle_open_from_server(
             to_quic_tx.send_or_warn(close_tcp_stream(id));
             return;
         };
-
-        let (rh, wh) = match configure_split_stream(stream) {
-            Ok((rh, wh)) => (rh, wh),
-            Err(error) => {
-                warn!(%error, "failed configuring stream");
-                to_quic_tx.send_or_warn(close_tcp_stream(id));
-                return;
-            }
-        };
-
-        stream_state_tx.send_or_warn(StreamState::Started { id, rh, wh });
+        stream_state_tx.send_or_warn(StreamState::Started {
+            id,
+            stream: Arc::new(TcpStream::from_std(stream)),
+        });
     });
 }
 
 fn handle_close_from_server(id: Id, streams: &mut BTreeMap<Id, State>) {
     let _s = trace_span!("close-from-server", ?id).entered();
     match streams.remove(&id) {
-        Some(State::Opening {
-            should_terminate, ..
-        })
-        | Some(State::Opened {
-            should_terminate, ..
-        }) => {
-            should_terminate.store(true, Ordering::Release);
+        Some(State::Opening { .. }) | Some(State::Opened { .. }) => {
             trace!("marking half closed");
             streams.insert(id, State::HalfClosed);
         }
@@ -259,26 +221,19 @@ fn handle_data_from_server(
 
 fn handle_new_stream_established(
     id: Id,
-    mut rh: TcpStream,
-    mut wh: TcpStream,
+    stream: Arc<TcpStream>,
     to_quic_tx: &Sender<proto::Message>,
     stream_state_tx: &Sender<StreamState>,
     client_bound_tunnels: &BTreeMap<u64, proto::Description>,
     streams: &mut BTreeMap<Id, State>,
 ) {
     let _s = trace_span!("new-stream-established", ?id).entered();
-    trace!(?rh, ?wh);
+    trace!(?stream);
 
-    let (queued, should_terminate) = match streams.remove(&id) {
-        Some(State::Opening {
-            queued,
-            should_terminate,
-        }) => (queued, should_terminate),
-        Some(State::Opened {
-            should_terminate, ..
-        }) => {
+    let queued = match streams.remove(&id) {
+        Some(State::Opening { queued }) => queued,
+        Some(State::Opened { .. }) => {
             warn!("already open, ignoring");
-            should_terminate.store(true, Ordering::Release);
             return;
         }
         Some(State::HalfClosed) => {
@@ -294,7 +249,7 @@ fn handle_new_stream_established(
             if client_bound_tunnels.contains_key(&id.tunnel) {
                 to_quic_tx.send_or_warn(open_tcp_stream(id));
                 trace!("sent");
-                (vec![], Arc::new(AtomicBool::new(false)))
+                vec![]
             } else {
                 warn!("non-existent");
                 return;
@@ -303,19 +258,15 @@ fn handle_new_stream_established(
     };
 
     let stream_state_tx_rh = stream_state_tx.clone();
-    let should_terminate_rh = should_terminate.clone();
     let to_quic_tx = to_quic_tx.clone();
+    let rh = stream.clone();
     let read_thread = thread::spawn(move || {
         let _s = trace_span!("tc-stream-read-thread", ?id).entered();
         trace!("starting");
         let result = loop {
-            if should_terminate_rh.load(Ordering::Acquire) {
-                break Ok(());
-            }
             let mut data = vec![0_u8; 0x1000];
-            let nbytes = match rh.read(&mut data) {
+            let nbytes = match rh.as_ref().read(&mut data) {
                 Ok(nbytes_read) => nbytes_read,
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(e) => break Err(e.into()),
             };
             if nbytes == 0 {
@@ -331,11 +282,11 @@ fn handle_new_stream_established(
 
     let (to_tx, to_tx_rx) = bounded::<Vec<u8>>(1);
     let stream_state_tx_wh = stream_state_tx.clone();
-    let should_terminate_wh = should_terminate.clone();
+    let wh = stream.clone();
     let write_thread = thread::spawn(move || {
         let _s = trace_span!("tc-stream-write-thread", ?id).entered();
         trace!("starting");
-        if let Err(e) = wh.write_all(&queued) {
+        if let Err(e) = wh.as_ref().write_all(&queued) {
             stream_state_tx_wh.send_or_warn(StreamState::Finished {
                 id,
                 result: Err(e.into()),
@@ -343,15 +294,10 @@ fn handle_new_stream_established(
             return;
         }
         let result = loop {
-            if should_terminate_wh.load(Ordering::Acquire) {
+            let Ok(data) = to_tx_rx.recv() else {
                 break Ok(());
-            }
-            let data = match to_tx_rx.recv_timeout(super::ITC_TIMEOUT) {
-                Ok(data) => data,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break Err(StreamError::Disconnected),
             };
-            if let Err(e) = wh.write_all(&data) {
+            if let Err(e) = wh.as_ref().write_all(&data) {
                 break Err(e.into());
             }
         };
@@ -363,7 +309,7 @@ fn handle_new_stream_established(
         id,
         State::Opened {
             to_tx,
-            should_terminate,
+            stream,
             read_thread,
             write_thread,
         },
@@ -380,11 +326,8 @@ fn handle_stream_result(
     trace!(?result);
     match streams.remove(&id) {
         Some(State::Opening { queued, .. }) => warn!(?queued, "closing opening tunnel"),
-        Some(State::Opened {
-            should_terminate, ..
-        }) => {
+        Some(State::Opened { .. }) => {
             trace!("closing first half");
-            should_terminate.store(true, Ordering::Release);
             streams.insert(id, State::HalfClosed);
         }
         Some(State::HalfClosed) => {
@@ -413,19 +356,18 @@ fn initialize_threads(
 ) {
     let (mut tc_rx, mut tc_tx) = tc.split();
 
-    let should_stop = Arc::new(AtomicBool::new(false));
     let (from_quic_tx, from_quic_rx) = bounded(0);
     let (to_quic_tx, to_quic_rx) = bounded(0);
     let (stream_state_tx, stream_state_rx) = bounded(0);
-    let (error_tx, error_rx) = bounded(0);
 
     let mut threads = BTreeMap::new();
+    let mut accept_wakers: BTreeMap<u64, Waker> = BTreeMap::new();
 
     for (&tunnel_id, desc) in &client_bound_tunnels {
         let desc = desc.clone();
         debug!(?desc);
-        let should_stop_accept = should_stop.clone();
         let stream_state_tx = stream_state_tx.clone();
+        let (waker_tx, waker_rx) = bounded(1);
 
         let accept_thread = thread::spawn(move || {
             let _s = debug_span!("tc-accept", tunnel_id).entered();
@@ -449,98 +391,110 @@ fn initialize_threads(
                 return;
             };
 
-            let listener = match TcpListener::bind((addr, port)) {
-                Ok(listener) => Socket::from(listener),
+            let mut listener = match TcpListener::bind(SocketAddr::new(addr, port)) {
+                Ok(listener) => listener,
                 Err(error) => {
                     warn!(%error, "failed binding {addr}:{port}");
                     return;
                 }
             };
-            if let Err(error) = listener.set_read_timeout(Some(TCP_NETWORK_TIMEOUT)) {
-                warn!(%error, "failed setting socket read timeout");
+
+            // Register listener with mio and create a waker we can trigger on shutdown.
+            let mut poll = match Poll::new() {
+                Ok(p) => p,
+                Err(error) => {
+                    warn!(%error, "failed to create poll");
+                    return;
+                }
+            };
+            let listener_token = Token(0);
+            let waker_token = Token(1);
+
+            // Register listener with mio and create a waker we can trigger on shutdown.
+            if let Err(error) =
+                poll.registry()
+                    .register(&mut listener, listener_token, Interest::READABLE)
+            {
+                warn!(%error, "failed to register listener with poll");
                 return;
             }
+            let waker = match Waker::new(poll.registry(), waker_token) {
+                Ok(w) => w,
+                Err(error) => {
+                    warn!(%error, "failed to create waker");
+                    return;
+                }
+            };
+            let _ = waker_tx.send(waker);
+            let mut events = Events::with_capacity(16);
 
             loop {
-                if should_stop_accept.load(Ordering::Acquire) {
+                if let Err(error) = poll.poll(&mut events, None) {
+                    warn!(%error, "poll failed");
                     break;
                 }
-                let stream = match listener.accept() {
-                    Ok((stream, _)) => stream.into(),
-                    Err(e)
-                        if e.kind() == io::ErrorKind::WouldBlock
-                            || e.kind() == io::ErrorKind::TimedOut =>
-                    {
-                        trace!("continue");
-                        continue;
-                    }
-                    Err(error) => {
-                        warn!(%error, stream_id, "failed accepting");
+
+                for event in events.iter() {
+                    let token = event.token();
+                    if token == listener_token {
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                debug!(stream_id, "accepted");
+                                let stream_state = StreamState::Started {
+                                    id: Id::new(tunnel_id, stream_id),
+                                    stream: Arc::new(stream),
+                                };
+                                if stream_state_tx.send(stream_state).is_err() {
+                                    debug!("tc-main is gone, exiting");
+                                    break;
+                                };
+                                debug!(stream_id, "forwarded to new stream handler");
+                                stream_id += 1;
+                            }
+                            Err(error) => {
+                                warn!(%error, stream_id, "failed accepting");
+                                break;
+                            }
+                        }
+                    } else if token == waker_token {
+                        debug!("waker signaled, exiting accept loop");
                         return;
                     }
-                };
-                debug!(stream_id, "accepted");
-                let (rh, wh) = match configure_split_stream(stream) {
-                    Ok((rh, wh)) => (rh, wh),
-                    Err(error) => {
-                        warn!(%error, "failed configuring stream");
-                        continue;
-                    }
-                };
-                stream_state_tx.send_or_warn(StreamState::Started {
-                    id: Id::new(tunnel_id, stream_id),
-                    rh,
-                    wh,
-                });
-                debug!(stream_id, "forwarded to new stream handler");
-                stream_id += 1;
+                }
             }
         });
 
         threads.insert(format!("tc-accept-{tunnel_id}"), accept_thread);
+        if let Ok(waker) = waker_rx.recv() {
+            accept_wakers.insert(tunnel_id, waker);
+        }
     }
 
-    let should_stop_write = should_stop.clone();
-    let error_tx_qtt = error_tx.clone();
+    let pt_tx_qtt = pt_tx.clone();
     let quic_tx_thread = thread::spawn(move || {
         let _s = debug_span!("tc-quic-tx").entered();
         debug!("started");
         loop {
-            if should_stop_write.load(Ordering::Acquire) {
+            let Ok(msg) = to_quic_rx.recv() else {
                 break;
-            }
-            match to_quic_rx.recv_timeout(super::ITC_TIMEOUT) {
-                Ok(msg) => {
-                    if let Err(error) = tc_tx.send(msg) {
-                        error_tx_qtt.send_or_warn(ChannelError::from(error));
-                        break;
-                    }
-                }
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            if let Err(error) = tc_tx.send(msg) {
+                pt_tx_qtt.send_or_warn(Ptn::ChannelError(error.into()));
+                break;
             }
         }
         debug!("exiting");
     });
     threads.insert("tc-quic-tx".to_string(), quic_tx_thread);
 
-    let should_stop_read = should_stop.clone();
-    let error_tx_qrt = error_tx.clone();
     let quic_rx_thread = thread::spawn(move || {
         let _s = debug_span!("tc-quic-rx").entered();
         debug!("started");
         loop {
-            if should_stop_read.load(Ordering::Acquire) {
-                break;
-            }
-            match tc_rx.receive_timeout(super::NETWORK_CHANNEL_TIMEOUT) {
-                Ok(None) => continue,
-                Ok(Some(msg)) => {
-                    trace!(?msg);
-                    from_quic_tx.send_or_warn(msg)
-                }
-                Err(error) => {
-                    error_tx_qrt.send_or_warn(ChannelError::from(error));
+            match tc_rx.receive() {
+                Ok(msg) => from_quic_tx.send_or_warn(Ok(msg)),
+                Err(err) => {
+                    from_quic_tx.send_or_warn(Err(err));
                     break;
                 }
             }
@@ -566,17 +520,17 @@ fn initialize_threads(
                         Notification::Terminate => break,
                     }
                 }
-                recv(error_rx) -> error_res => {
-                    let Ok(error) = error_res else {
-                        warn!("all error emitting threads all died before primary");
-                        break;
-                    };
-                    pt_tx.send_or_warn(Ptn::ChannelError(error));
-                }
                 recv(from_quic_rx) -> quic_thread_msg_res => {
-                    let Ok(s2c) = quic_thread_msg_res else {
+                    let Ok(quic_res) = quic_thread_msg_res else {
                         debug!("tc-quic-rx died before tc-main");
                         break;
+                    };
+                    let s2c = match quic_res {
+                        Ok(msg) => msg,
+                        Err(error) => {
+                            pt_tx.send_or_warn(Ptn::ChannelError(error.into()));
+                            continue;
+                        }
                     };
                     let id = Id::new(s2c.tunnel_id, s2c.stream_id);
                     match s2c.message {
@@ -613,11 +567,10 @@ fn initialize_threads(
                     };
 
                     match stream_state_msg {
-                        StreamState::Started { id, rh, wh } => {
+                        StreamState::Started { id, stream } => {
                             handle_new_stream_established(
                                 id,
-                                rh,
-                                wh,
+                                stream,
                                 &to_quic_tx,
                                 &stream_state_tx,
                                 &client_bound_tunnels,
@@ -638,24 +591,15 @@ fn initialize_threads(
         }
         debug!("terminating stream threads");
         for (id, state) in streams {
-            let (State::Opening {
-                ref should_terminate,
-                ..
-            }
-            | State::Opened {
-                ref should_terminate,
-                ..
-            }) = state
-            else {
-                continue;
-            };
-            should_terminate.store(true, Ordering::Release);
             if let State::Opened {
+                stream,
                 read_thread,
                 write_thread,
                 ..
             } = state
             {
+                let _ = stream.shutdown(std::net::Shutdown::Read);
+                let _ = stream.shutdown(std::net::Shutdown::Both);
                 if let Err(error) = read_thread.join() {
                     warn!(?id, "read thread panicked: {error:?}");
                 }
@@ -666,7 +610,9 @@ fn initialize_threads(
             to_quic_tx.send_or_warn(close_tcp_stream(id));
         }
         debug!("terminating remaining threads");
-        should_stop.store(true, Ordering::Release);
+        for waker in accept_wakers.values() {
+            let _ = waker.wake();
+        }
         for (thread_name, jh) in threads {
             trace!(thread_name, "waiting");
             if let Err(error) = jh.join() {

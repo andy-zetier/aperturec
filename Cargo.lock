@@ -176,6 +176,7 @@ dependencies = [
  "jxl-sys",
  "keycode",
  "libc",
+ "mio",
  "ndarray",
  "openssl",
  "paste",

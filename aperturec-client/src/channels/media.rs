@@ -1,18 +1,11 @@
-use crate::channels::NETWORK_CHANNEL_TIMEOUT;
 use crate::frame::{Draw, Framer};
 
-use aperturec_channel::{self as channel, TimeoutReceiver as _};
+use aperturec_channel::{self as channel, Receiver as _};
 use aperturec_graphics::display;
 use aperturec_utils::channels::SenderExt;
 
 use crossbeam::channel::{Receiver, Sender, bounded, select_biased};
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-};
+use std::thread;
 use tracing::*;
 
 /// Notifications emitted by the media channel towards the primary thread.
@@ -53,20 +46,14 @@ pub enum Error {
 /// * `pt_tx` - Sends `Draw` or error notifications back to the primary thread.
 /// * `from_pt_rx` - Receives display updates or termination requests.
 pub fn setup(mut mc: channel::ClientMedia, pt_tx: Sender<Ptn>, from_pt_rx: Receiver<Notification>) {
-    let should_stop = Arc::new(AtomicBool::new(false));
-    let should_stop_read = should_stop.clone();
     let (from_network_tx, from_network_rx) = bounded(0);
 
     let network_rx_thread = thread::spawn(move || {
         let _s = debug_span!("mc-network-rx").entered();
         debug!("started");
         loop {
-            if should_stop_read.load(Ordering::Acquire) {
-                break;
-            }
-            match mc.receive_timeout(NETWORK_CHANNEL_TIMEOUT) {
-                Ok(None) => continue,
-                Ok(Some(msg)) => from_network_tx.send_or_warn(Ok(msg)),
+            match mc.receive() {
+                Ok(msg) => from_network_tx.send_or_warn(Ok(msg)),
                 Err(err) => {
                     from_network_tx.send_or_warn(Err(err));
                     break;
@@ -81,13 +68,11 @@ pub fn setup(mut mc: channel::ClientMedia, pt_tx: Sender<Ptn>, from_pt_rx: Recei
         debug!("started");
         let Ok(first_notif) = from_pt_rx.recv() else {
             warn!("no media notifications");
-            should_stop.store(true, Ordering::Release);
             return;
         };
         let first_dc = match first_notif {
             Notification::Terminate => {
                 warn!("terminated before any media notifications");
-                should_stop.store(true, Ordering::Release);
                 return;
             }
             Notification::DisplayConfiguration(first_dc) => first_dc,
@@ -135,7 +120,6 @@ pub fn setup(mut mc: channel::ClientMedia, pt_tx: Sender<Ptn>, from_pt_rx: Recei
                 },
             }
         }
-        should_stop.store(true, Ordering::Release);
         if let Err(error) = network_rx_thread.join() {
             warn!("mc-network-rx panicked: {:?}", error)
         }

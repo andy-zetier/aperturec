@@ -1,5 +1,5 @@
 //! Server-side sessions
-use super::{Error, Result};
+use super::{Error, Handle, Result};
 use crate::session;
 use crate::transport::{datagram, stream};
 use crate::util::Syncify;
@@ -108,8 +108,16 @@ impl Session {
         Ok(Session { cc, ec, mc, tc })
     }
 
+    fn quic_connection(&self) -> s2n_quic::connection::Handle {
+        self.cc.as_ref().as_ref().connection()
+    }
+
     pub fn remote_addr(&self) -> Result<SocketAddr, io::Error> {
-        Ok(self.cc.as_ref().as_ref().connection().remote_addr()?)
+        Ok(self.quic_connection().remote_addr()?)
+    }
+
+    pub fn handle(&self) -> Handle {
+        Handle(self.quic_connection())
     }
 }
 

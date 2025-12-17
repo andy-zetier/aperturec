@@ -640,7 +640,7 @@ impl Client {
     /// This establishes the QUIC connection, performs TLS handshake, and initiates the session.
     /// The client must be successfully connected before sending input or receiving events.
     pub fn connect(&mut self) -> Result<Connection, ConnectionError> {
-        let (cc, ec, mc, tc) = self.setup_unified_channel()?;
+        let (cc, ec, mc, tc, handle) = self.setup_unified_channel()?;
 
         let (pt_tx, pt_rx) = bounded(0);
         let (event_tx, event_rx) = unbounded();
@@ -681,6 +681,7 @@ impl Client {
 
         let config = self.config.borrow();
         if connection_parameters.display_config.encoder_count() > config.decoder_max.get() {
+            handle.close();
             return Err(ConnectionError::UnexpectedServerBehavior(format!(
                 "server allocated {} decoders, but only {} are enabled in the client",
                 connection_parameters.display_config.encoder_count(),
@@ -817,6 +818,8 @@ impl Client {
             to_mc_tx.send_or_warn(ToMC::Terminate);
             to_tc_tx.send_or_warn(ToTC::Terminate);
             debug!("sent termination signal to all channels");
+            handle.close();
+            debug!("closed channel connection");
         });
 
         Ok(Connection {
@@ -836,6 +839,7 @@ impl Client {
             channel::ClientEvent,
             channel::ClientMedia,
             channel::ClientTunnel,
+            channel::Handle,
         ),
         ConnectionError,
     > {
@@ -871,7 +875,8 @@ impl Client {
         }
         let mut channel_client = channel_client_builder.build_sync()?;
         let channel_session = channel_client.connect(&server_addr, server_port)?;
+        let handle = channel_session.handle();
         let (cc, ec, mc, tc) = channel_session.split();
-        Ok((cc, ec, mc, tc))
+        Ok((cc, ec, mc, tc, handle))
     }
 }

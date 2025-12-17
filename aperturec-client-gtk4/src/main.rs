@@ -13,36 +13,15 @@ use anyhow::{Result, bail};
 use async_channel::{Sender, unbounded};
 use clap::Parser;
 use futures::StreamExt;
+use glib::translate::IntoGlib;
 use gtk4::{
     self as gtk,
     gdk::{self, prelude::*},
     gio, glib,
     prelude::*,
 };
-use glib::translate::IntoGlib;
 #[cfg(target_os = "macos")]
 use keycode::{KeyMap, KeyMapping};
-#[cfg(target_os = "windows")]
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MAPVK_VK_TO_VSC_EX,
-    MapVirtualKeyW,
-    VIRTUAL_KEY,
-    VK_APPS,
-    VK_DELETE,
-    VK_DOWN,
-    VK_END,
-    VK_HOME,
-    VK_INSERT,
-    VK_LEFT,
-    VK_LWIN,
-    VK_NEXT,
-    VK_PRIOR,
-    VK_RCONTROL,
-    VK_RIGHT,
-    VK_RMENU,
-    VK_RWIN,
-    VK_UP,
-};
 use std::{
     cell::{Cell, RefCell},
     iter, mem,
@@ -58,6 +37,12 @@ use std::{
 use strum::{AsRefStr, EnumIter, IntoEnumIterator};
 use tracing::*;
 use tracing_subscriber::prelude::*;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    MAPVK_VK_TO_VSC_EX, MapVirtualKeyW, VIRTUAL_KEY, VK_APPS, VK_DELETE, VK_DOWN, VK_END, VK_HOME,
+    VK_INSERT, VK_LEFT, VK_LWIN, VK_NEXT, VK_PRIOR, VK_RCONTROL, VK_RIGHT, VK_RMENU, VK_RWIN,
+    VK_UP,
+};
 
 mod image;
 
