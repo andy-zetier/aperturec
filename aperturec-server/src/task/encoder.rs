@@ -22,6 +22,7 @@ use std::slice;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
 
@@ -752,6 +753,7 @@ impl Transitionable<Running> for Task<Created> {
 
     fn transition(mut self) -> Self::NextStateful {
         let task: JoinHandle<Result<()>> = task::spawn(async move {
+            let mut prev_frame_recv: Option<Instant> = None;
             loop {
                 tokio::select! {
                     biased;
@@ -762,6 +764,11 @@ impl Transitionable<Running> for Task<Created> {
                         self.state.area = area;
                     },
                     Some(frame) = self.state.frame_rx.recv() => {
+                        let now = Instant::now();
+                        if let Some(prev) = prev_frame_recv.replace(now) {
+                            InterFrameInterval::observe((now - prev).as_secs_f64() * 1000.0);
+                        }
+
                         let relevant = frame
                             .buffers
                             .iter()

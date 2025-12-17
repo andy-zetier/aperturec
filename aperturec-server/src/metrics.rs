@@ -88,6 +88,12 @@ create_histogram_metric_with_buckets!(
     prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
 );
 
+create_histogram_metric_with_buckets!(
+    InterFrameInterval,
+    "ms",
+    prometheus::exponential_buckets(1.0, 2.0, 14).unwrap()
+);
+
 pub fn setup_server_metrics() {
     CompressionRatio::register();
     TrackingBufferDamageRatio::register();
@@ -112,6 +118,7 @@ pub fn setup_server_metrics() {
     TrackingBufferCutFrameTime::register();
     TrackingBufferCutFrameLockLatency::register();
     MediaChannelSendLatency::register();
+    InterFrameInterval::register();
     RefreshCount::register();
     RateLimitMbps::register();
     RateLimitTotalBytes::register();
