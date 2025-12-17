@@ -14,14 +14,14 @@ use async_channel::{Sender, unbounded};
 use clap::Parser;
 use futures::StreamExt;
 use glib::translate::IntoGlib;
+#[cfg(target_os = "macos")]
+use glib::translate::IntoGlib;
 use gtk4::{
     self as gtk,
     gdk::{self, prelude::*},
     gio, glib,
     prelude::*,
 };
-#[cfg(target_os = "macos")]
-use glib::translate::IntoGlib;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use keycode::{KeyMap, KeyMapping};
 use std::{
