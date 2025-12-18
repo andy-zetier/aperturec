@@ -401,7 +401,7 @@ pub fn run() -> Result<()> {
             .name(gethostname().into_string().unwrap())
             .server_addr(args.server_address)
             .auth_token(auth_token)
-            .initial_display_mode(args.resolution)
+            .initial_display_mode(args.resolution.into())
             .allow_insecure_connection(args.insecure)
             .client_bound_tunnel_reqs(args.local)
             .server_bound_tunnel_reqs(args.remote);
