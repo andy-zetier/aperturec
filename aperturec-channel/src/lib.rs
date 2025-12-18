@@ -56,4 +56,4 @@ pub use codec::{
 };
 
 pub use endpoint::{AsyncClient, AsyncServer, Client, Server};
-pub use session::Unified;
+pub use session::{Handle, Unified};
