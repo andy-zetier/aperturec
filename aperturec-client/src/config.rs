@@ -1,45 +1,43 @@
-use crate::DisplayMode;
-use crate::args::{Args, ArgsError, PortForwardArg};
+use crate::{
+    DisplayMode,
+    args::{Args, ArgsError, PortForwardArg},
+};
 
-use aperturec_utils as utils;
+use aperturec_utils::{args, warn_early};
 
+use clap::Parser;
 use derive_builder::Builder;
+use gethostname::gethostname;
 use openssl::x509::X509;
 use secrecy::SecretString;
-use std::io;
-use std::num::NonZeroUsize;
+use std::{env, ffi::OsString, fs, io, num::NonZeroUsize};
 
 /// Client configuration for connecting to an ApertureC server.
-///
-/// This structure contains all the necessary configuration to establish
-/// and maintain a connection to an ApertureC server, including authentication,
-/// display settings, and tunnel configurations.
 #[derive(Builder, Clone, Debug)]
-#[builder(setter(into))]
 pub struct Configuration {
-    /// Client name identifier.
+    /// Client hostname.
     pub name: String,
-    /// Authentication token for server access.
+    /// Authentication token for the server.
     pub auth_token: SecretString,
-    /// Maximum number of decoder threads to use.
+    /// Maximum number of parallel decoders.
     pub decoder_max: NonZeroUsize,
-    /// Server address to connect to.
+    /// Server address (hostname or IP, optionally with port).
     pub server_addr: String,
-    /// Initial display mode for the client.
+    /// Initial display mode (windowed or fullscreen).
     pub initial_display_mode: DisplayMode,
-    /// Optional command line to execute on the server.
+    /// Optional program command line to execute on connect.
     #[builder(setter(strip_option), default)]
     pub program_cmdline: Option<String>,
-    /// Additional TLS certificates to trust.
+    /// Additional TLS certificates for server verification.
     #[builder(setter(name = "additional_tls_certificate", custom), default)]
     pub additional_tls_certificates: Vec<X509>,
-    /// Whether to allow insecure TLS connections.
+    /// Allow insecure TLS connections (skip certificate validation).
     #[builder(default)]
     pub allow_insecure_connection: bool,
-    /// Client-bound tunnel requests (local port forwards).
+    /// Client-bound port forwarding requests (`-L`).
     #[builder(default)]
     pub client_bound_tunnel_reqs: Vec<PortForwardArg>,
-    /// Server-bound tunnel requests (remote port forwards).
+    /// Server-bound port forwarding requests (`-R`).
     #[builder(default)]
     pub server_bound_tunnel_reqs: Vec<PortForwardArg>,
 }
@@ -47,27 +45,84 @@ pub struct Configuration {
 impl Configuration {
     /// Creates configuration automatically from CLI arguments or URI.
     ///
-    /// This method attempts to parse configuration from command-line arguments,
-    /// or from an ApertureC URI if the first argument looks like a URI.
+    /// Checks for a single URI argument or the `AC_URI` environment variable,
+    /// otherwise parses standard command-line arguments.
     pub fn auto() -> Result<Self, ConfigurationError> {
-        todo!()
+        let cli_args: Vec<String> = env::args().collect();
+
+        let args = if let Ok(uri) = env::var("AC_URI") {
+            if cli_args.len() > 1 {
+                warn_early!(
+                    "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
+                );
+            }
+            Args::from_uri(&uri)?
+        } else if cli_args.len() == 2 {
+            if let Ok(parsed) = Args::from_uri(&cli_args[1]) {
+                parsed
+            } else {
+                Args::parse()
+            }
+        } else {
+            Args::parse()
+        };
+
+        Configuration::from_args(args)
     }
 
     /// Creates configuration from parsed arguments.
-    pub fn from_args(_args: Args) -> Result<Self, ConfigurationError> {
-        todo!()
+    ///
+    /// Prompts for an authentication token if not provided in arguments.
+    pub fn from_args(args: Args) -> Result<Self, ConfigurationError> {
+        let mut config_builder = ConfigurationBuilder::default();
+        let auth_token = match args.auth_token.into_token()? {
+            Some(token) => token,
+            None => SecretString::from(
+                rpassword::prompt_password(format!(
+                    "Authentication token for {}: ",
+                    args.server_address
+                ))
+                .map_err(ConfigurationError::AuthTokenPrompt)?,
+            ),
+        };
+        config_builder
+            .decoder_max(args.decoder_max)
+            .name(
+                gethostname()
+                    .into_string()
+                    .map_err(ConfigurationError::Hostname)?,
+            )
+            .server_addr(args.server_address)
+            .auth_token(auth_token)
+            .initial_display_mode(args.resolution.into())
+            .allow_insecure_connection(args.insecure)
+            .client_bound_tunnel_reqs(args.local)
+            .server_bound_tunnel_reqs(args.remote);
+        if let Some(program_cmdline) = args.program_cmdline {
+            config_builder.program_cmdline(program_cmdline);
+        }
+        for cert_path in args.additional_tls_certificates {
+            config_builder.additional_tls_certificate(
+                X509::from_pem(&fs::read(cert_path).map_err(ConfigurationError::TlsMaterialRead)?)
+                    .map_err(ConfigurationError::X509Parse)?,
+            );
+        }
+        Ok(config_builder.build()?)
     }
 
-    /// Creates configuration by parsing command-line arguments.
+    /// Creates a new ApertureC client configuration by parsing command-line arguments.
+    ///
+    /// This function reads arguments from the process's command line (via `std::env::args`)
+    /// and constructs a configuration object.
     pub fn from_argv() -> Result<Self, ConfigurationError> {
-        todo!()
+        Configuration::from_args(Args::try_parse().map_err(ArgsError::ClapError)?)
     }
 
     /// Creates configuration from an ApertureC URI.
     ///
     /// URIs follow the format: `aperturec://[auth_token@]server_address[?query_params]`
-    pub fn from_uri(_uri: &str) -> Result<Self, ConfigurationError> {
-        todo!()
+    pub fn from_uri(uri: &str) -> Result<Self, ConfigurationError> {
+        Configuration::from_args(Args::from_uri(uri)?)
     }
 }
 
@@ -91,10 +146,10 @@ pub enum ConfigurationError {
     AuthTokenPrompt(#[source] io::Error),
     /// Authentication token argument parsing failed.
     #[error(transparent)]
-    AuthTokenArg(#[from] utils::args::auth_token::AuthTokenError),
+    AuthTokenArg(#[from] args::auth_token::AuthTokenError),
     /// Failed to parse hostname from server address.
-    #[error("failed parsing hostname from '{0}'")]
-    Hostname(String),
+    #[error("failed parsing hostname from '{0:?}'")]
+    Hostname(OsString),
     /// Failed to read TLS certificate or key material.
     #[error("failed to read TLS material")]
     TlsMaterialRead(#[source] io::Error),
