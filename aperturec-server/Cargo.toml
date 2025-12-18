@@ -80,4 +80,6 @@ license = "Commercial License for ApertureC"
 assets = [
   { source = "target/release/aperturec-server", dest = "/usr/bin/aperturec-server", mode = "755" }
 ]
- 
+
+[package.metadata.cargo-machete]
+ignored = ["paste"]
