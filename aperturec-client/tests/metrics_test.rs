@@ -7,7 +7,10 @@ use tracing::Level;
 fn metrics_initialization_flow() {
     // 0) An empty exporter list must error and leave the flag unchanged.
     let was_initialized = metrics_initialized();
-    assert!(!was_initialized, "initialization succeeded without any exporters");
+    assert!(
+        !was_initialized,
+        "initialization succeeded without any exporters"
+    );
     let empty_result = init_metrics(vec![]);
     assert!(matches!(empty_result, Err(MetricsError::NoExporters)));
     assert_eq!(
