@@ -347,13 +347,13 @@ impl PushgatewayExporter {
         let mut groupings = HashMap::new();
         groupings.insert("id".to_owned(), id.to_string());
         groupings.insert("instance".to_owned(), "".to_string());
-        groupings.insert("user".to_owned(), whoami::username());
+        groupings.insert("user".to_owned(), whoami::username()?);
 
         if let Ok(epoch) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
             groupings.insert("instance".to_owned(), epoch.as_secs().to_string());
         }
 
-        if let Ok(host_name) = whoami::fallible::hostname() {
+        if let Ok(host_name) = whoami::hostname() {
             groupings.insert("id".to_owned(), format!("{host_name}:{id}"));
         }
 
