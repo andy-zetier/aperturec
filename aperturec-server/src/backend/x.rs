@@ -1154,7 +1154,7 @@ impl X {
                     // X11 itself, they are guaranteed to be valid and not arbitrarily
                     // generated.
                     //
-                    return Ok(Some(unsafe { randr::Mode::new(mode.id) }));
+                    return Ok(Some(randr::Mode::new(mode.id)));
                 }
             }
 

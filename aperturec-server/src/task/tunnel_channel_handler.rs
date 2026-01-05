@@ -167,7 +167,6 @@ impl Transitionable<Running> for Task<Created> {
             let mut sid = 0;
             js.spawn(async move {
                 while let Some((tid, Ok(tcp_stream))) = accepts.next().await {
-                    tcp_stream.set_linger(None)?;
                     tx.send((tid, sid, tcp_stream))?;
                     sid += 1;
                 }
