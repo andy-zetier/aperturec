@@ -161,6 +161,7 @@ dependencies = [
  "jxl-sys",
  "keycode",
  "libc",
+ "mio",
  "ndarray",
  "openssl",
  "paste",
@@ -2618,6 +2619,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc"
 dependencies = [
  "libc",
+ "log",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
 ]
