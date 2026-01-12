@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.4](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.1.3...aperturec-client-v1.1.4) (2026-01-12)
+
+
+### Bug Fixes
+
+* Add machete ignores to reduce noise in cargo-machete ([#773](https://github.com/Zetier/aperturec/issues/773)) ([ad42cdc](https://github.com/Zetier/aperturec/commit/ad42cdc09fe3200b79cf4061fd17f56b1ae0b1ea))
+
 ## [1.1.3](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.1.2...aperturec-client-v1.1.3) (2025-12-16)
 
 ## [1.1.2](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.1.1...aperturec-client-v1.1.2) (2025-12-10)

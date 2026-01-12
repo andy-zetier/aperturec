@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.0](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.1.0...aperturec-server-v2.2.0) (2026-01-12)
+
+
+### Features
+
+* Add InterFrameInterval histogram metric and observe frame gaps ([#768](https://github.com/Zetier/aperturec/issues/768)) ([1a7625c](https://github.com/Zetier/aperturec/commit/1a7625c3b8ee874e370e3309de3306482cbc2523))
+* Add metrics for DroppedInvalidKeycode and DroppedEventSendError ([#766](https://github.com/Zetier/aperturec/issues/766)) ([8875377](https://github.com/Zetier/aperturec/commit/887537765a7b24ade3882651f4c99b931c4e1a73))
+
+
+### Bug Fixes
+
+* Add machete ignores to reduce noise in cargo-machete ([#773](https://github.com/Zetier/aperturec/issues/773)) ([ad42cdc](https://github.com/Zetier/aperturec/commit/ad42cdc09fe3200b79cf4061fd17f56b1ae0b1ea))
+
 ## [2.1.0](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.0.3...aperturec-server-v2.1.0) (2025-12-16)
 
 

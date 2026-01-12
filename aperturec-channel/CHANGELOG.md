@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.1.0](https://github.com/Zetier/aperturec/compare/aperturec-channel-v2.0.3...aperturec-channel-v2.1.0) (2026-01-12)
+
+
+### Features
+
+* Expose Handle object for sessions ([#772](https://github.com/Zetier/aperturec/issues/772)) ([fd2a85f](https://github.com/Zetier/aperturec/commit/fd2a85f7f0d37641198162bf883133b63deb9ab8))
+
+
+### Bug Fixes
+
+* Add machete ignores to reduce noise in cargo-machete ([#773](https://github.com/Zetier/aperturec/issues/773)) ([ad42cdc](https://github.com/Zetier/aperturec/commit/ad42cdc09fe3200b79cf4061fd17f56b1ae0b1ea))
+
+
+### Performance Improvements
+
+* Use rolling RTT stats for metrics ([#788](https://github.com/Zetier/aperturec/issues/788)) ([2b91868](https://github.com/Zetier/aperturec/commit/2b91868d6149e4cb7604901a4e32247957e8ae73))
+
 ## [2.0.3](https://github.com/Zetier/aperturec/compare/aperturec-channel-v2.0.2...aperturec-channel-v2.0.3) (2025-12-16)
 
 
