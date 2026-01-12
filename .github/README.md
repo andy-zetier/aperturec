@@ -47,6 +47,7 @@ Builds and pushes a single Docker image with digest output.
 - `os_variant`: debian or fedora
 - `os_name`: For tagging (e.g., ubuntu-22)
 - `platform`: e.g., linux/amd64
+- `use_registry_cache`: Whether to use registry cache as a cache source (true/false)
 - `registry_password`: Authentication token
 
 **Outputs:**

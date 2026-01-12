@@ -39,10 +39,13 @@ inputs:
   dockerfile:
     description: 'Path to Dockerfile'
     default: './ci/images/Dockerfile'
+  use_registry_cache:
+    description: 'Whether to use the registry cache as a cache source (true/false)'
+    default: 'true'
 outputs:
   digest:
     description: 'The digest of the built image'
-    value: ${{ steps.build.outputs.digest }}
+    value: ${{ steps.build.outputs.digest || steps.build-nocache.outputs.digest }}
   image_ref:
     description: 'Full image reference with digest (registry/repo/image@digest)'
     value: ${{ steps.full-ref.outputs.ref }}
@@ -69,6 +72,7 @@ runs:
         username: ${{ inputs.registry_username }}
         password: ${{ inputs.registry_password }}
     - id: build
+      if: inputs.use_registry_cache == 'true'
       uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
       env:
         DOCKER_BUILD_SUMMARY: false
@@ -85,11 +89,31 @@ runs:
         tags: ${{ steps.image-tag.outputs.tag }}
         cache-from: type=registry,ref=${{ steps.image-tag.outputs.tag }},mode=max
         cache-to: type=registry,ref=${{ steps.image-tag.outputs.tag }}
+    - id: build-nocache
+      if: inputs.use_registry_cache != 'true'
+      uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+      env:
+        DOCKER_BUILD_SUMMARY: false
+        DOCKER_BUILD_RECORD_UPLOAD: false
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        platforms: ${{ inputs.platform }}
+        target: ${{ inputs.target }}
+        build-args: |
+          IMAGE_UPSTREAM=${{ inputs.upstream_image }}
+          OS_VARIANT=${{ inputs.os_variant }}
+        push: true
+        tags: ${{ steps.image-tag.outputs.tag }}
+        no-cache: true
+        pull: true
+        cache-to: type=registry,ref=${{ steps.image-tag.outputs.tag }}
 
     - name: Generate full image reference
       id: full-ref
       shell: bash
       run: |
         # Combine registry/repo/image with digest for immutable reference
-        FULL_REF="${{ steps.image-tag.outputs.tag }}@${{ steps.build.outputs.digest }}"
+        DIGEST="${{ steps.build.outputs.digest || steps.build-nocache.outputs.digest }}"
+        FULL_REF="${{ steps.image-tag.outputs.tag }}@${DIGEST}"
         echo "ref=${FULL_REF}" >> $GITHUB_OUTPUT

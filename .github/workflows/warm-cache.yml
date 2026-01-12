@@ -31,6 +31,7 @@ jobs:
           upstream_image: docker.io/library/ubuntu:24.04
           os_variant: debian
           os_name: ubuntu-24
+          use_registry_cache: 'false'
           registry_password: ${{ secrets.GITHUB_TOKEN }}
 
   quick-warmup:
@@ -72,6 +73,7 @@ jobs:
           os_variant: ${{ matrix.os.variant }}
           os_name: ${{ matrix.os.name }}
           platform: linux/${{ matrix.arch }}
+          use_registry_cache: 'false'
           registry_password: ${{ secrets.GITHUB_TOKEN }}
       - uses: cloudposse/github-action-matrix-outputs-write@ed06cf3a6bf23b8dce36d1cf0d63123885bb8375
         with:
@@ -132,6 +134,7 @@ jobs:
           upstream_image: docker.io/library/fedora:43
           os_variant: fedora
           os_name: windows
+          use_registry_cache: 'false'
           registry_password: ${{ secrets.GITHUB_TOKEN }}
 
   full-warmup-windows:
