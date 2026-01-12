@@ -1,7 +1,6 @@
-use crate::channels::NETWORK_CHANNEL_TIMEOUT;
-use crate::metrics::EventChannelSendLatency;
+use crate::{channels::spawn_rx_thread, metrics::EventChannelSendLatency};
 
-use aperturec_channel::{self as channel, Sender as _, TimeoutReceiver};
+use aperturec_channel::{self as channel, Sender as _};
 use aperturec_graphics::display::DisplayConfiguration;
 use aperturec_graphics::prelude::{Pixel32, Point};
 use aperturec_metrics::time;
@@ -15,13 +14,7 @@ use aperturec_utils::channels::SenderExt;
 
 use crossbeam::channel::{Receiver, Sender, bounded, select_biased};
 use ndarray::ArcArray2;
-use std::{
-    collections::BTreeMap,
-    mem,
-    sync::atomic::Ordering,
-    sync::{Arc, atomic::AtomicBool},
-    thread,
-};
+use std::{collections::BTreeMap, mem, thread};
 use tracing::*;
 
 /// Notifications the event channel can send back to the primary thread.
@@ -223,30 +216,11 @@ pub fn setup(
     pt_tx: Sender<Ptn>,
     from_pt_rx: Receiver<Notification>,
 ) {
-    let (mut ec_rx, mut ec_tx) = client_ec.split();
+    let (ec_rx, mut ec_tx) = client_ec.split();
 
-    let should_stop = Arc::new(AtomicBool::new(false));
-    let should_stop_read = should_stop.clone();
     let (from_network_tx, from_network_rx) = bounded(0);
 
-    let network_rx_thread = thread::spawn(move || {
-        let _s = debug_span!("ec-network-rx").entered();
-        debug!("started");
-        loop {
-            if should_stop_read.load(Ordering::Acquire) {
-                break;
-            }
-            match ec_rx.receive_timeout(NETWORK_CHANNEL_TIMEOUT) {
-                Ok(None) => continue,
-                Ok(Some(msg)) => from_network_tx.send_or_warn(Ok(msg)),
-                Err(err) => {
-                    from_network_tx.send_or_warn(Err(err));
-                    break;
-                }
-            }
-        }
-        debug!("exiting");
-    });
+    let network_rx_thread = spawn_rx_thread(ec_rx, from_network_tx, debug_span!("ec-network-rx"));
 
     let mut cursor_cache = BTreeMap::new();
     thread::spawn(move || {
@@ -323,7 +297,6 @@ pub fn setup(
             }
         }
 
-        should_stop.store(true, Ordering::Release);
         if let Err(error) = network_rx_thread.join() {
             warn!("ec-network-rx panicked: {:?}", error)
         }
@@ -512,5 +485,13 @@ mod tests {
         };
         let err = Cursor::try_from(cursor_image).expect_err("overflow should fail");
         assert!(matches!(err, Error::Protocol(_)));
+    }
+
+    fn assert_send<T: Send>() {}
+
+    #[test]
+    fn notifications_are_send() {
+        assert_send::<Notification>();
+        assert_send::<PrimaryThreadNotification>();
     }
 }

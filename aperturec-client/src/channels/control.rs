@@ -1,19 +1,13 @@
-use crate::channels::NETWORK_CHANNEL_TIMEOUT;
+use crate::channels::spawn_rx_thread;
 
-use aperturec_channel::{self as channel, Sender as _, TimeoutReceiver as _};
+use aperturec_channel::{self as channel, Sender as _};
 use aperturec_protocol::control::{
     self as proto, client_to_server as c2s, server_to_client as s2c,
 };
 use aperturec_utils::channels::SenderExt;
 
 use crossbeam::channel::{Receiver, Sender, bounded, select_biased};
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-};
+use std::thread;
 use tracing::*;
 
 #[derive(Debug)]
@@ -101,7 +95,9 @@ pub enum Notification {
 ///
 /// A network reader forwards `ServerInit` and `ServerGoodbye` messages to the primary thread,
 /// while the main loop consumes `Notification`s from the primary thread and sends the
-/// corresponding control messages over QUIC. Both threads exit when the stop flag is set.
+/// corresponding control messages over QUIC. Threads exit when either side closes the control
+/// channel (e.g., QUIC connection teardown or sender dropped), or when the primary requests
+/// termination and closes its notification channel.
 ///
 /// # Parameters
 /// * `client_cc` - Control channel handle split into Rx/Tx halves.
@@ -112,30 +108,11 @@ pub fn setup(
     pt_tx: Sender<Ptn>,
     from_pt_rx: Receiver<Notification>,
 ) {
-    let (mut cc_rx, mut cc_tx) = client_cc.split();
+    let (cc_rx, mut cc_tx) = client_cc.split();
 
-    let should_stop = Arc::new(AtomicBool::new(false));
-    let should_stop_read = should_stop.clone();
     let (from_network_tx, from_network_rx) = bounded(0);
 
-    let network_rx_thread = thread::spawn(move || {
-        let _s = debug_span!("cc-network-rx").entered();
-        debug!("started");
-        loop {
-            if should_stop_read.load(Ordering::Acquire) {
-                break;
-            }
-            match cc_rx.receive_timeout(NETWORK_CHANNEL_TIMEOUT) {
-                Ok(None) => continue,
-                Ok(Some(msg)) => from_network_tx.send_or_warn(Ok(msg)),
-                Err(err) => {
-                    from_network_tx.send_or_warn(Err(err));
-                    break;
-                }
-            }
-        }
-        debug!("exiting");
-    });
+    let network_rx_thread = spawn_rx_thread(cc_rx, from_network_tx, debug_span!("cc-network-rx"));
 
     thread::spawn(move || {
         let _s = debug_span!("cc-main").entered();
@@ -184,7 +161,6 @@ pub fn setup(
                 }
             }
         }
-        should_stop.store(true, Ordering::Release);
         if let Err(error) = network_rx_thread.join() {
             warn!("cc-network-rx panicked: {error:?}");
         }
@@ -219,6 +195,10 @@ mod tests {
             "Authentication failure, check auth token"
         );
         assert_eq!(
+            proto::ServerGoodbyeReason::OtherLogin.friendly_str(),
+            "Server was logged into elsewhere"
+        );
+        assert_eq!(
             proto::ServerGoodbyeReason::ProcessExited.friendly_str(),
             "Remote application has terminated"
         );
@@ -226,5 +206,13 @@ mod tests {
             proto::ServerGoodbyeReason::ServerGoodbyeUnspecified.friendly_str(),
             proto::ServerGoodbyeReason::ServerGoodbyeUnspecified.as_str_name()
         );
+    }
+
+    fn assert_send<T: Send>() {}
+
+    #[test]
+    fn notifications_are_send() {
+        assert_send::<Notification>();
+        assert_send::<PrimaryThreadNotification>();
     }
 }
