@@ -31,6 +31,7 @@ from glob import glob
 import datetime
 from datetime import datetime
 import statistics
+import math
 
 ###############################################################################
 # Utility Functions
@@ -587,7 +588,9 @@ def print_top_changed_stats(test_root, branches, metric_sources=('client','serve
                             continue
                         try:
                             val = float(v)
-                        except:
+                        except (ValueError, TypeError):
+                            continue
+                        if not math.isfinite(val):
                             continue
                         sums.setdefault(k, 0.0)
                         counts.setdefault(k, 0)
