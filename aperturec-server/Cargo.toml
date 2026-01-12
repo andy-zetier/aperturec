@@ -52,7 +52,7 @@ zerocopy = "0.8"
 
 [dev-dependencies]
 criterion = "0.8"
-serial_test = "3.2"
+serial_test = "3.3"
 tempfile = "3.24"
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
 
