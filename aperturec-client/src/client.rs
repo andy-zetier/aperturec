@@ -23,7 +23,7 @@ use aperturec_protocol::event::{
     PointerEventBuilder, button, client_to_server as em_c2s, server_to_client as em_s2c,
 };
 use aperturec_protocol::tunnel;
-use aperturec_utils::log::*;
+use aperturec_utils::{user_error, user_info, user_warn};
 
 use anyhow::{Error, Result, anyhow, bail};
 use async_channel::Sender as AsyncSender;
@@ -635,7 +635,7 @@ impl Client {
                     } else {
                         tunnel::Side::Client
                     };
-                    info_always!(
+                    user_info!(
                         "allocated {:?} port {}:{} for forward to {}:{} on {:?}",
                         this_side,
                         desc.bind_address,
@@ -652,9 +652,11 @@ impl Client {
                 }
                 tunnel::response::Message::Failure(reason) => {
                     let desc = self.requested_tunnels.get(id).unwrap();
-                    warn!(
+                    user_warn!(
                         "server failed binding: {}:{}: '{}'",
-                        desc.bind_address, desc.bind_port, reason
+                        desc.bind_address,
+                        desc.bind_port,
+                        reason
                     );
                 }
             }
@@ -690,7 +692,12 @@ impl Client {
                 let listener = match TcpListener::bind((bind_addr, desc.bind_port.try_into()?)) {
                     Ok(listener) => listener,
                     Err(error) => {
-                        warn!(%error, "client failed binding: {:?}:{}", bind_addr, desc.bind_port);
+                        user_warn!(
+                            "client failed binding: {:?}:{}: {}",
+                            bind_addr,
+                            desc.bind_port,
+                            error
+                        );
                         return Err(error.into());
                     }
                 };
@@ -1074,7 +1081,7 @@ impl Client {
 
         self.allocated_tunnels = si.tunnel_responses;
 
-        info!(
+        user_info!(
             "Connected to server @ {} ({})!",
             &self.config.server_addr,
             &self.server_name.as_ref().unwrap(),
@@ -1160,7 +1167,7 @@ impl Client {
         //
         let should_stop = self.should_stop.clone();
         ctrlc::set_handler(move || {
-            info!("Received Ctrl-C, exiting");
+            user_info!("Received Ctrl-C, exiting");
             notify_control_tx
                 .send(ControlMessage::Quit(QuitReason::SigintReceived))
                 .expect("Failed to notify control channel of SIGINT");
@@ -1185,10 +1192,10 @@ impl Client {
                             quit_reason = reason.clone();
 
                             match gb.reason() {
-                                cm::ServerGoodbyeReason::ShuttingDown => warn!("{}", &reason),
-                                cm::ServerGoodbyeReason::OtherLogin => info!("{}. Exiting", &reason),
-                                cm::ServerGoodbyeReason::InactiveTimeout => info!("{}. Exiting", &reason),
-                                _ => error!(reason),
+                                cm::ServerGoodbyeReason::ShuttingDown => user_warn!("{}", &reason),
+                                cm::ServerGoodbyeReason::OtherLogin => user_info!("{}. Exiting", &reason),
+                                cm::ServerGoodbyeReason::InactiveTimeout => user_info!("{}. Exiting", &reason),
+                                _ => user_error!("{reason}"),
                             };
 
                             ui_tx.try_send(UiMessage::ShowModal {
@@ -1209,7 +1216,7 @@ impl Client {
                                         ).into());
                             trace!("Sent ClientGoodbye: Terminating");
                             if !should_stop.load(Ordering::Relaxed) {
-                                error!("{}", quit_reason);
+                                user_error!("{}", quit_reason);
                             }
                             ui_tx.try_send(UiMessage::ShowModal {
                                 title: "Error".to_string(),
@@ -1221,7 +1228,7 @@ impl Client {
                         Err(err) => {
                             quit_reason = format!("Failed to recv from control channel rx: {err}");
                             if !should_stop.load(Ordering::Relaxed) {
-                                error!("{}", quit_reason);
+                                user_error!("{}", quit_reason);
                             }
                             ui_tx.try_send(UiMessage::ShowModal {
                                 title: "Error".to_string(),

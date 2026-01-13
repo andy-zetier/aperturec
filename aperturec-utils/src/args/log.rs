@@ -1,4 +1,4 @@
-use crate::{log, paths};
+use crate::{log, paths, user_output};
 
 use anyhow::Result;
 use file_rotate::{
@@ -6,6 +6,7 @@ use file_rotate::{
     compression::Compression,
     suffix::{AppendTimestamp, FileLimit},
 };
+use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use std::str::FromStr;
 use tracing::*;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{
-    filter::{Directive, FilterExt},
+    filter::{Directive, FilterExt, filter_fn},
     fmt::format::FmtSpan,
     layer::Filter,
     registry::LookupSpan,
@@ -80,8 +81,7 @@ where
 
     Ok(EnvFilter::builder()
         .with_default_directive(directive)
-        .from_env()?
-        .or(log::Always))
+        .from_env()?)
 }
 
 fn create_stderr_layer<S>(
@@ -96,7 +96,7 @@ where
     let filter = if !disabled {
         create_filter(verbosity, directive)?.boxed()
     } else {
-        log::Always.boxed()
+        FilterExt::boxed(filter_fn(|_| false))
     };
 
     let (writer, guard) = tracing_appender::non_blocking(io::stderr());
@@ -108,7 +108,10 @@ where
         .with_span_events(FmtSpan::NONE)
         .with_target(false)
         .without_time()
-        .with_filter(filter);
+        .with_filter(filter)
+        .with_filter(filter_fn(|meta| {
+            meta.target() != user_output::USER_OUTPUT_TARGET
+        }));
     Ok((layer, guard))
 }
 
@@ -171,7 +174,7 @@ impl LogArgGroup {
             self.quiet,
             self.verbosity,
             &self.log_stderr_directive,
-            !self.no_color,
+            !self.no_color && env::var_os("NO_COLOR").is_none(),
         )?;
         let mut layers = vec![stderr_layer.boxed()];
         let mut non_blocking_guards = vec![stderr_guard];

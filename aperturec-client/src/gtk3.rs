@@ -9,6 +9,7 @@ use crate::gtk3::image::Image;
 use crate::metrics::RefreshCount;
 
 use aperturec_graphics::{display::*, euclid_collections::*, prelude::*};
+use aperturec_utils::{user_info, user_warn};
 
 use anyhow::{Result, anyhow, bail};
 use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
@@ -1894,10 +1895,10 @@ impl WindowMode {
                 }
                 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                 WindowMode::Multi => {
-                    warn!(
+                    user_warn!(
                         "Server provided single-monitor display configuration in multi-monitor mode"
                     );
-                    info!("Reverting to single-monitor mode");
+                    user_info!("Reverting to single-monitor mode");
                     Ok(WindowMode::Single { fullscreen: true })
                 }
             }
@@ -1916,7 +1917,7 @@ impl WindowMode {
             }
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
-                warn!(
+                user_warn!(
                     "Multi-monitor not supported on this platform, falling back to single-monitor fullscreen"
                 );
                 Ok(WindowMode::Single { fullscreen: true })

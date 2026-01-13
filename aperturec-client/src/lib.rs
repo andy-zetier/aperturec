@@ -6,7 +6,7 @@ pub mod gtk3;
 pub mod metrics;
 
 use aperturec_graphics::prelude::*;
-use aperturec_utils::{args, warn_early};
+use aperturec_utils::{args, user_info, user_warn};
 
 use anyhow::{Result, anyhow, ensure};
 use clap::Parser;
@@ -176,7 +176,7 @@ pub fn run(frontend_name: &str, frontend_version: &str) -> Result<()> {
         if let Ok(parsed) = args_from_uri(&arg1) {
             parsed
         } else if let Ok(uri) = env::var("AC_URI") {
-            warn_early!(
+            user_warn!(
                 "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
             );
             args_from_uri(&uri)?
@@ -185,7 +185,7 @@ pub fn run(frontend_name: &str, frontend_version: &str) -> Result<()> {
         }
     } else if let Ok(uri) = env::var("AC_URI") {
         if env::args().count() > 1 {
-            warn_early!(
+            user_warn!(
                 "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
             );
         }
@@ -210,7 +210,7 @@ pub fn run(frontend_name: &str, frontend_version: &str) -> Result<()> {
     let (log_layer, _guard) = args.log.as_tracing_layer()?;
     tracing_subscriber::registry().with(log_layer).init();
 
-    info!("{version}");
+    user_info!("{version}");
 
     let config = {
         // Scope config_builder to ensure it is dropped and any auth-token leaves memory
@@ -241,18 +241,34 @@ pub fn run(frontend_name: &str, frontend_version: &str) -> Result<()> {
     };
     debug!(?config);
 
+    let metrics_requested = args.metrics.requested();
     let metrics_exporters = args.metrics.to_exporters(env!("CARGO_CRATE_NAME"));
+    let mut metrics_initialized = false;
+    if metrics_requested && metrics_exporters.is_empty() {
+        user_warn!(
+            "Metrics were requested but no exporters were enabled; metrics will be disabled."
+        );
+    }
     if !metrics_exporters.is_empty() {
-        aperturec_metrics::MetricsInitializer::default()
+        match aperturec_metrics::MetricsInitializer::default()
             .with_poll_rate_from_secs(3)
             .with_exporters(metrics_exporters)
             .init()
-            .expect("Failed to setup metrics");
-        metrics::setup_client_metrics();
+        {
+            Ok(()) => {
+                metrics::setup_client_metrics();
+                metrics_initialized = true;
+            }
+            Err(err) => {
+                user_warn!("Failed to initialize metrics: {err}");
+            }
+        }
     }
 
     client::run_client(config.clone())?;
-    aperturec_metrics::stop();
+    if metrics_initialized {
+        aperturec_metrics::stop();
+    }
 
     Ok(())
 }

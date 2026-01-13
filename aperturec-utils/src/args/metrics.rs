@@ -22,6 +22,13 @@ pub struct MetricsArgGroup {
 }
 
 impl MetricsArgGroup {
+    pub fn requested(&self) -> bool {
+        self.metrics_log
+            || self.metrics_csv.is_some()
+            || self.metrics_prometheus.is_some()
+            || self.metrics_pushgateway.is_some()
+    }
+
     pub fn to_exporters(self, name: &str) -> Vec<Exporter> {
         let mut exporters: Vec<Exporter> = vec![];
         if self.metrics_log {
