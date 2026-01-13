@@ -610,12 +610,12 @@ impl<B: Backend> AsyncTryTransitionable<SessionActive<B>, SessionTerminated<B>>
                 session.client_init.max_decoder_count.try_into().unwrap(),
             ) {
                 Ok(areas) => (success.displays, areas),
-                Err(_) => {
+                Err(err) => {
                     send_flush_goodbye(&mut session.cc, cm::ServerGoodbyeReason::InternalError)
                         .await;
                     return_recover!(
                         recover_self_with_backend!(backend.into_root()),
-                        "Failed to re-partition"
+                        "Failed to re-partition: {err}"
                     );
                 }
             },
