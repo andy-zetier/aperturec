@@ -427,6 +427,16 @@ impl MonitorsGeometry {
     pub fn is_multi(&self) -> bool {
         self.monitors.len() > 1
     }
+
+    pub fn display_count_for_mode(&self, display_mode: DisplayMode) -> usize {
+        match display_mode {
+            DisplayMode::Windowed { .. } | DisplayMode::SingleFullscreen => 1,
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            DisplayMode::MultiFullscreen => self.monitors.len(),
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            DisplayMode::MultiFullscreen => 1,
+        }
+    }
 }
 
 pub struct Client {
@@ -461,10 +471,14 @@ impl Client {
         }
     }
 
-    pub fn startup(config: &Configuration, itc: ClientSideItcChannels) -> Result<Self> {
+    pub fn startup(
+        config: &Configuration,
+        itc: ClientSideItcChannels,
+        monitor_geometry: MonitorsGeometry,
+    ) -> Result<Self> {
         let mut this = Client::new(config);
 
-        this.monitor_geometry = Some(gtk3::get_monitors_geometry()?);
+        this.monitor_geometry = Some(monitor_geometry);
         debug!(monitor_geometry=?this.monitor_geometry);
 
         let (notify_control_tx, notify_control_rx) = unbounded();
@@ -1400,7 +1414,30 @@ pub fn run_client(config: Configuration) -> Result<()> {
     //
     // Try to start the client
     //
-    let client = match Client::startup(&config, itc.client_half) {
+    let monitor_geometry = match gtk3::get_monitors_geometry() {
+        Ok(monitor_geometry) => monitor_geometry,
+        Err(e) => {
+            show_blocking_error("Failed to detect monitors", &format!("{e}"));
+            return Err(e);
+        }
+    };
+    let display_count = monitor_geometry.display_count_for_mode(config.initial_display_mode);
+    let decoder_max = config.decoder_max.get();
+    if display_count > decoder_max {
+        let msg = format!(
+            "Discovered {display_count} displays but only {decoder_max} decoders are available."
+        );
+        let suggestion =
+            "Consider using --single-fullscreen or increase decoders with --decoder-max.";
+        user_error!("{msg} {suggestion}");
+        show_blocking_error(
+            "Not enough decoders for multi-display",
+            format!("{msg}\n{suggestion}").as_str(),
+        );
+        return Err(anyhow!("{msg}"));
+    }
+
+    let client = match Client::startup(&config, itc.client_half, monitor_geometry) {
         Ok(c) => c,
         Err(e) => {
             show_blocking_error(
@@ -1532,6 +1569,7 @@ mod test {
         });
 
         let itc = ItcChannels::new();
-        let _client = Client::startup(&config, itc.client_half).expect("startup");
+        let monitor_geometry = gtk3::get_monitors_geometry().expect("get monitors");
+        let _client = Client::startup(&config, itc.client_half, monitor_geometry).expect("startup");
     }
 }
