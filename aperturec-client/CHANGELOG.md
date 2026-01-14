@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.1.4...aperturec-client-v1.2.0) (2026-01-14)
+
+
+### Features
+
+* Split tracing + logs from user output ([#781](https://github.com/Zetier/aperturec/issues/781)) ([e72a85a](https://github.com/Zetier/aperturec/commit/e72a85ae40fe1497ced9e87c3185c1ff6bdb529c))
+
+
+### Bug Fixes
+
+* Ensure decoder count exceeds display count in client ([#793](https://github.com/Zetier/aperturec/issues/793)) ([04e3ce8](https://github.com/Zetier/aperturec/commit/04e3ce89438a89f26b6921adde609cb59fe2b184))
+
 ## [1.1.4](https://github.com/Zetier/aperturec/compare/aperturec-client-v1.1.3...aperturec-client-v1.1.4) (2026-01-12)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.2.0...aperturec-server-v2.2.1) (2026-01-14)
+
+
+### Bug Fixes
+
+* Include error detail in re-partition failure message ([#792](https://github.com/Zetier/aperturec/issues/792)) ([0fae5b3](https://github.com/Zetier/aperturec/commit/0fae5b3b3f6382e37f2503ae7c41642c50ff66ae))
+
 ## [2.2.0](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.1.0...aperturec-server-v2.2.0) (2026-01-12)
 
 

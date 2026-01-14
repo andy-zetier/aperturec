@@ -111,7 +111,7 @@ checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
 name = "aperturec-channel"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "aperturec-metrics",
  "aperturec-protocol",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "aperturec-client"
-version = "1.1.4"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "aperturec-channel",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "aperturec-client-gtk3"
-version = "1.0.21"
+version = "1.0.22"
 dependencies = [
  "aperturec-client",
 ]
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "aperturec-server"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "anyhow",
  "aperturec-channel",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "aperturec-utils"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "aperturec-metrics",

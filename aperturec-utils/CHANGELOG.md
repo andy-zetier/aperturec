@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/Zetier/aperturec/compare/aperturec-utils-v0.1.4...aperturec-utils-v0.2.0) (2026-01-14)
+
+
+### Features
+
+* Split tracing + logs from user output ([#781](https://github.com/Zetier/aperturec/issues/781)) ([e72a85a](https://github.com/Zetier/aperturec/commit/e72a85ae40fe1497ced9e87c3185c1ff6bdb529c))
+
 ## [0.1.4](https://github.com/Zetier/aperturec/compare/aperturec-utils-v0.1.3...aperturec-utils-v0.1.4) (2025-12-16)
 
 ## [0.1.3](https://github.com/Zetier/aperturec/compare/aperturec-utils-v0.1.2...aperturec-utils-v0.1.3) (2025-12-03)

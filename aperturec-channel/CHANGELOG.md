@@ -1,5 +1,7 @@
 # Changelog
 
+## [2.1.1](https://github.com/Zetier/aperturec/compare/aperturec-channel-v2.1.0...aperturec-channel-v2.1.1) (2026-01-14)
+
 ## [2.1.0](https://github.com/Zetier/aperturec/compare/aperturec-channel-v2.0.3...aperturec-channel-v2.1.0) (2026-01-12)
 
 
