@@ -1,0 +1,31 @@
+name: Windows Native Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Target runner"
+        required: false
+        default: windows-latest
+        type: choice
+        options:
+          - windows-latest
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  windows-native-build:
+    runs-on: ${{ github.event.inputs.runner || 'windows-latest' }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6.0.1
+      - name: Run native build
+        shell: pwsh
+        env:
+          CL: /Zm200
+        run: |
+          ci/scripts/windows-native-build.ps1
