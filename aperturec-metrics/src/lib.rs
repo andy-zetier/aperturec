@@ -6,7 +6,10 @@ mod metrics;
 pub mod macros;
 
 pub use measurement::Measurement;
-pub use metrics::{MetricsInitializer, register, stop, update};
+pub use metrics::{MetricsInitializer, metrics_initialized, register, stop, update};
+
+#[cfg(feature = "ffi-lib")]
+pub mod ffi;
 
 ///
 /// Defines a metric to be tracked

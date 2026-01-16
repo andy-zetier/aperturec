@@ -97,6 +97,10 @@ pub fn stop() {
     warn_once("Metrics not initialized");
 }
 
+pub fn metrics_initialized() -> bool {
+    METRIC_COMS.get().is_some()
+}
+
 ///
 /// Used to configure and launch metrics tracking
 ///
@@ -201,6 +205,10 @@ impl MetricsInitializer {
     }
 
     pub fn init(mut self) -> Result<()> {
+        if METRIC_COMS.get().is_some() {
+            anyhow::bail!("Metrics already initialized");
+        }
+
         let (tx, rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel();
 
