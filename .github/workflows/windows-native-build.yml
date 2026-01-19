@@ -29,3 +29,9 @@ jobs:
           CL: /Zm200
         run: |
           ci/scripts/windows-native-build.ps1
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: client-package-windows-amd64
+          path: |
+            aperturec-client-win.zip
+          if-no-files-found: error
