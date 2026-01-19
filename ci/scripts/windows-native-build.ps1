@@ -26,3 +26,4 @@ $env:PROTOC = "C:\Users\runneradmin\AppData\Local\Microsoft\WinGet\Links\protoc"
 
 Write-Host "==> Build ApertureC"
 cargo build --release --workspace --exclude aperturec-server
+cargo build --workspace --exclude aperturec-server
