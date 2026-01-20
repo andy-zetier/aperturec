@@ -1,6 +1,26 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+#
+# This script targets the GitHub-hosted Windows runner label `windows-2025`:
+#     https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md
+#
+# The following dependencies are required:
+#
+# - CMake
+# - Cargo
+# - Git
+# - LLVM
+# - Python 3.14
+# - Rust
+# - SSH
+# - Visual Studio 2022 with C++ workloads
+# - winget
+#
+
+#
+# Setup and build GTK4 via gvsbuild.
+#
 Write-Host "==> Setup and build GTK4 via gvsbuild"
 $env:PKG_CONFIG_PATH = "C:\gtk-build\gtk\x64\release\lib\pkgconfig"
 $env:Path = "C:\gtk-build\gtk\x64\release\bin;$env:Path"
@@ -10,8 +30,14 @@ py -3.14 -m pip install --user pipx
 py -3.14 -m pipx ensurepath
 pipx install gvsbuild
 
+# Prevent MSVC compiler from running out of heap space
+$env:CL = "/Zm200"
+
 gvsbuild build gtk4
 
+#
+# Install OpenSSL with vcpkg and set env hints for build scripts.
+#
 Write-Host "==> Install OpenSSL"
 vcpkg install openssl:x64-windows
 vcpkg install openssl:x64-windows-static
@@ -20,13 +46,22 @@ vcpkg integrate install
 $env:VCPKGRS_DYNAMIC = 1
 $env:OPENSSL_DIR = 'C:\vcpkg\installed\x64-windows-static'
 
+#
+# Install protoc (protobuf compiler) for code generation.
+#
 Write-Host "==> Install protobuf"
 winget install -e --id Google.Protobuf --accept-source-agreements
 $env:PROTOC = "C:\Users\runneradmin\AppData\Local\Microsoft\WinGet\Links\protoc"
 
+#
+# Build the Windows client in release mode.
+#
 Write-Host "==> Build ApertureC"
 cargo build --release -p aperturec-client-gtk4 --target x86_64-pc-windows-msvc
 
+#
+# Package the exe, DLL dependencies, and GTK assets into a zip.
+#
 Write-Host "==> Package ApertureC"
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptRoot "..\..")
@@ -140,8 +175,19 @@ New-Item -ItemType Directory -Path (Join-Path $shareDir "themes") | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $shareDir "gtk-4.0") | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $shareDir "glib-2.0") | Out-Null
 
-Copy-Item -Recurse (Join-Path $gtkInstallPath "share\glib-2.0\schemas") (Join-Path $shareDir "glib-2.0")
-Copy-Item -Recurse (Join-Path $gtkInstallPath "share\icons") (Join-Path $shareDir "icons")
+$glibSchemas = Join-Path $gtkInstallPath "share\glib-2.0\schemas"
+if (Test-Path $glibSchemas) {
+  Copy-Item -Recurse $glibSchemas (Join-Path $shareDir "glib-2.0")
+} else {
+  Write-Warning "Missing GTK schemas directory: $glibSchemas"
+}
+
+$gtkIcons = Join-Path $gtkInstallPath "share\icons"
+if (Test-Path $gtkIcons) {
+  Copy-Item -Recurse $gtkIcons (Join-Path $shareDir "icons")
+} else {
+  Write-Warning "Missing GTK icons directory: $gtkIcons"
+}
 
 if (Test-Path $zipPath) {
   Remove-Item $zipPath -Force
