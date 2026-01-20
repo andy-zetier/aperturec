@@ -1,0 +1,36 @@
+name: Windows Native Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Target runner"
+        required: false
+        default: windows-latest
+        type: choice
+        options:
+          - windows-latest
+          - windows-2025
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  windows-native-build:
+    runs-on: ${{ github.event.inputs.runner || 'windows-latest' }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6.0.1
+      - name: Run native build
+        shell: pwsh
+        run: |
+          ci/scripts/windows-native-build.ps1
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: client-package-windows-amd64
+          path: |
+            aperturec-client-win.zip
+          if-no-files-found: error
