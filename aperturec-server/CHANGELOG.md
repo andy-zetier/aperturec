@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.2.1...aperturec-server-v2.3.0) (2026-01-21)
+
+
+### Features
+
+* Add atomic PEM write with correct permissions and tests ([#796](https://github.com/Zetier/aperturec/issues/796)) ([a71a060](https://github.com/Zetier/aperturec/commit/a71a0600d81aa2548fd4339d7931a55d6605967e))
+
 ## [2.2.1](https://github.com/Zetier/aperturec/compare/aperturec-server-v2.2.0...aperturec-server-v2.2.1) (2026-01-14)
 
 
