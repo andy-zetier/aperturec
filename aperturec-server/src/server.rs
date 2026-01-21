@@ -36,6 +36,8 @@ use tokio::time;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
 
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
 #[derive(Debug, Clone)]
 pub enum TlsConfiguration {
     Provided {
@@ -255,14 +257,57 @@ fn get_tls_material(config: &TlsConfiguration) -> Result<channel::tls::Material>
                 "Writing self-signed certificate to {}",
                 cert_pem_path.display()
             );
-            fs::write(&cert_pem_path, &pem_material.certificate)?;
+            write_pem_atomic(&cert_pem_path, pem_material.certificate.as_bytes(), 0o644)?;
 
             info!("Writing private key to {}", key_pem_path.display());
-            fs::write(&key_pem_path, &pem_material.pkey)?;
+            write_pem_atomic(&key_pem_path, pem_material.pkey.as_bytes(), 0o600)?;
 
             Ok(tls_material)
         }
     }
+}
+
+fn write_pem_atomic(path: &std::path::Path, contents: &[u8], perm: u32) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("Missing parent directory for {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("Missing file name for {}", path.display()))?
+        .to_string_lossy();
+
+    let tmp_name = format!(".{file_name}.tmp-{}", rand::random::<u64>());
+    let tmp_path = dir.join(tmp_name);
+
+    struct TempPathGuard {
+        path: PathBuf,
+    }
+    impl Drop for TempPathGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+    let _guard = TempPathGuard {
+        path: tmp_path.clone(),
+    };
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    options.mode(perm);
+    let mut file = options.open(&tmp_path)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+
+    file.set_permissions(fs::Permissions::from_mode(perm))?;
+    file.sync_all()?;
+
+    fs::rename(&tmp_path, path)?;
+
+    if let Ok(dir_file) = fs::OpenOptions::new().read(true).open(dir) {
+        let _ = dir_file.sync_all();
+    }
+
+    Ok(())
 }
 
 impl<S: State> Server<S> {
@@ -1077,6 +1122,8 @@ mod test {
     use super::*;
     use crate::backend::X;
 
+    use std::os::unix::fs::PermissionsExt;
+
     use aperturec_channel::{
         AsyncClientControl, AsyncClientEvent, AsyncClientMedia, AsyncClientTunnel, AsyncReceiver,
         Unified, tls,
@@ -1085,6 +1132,30 @@ mod test {
 
     use rand::{Rng, distr::Alphanumeric};
     use test_log::test;
+
+    #[test]
+    fn pem_permissions_locked_down() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("pkey.pem");
+
+        write_pem_atomic(&cert_path, b"cert", 0o644).expect("write cert");
+        write_pem_atomic(&key_path, b"key", 0o600).expect("write key");
+
+        let cert_mode = fs::metadata(&cert_path)
+            .expect("cert metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let key_mode = fs::metadata(&key_path)
+            .expect("key metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(cert_mode, 0o644);
+        assert_eq!(key_mode, 0o600);
+    }
 
     fn client_init_msg(auth_token: SecretString) -> cm_c2s::Message {
         ClientInitBuilder::default()
