@@ -6,14 +6,13 @@ mod channels;
 #[cfg(feature = "ffi-lib")]
 pub mod ffi;
 pub mod frame;
-pub mod metrics;
+mod metrics;
 
 use crate::args::Args;
 use crate::channels::event::Cursor;
 use crate::frame::Draw;
 
 use aperturec_graphics::{display::*, prelude::*};
-use aperturec_metrics::exporters::Exporter as MetricsExporter;
 use aperturec_protocol::control;
 use aperturec_utils::warn_early;
 use config::Configuration;
@@ -116,47 +115,6 @@ pub enum InputError {
     /// Connection primary thread died.
     #[error("connection primary thread died")]
     ThreadDied,
-}
-
-/// Errors that can occur during metrics initialization.
-#[derive(Debug, thiserror::Error)]
-pub enum MetricsError {
-    /// Metrics have already been initialized.
-    #[error("Metrics already initialized")]
-    AlreadyInitialized,
-    /// No exporters were provided.
-    #[error("No exporters provided")]
-    NoExporters,
-    /// Metrics initialization failed.
-    #[error("Metrics initialization failed: {0}")]
-    InitFailed(#[from] anyhow::Error),
-}
-
-/// Initialize metrics for the aperturec client library.
-///
-/// This must be called before creating any clients if metrics are desired.
-/// Can only be called once per process lifetime.
-///
-/// # Arguments
-///
-/// * `exporters` - Collection of metric exporters to use
-///
-/// # Errors
-///
-/// Returns an error if metrics are already initialized or if initialization fails.
-pub fn init_metrics(
-    _exporters: impl IntoIterator<Item = MetricsExporter>,
-) -> Result<(), MetricsError> {
-    todo!()
-}
-
-/// Returns whether metrics have been initialized.
-///
-/// # Returns
-///
-/// `true` if metrics have been initialized, `false` otherwise.
-pub fn metrics_initialized() -> bool {
-    todo!()
 }
 
 /// ApertureC client instance.
@@ -401,7 +359,7 @@ pub fn run() -> Result<()> {
             .name(gethostname().into_string().unwrap())
             .server_addr(args.server_address)
             .auth_token(auth_token)
-            .initial_display_mode(args.resolution)
+            .initial_display_mode(args.resolution.into())
             .allow_insecure_connection(args.insecure)
             .client_bound_tunnel_reqs(args.local)
             .server_bound_tunnel_reqs(args.remote);
@@ -415,17 +373,7 @@ pub fn run() -> Result<()> {
     };
     debug!(?config);
 
-    let metrics_exporters = args.metrics.to_exporters(env!("CARGO_CRATE_NAME"));
-    if !metrics_exporters.is_empty() {
-        aperturec_metrics::MetricsInitializer::default()
-            .with_poll_rate_from_secs(3)
-            .with_exporters(metrics_exporters)
-            .init()
-            .expect("Failed to setup metrics");
-        metrics::setup_client_metrics();
-    }
-
-    unimplemented!("run client and teardown metrics on completion");
+    unimplemented!("run client");
 }
 
 #[cfg(feature = "ffi-lib")]

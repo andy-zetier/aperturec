@@ -2,7 +2,7 @@ use crate::channels::spawn_rx_thread;
 
 use aperturec_channel::{self as channel, Sender as _};
 use aperturec_protocol::tunnel as proto;
-use aperturec_utils::{channels::SenderExt, info_always};
+use aperturec_utils::channels::SenderExt;
 
 use crossbeam::channel::{
     Receiver, RecvTimeoutError, SendTimeoutError, Sender, bounded, select_biased,
@@ -1153,7 +1153,7 @@ pub fn setup(
                     } else {
                         proto::Side::Client
                     };
-                    info_always!(
+                    info!(
                         "allocated {:?} port {}:{} for forward to {}:{} on {:?}",
                         this_side,
                         desc.bind_address,
