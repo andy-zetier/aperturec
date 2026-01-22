@@ -2,7 +2,6 @@ use aperturec_graphics::{display::*, prelude::*};
 use aperturec_protocol::common::Codec;
 use aperturec_protocol::media::{EmptyFrameTerminal, FrameFragment, server_to_client as mm_s2c};
 
-use anyhow::{Result, anyhow, bail, ensure};
 use flate2::read::DeflateDecoder;
 use ndarray::prelude::*;
 use range_set_blaze::RangeSetBlaze;
@@ -11,8 +10,70 @@ use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::io::Read;
 use std::mem::{self, MaybeUninit};
+use std::num::TryFromIntError;
 use std::ptr;
+use thiserror::Error;
 use tracing::*;
+
+#[derive(Debug, Error)]
+pub enum FrameError {
+    #[error("unsupported codec: {0:?}")]
+    UnsupportedCodec(Codec),
+    #[error("missing fragment origin")]
+    MissingFragmentOrigin,
+    #[error("missing fragment dimension")]
+    MissingFragmentDimension,
+    #[error("invalid codec value: {0}")]
+    InvalidCodecValue(i32),
+    #[error("decompressed length {actual} != {width}x{height}x{pixel_size} = {expected}")]
+    PixelDataLengthMismatch {
+        actual: usize,
+        expected: usize,
+        width: usize,
+        height: usize,
+        pixel_size: usize,
+    },
+    #[error("identical sequence {sequence}")]
+    DuplicateSequence { sequence: usize },
+    #[error("received duplicate terminals")]
+    DuplicateTerminal,
+    #[error("marking sequence received for complete decoder frame")]
+    SequenceForCompleteDecoderFrame,
+    #[error("marking non-empty frame terminated with empty frame terminal")]
+    EmptyFrameTerminalNonEmpty,
+    #[error("marking empty frame terminal received for previously terminated frame")]
+    EmptyFrameTerminalAfterTermination,
+    #[error("invalid decoder {decoder}")]
+    InvalidDecoder { decoder: usize },
+    #[error("mark fragment {sequence} received for decoder {decoder}, which does not exist")]
+    InvalidDecoderForFragment { decoder: usize, sequence: usize },
+    #[error("mark empty frame terminal received for decoder {decoder}, which does not exist")]
+    InvalidDecoderForEmptyTerminal { decoder: usize },
+    #[error("mismatching display config id {actual} != {expected}")]
+    MismatchedDisplayConfig { expected: usize, actual: usize },
+    #[error("invalid display {display}")]
+    InvalidDisplay { display: usize },
+    #[error("jxl decoder samples are not {expected} bit")]
+    JxlBitsPerSample { expected: u32, actual: u32 },
+    #[error("jxl decoder samples are floating point")]
+    JxlExponentBitsPerSample { expected: u32, actual: u32 },
+    #[error("jxl decoder producing animation")]
+    JxlHasAnimation,
+    #[error("jxl decoder has {actual} color channels")]
+    JxlColorChannels { expected: u32, actual: u32 },
+    #[error("jxl decoder has {actual} extra channels")]
+    JxlExtraChannels { expected: u32, actual: u32 },
+    #[error("jpegxl decoder error: {0}")]
+    Jxl(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("integer conversion failed: {0}")]
+    TryFromInt(#[from] TryFromIntError),
+    #[error("invalid pixel buffer shape: {0}")]
+    Shape(#[from] ndarray::ShapeError),
+}
+
+type Result<T, E = FrameError> = std::result::Result<T, E>;
 
 fn decode_raw(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
     Ok(encoded_data)
@@ -25,21 +86,23 @@ fn decode_zlib(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
     Ok(decoded)
 }
 
-pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
+fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
     use aperturec_utils::jxl::*;
     use jxl_sys::*;
 
     // SAFETY:
     //   - JxlDecoderCreate can take a null pointer to skip using a custom memory manager
     //   - jxl_call! checks the return value of JxlDecoderCreate and bails if it fails
-    let dec = jxl_call!(JxlDecoderCreate, ptr::null())?;
+    let dec =
+        jxl_call!(JxlDecoderCreate, ptr::null()).map_err(|e| FrameError::Jxl(e.to_string()))?;
 
     // SAFETY:
     //   - JxlResizableParallelRunnerCreate can take a null pointer to skip using a custom memory
     //   manager
     //   - jxl_call! checks the return value of JxlResizableParallelRunnerCreate and bails if it
     //   fails
-    let par_runner_opaque = jxl_call!(JxlResizableParallelRunnerCreate, ptr::null())?;
+    let par_runner_opaque = jxl_call!(JxlResizableParallelRunnerCreate, ptr::null())
+        .map_err(|e| FrameError::Jxl(e.to_string()))?;
 
     // SAFETY:
     //   - dec is null-checked above
@@ -49,7 +112,8 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
         dec,
         Some(JxlResizableParallelRunner),
         par_runner_opaque
-    )?;
+    )
+    .map_err(|e| FrameError::Jxl(e.to_string()))?;
 
     // SAFETY:
     //   - dec is null-checked above
@@ -60,7 +124,8 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
         dec,
         encoded_data.as_ptr(),
         encoded_data.len()
-    )?;
+    )
+    .map_err(|e| FrameError::Jxl(e.to_string()))?;
     // SAFETY:
     //   - dec is null-checked above
     unsafe { JxlDecoderCloseInput(dec as _) };
@@ -73,7 +138,8 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
         dec,
         (JxlDecoderStatus::JXL_DEC_BASIC_INFO as i32)
             | (JxlDecoderStatus::JXL_DEC_FULL_IMAGE as i32),
-    )?;
+    )
+    .map_err(|e| FrameError::Jxl(e.to_string()))?;
 
     let info: OnceCell<JxlBasicInfo> = OnceCell::new();
     let output_size: OnceCell<usize> = OnceCell::new();
@@ -87,22 +153,29 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
                 break;
             }
             JxlDecoderStatus::JXL_DEC_ERROR => {
-                bail!("jxl decoder exited with error");
+                return Err(FrameError::Jxl("jxl decoder exited with error".to_string()));
             }
             JxlDecoderStatus::JXL_DEC_NEED_MORE_INPUT => {
-                bail!("jxl decoder needed more input but all input provided");
+                return Err(FrameError::Jxl(
+                    "jxl decoder needed more input but all input provided".to_string(),
+                ));
             }
             JxlDecoderStatus::JXL_DEC_FULL_IMAGE => {
                 let Some(output) = output.get_mut() else {
-                    bail!("jxl decoder finished without setting output");
+                    return Err(FrameError::Jxl(
+                        "jxl decoder finished without setting output".to_string(),
+                    ));
                 };
                 let Some(output_size) = output_size.get() else {
-                    bail!("jxl decoder finished without setting output size");
+                    return Err(FrameError::Jxl(
+                        "jxl decoder finished without setting output size".to_string(),
+                    ));
                 };
                 if output.capacity() < *output_size {
-                    bail!(
+                    return Err(FrameError::Jxl(
                         "jxl decoder finished with an output size greater than the capacity of the output buffer"
-                    );
+                            .to_string(),
+                    ));
                 }
                 // SAFETY:
                 //   - We check above to ensure that the capacity of the output is at least the
@@ -117,33 +190,43 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
                 //   a valid pointer
                 //   - jxl_call! checks the return value of JxlDecoderGetBasicInfo and bails if it
                 //   fails
-                jxl_call!(JxlDecoderGetBasicInfo, dec, info_uninit.as_mut_ptr())?;
+                jxl_call!(JxlDecoderGetBasicInfo, dec, info_uninit.as_mut_ptr())
+                    .map_err(|e| FrameError::Jxl(e.to_string()))?;
                 // SAFETY:
                 //   - info is initialized by JxlDecoderGetBasicInfo
                 if info.set(unsafe { info_uninit.assume_init() }).is_err() {
-                    bail!("jxl decoder received basic info more than once");
+                    return Err(FrameError::Jxl(
+                        "jxl decoder received basic info more than once".to_string(),
+                    ));
                 }
                 let info = info.get().unwrap();
-                ensure!(
-                    info.bits_per_sample == parameters::BITS_PER_SAMPLE,
-                    "jxl decoder samples are not {} bit",
-                    parameters::BITS_PER_SAMPLE,
-                );
-                ensure!(
-                    info.exponent_bits_per_sample == parameters::EXPONENT_BITS_PER_SAMPLE,
-                    "jxl decoder samples are floating point"
-                );
-                ensure!(info.have_animation == 0, "jxl decoder producing animation");
-                ensure!(
-                    info.num_color_channels == PIXEL_FORMAT.num_channels,
-                    "jxl decoder has {} color channels",
-                    info.num_color_channels
-                );
-                ensure!(
-                    info.num_extra_channels == NO_EXTRA_CHANNELS_FORMAT.num_channels,
-                    "jxl decoder has {} extra channels",
-                    info.num_extra_channels
-                );
+                if info.bits_per_sample != parameters::BITS_PER_SAMPLE {
+                    return Err(FrameError::JxlBitsPerSample {
+                        expected: parameters::BITS_PER_SAMPLE,
+                        actual: info.bits_per_sample,
+                    });
+                }
+                if info.exponent_bits_per_sample != parameters::EXPONENT_BITS_PER_SAMPLE {
+                    return Err(FrameError::JxlExponentBitsPerSample {
+                        expected: parameters::EXPONENT_BITS_PER_SAMPLE,
+                        actual: info.exponent_bits_per_sample,
+                    });
+                }
+                if info.have_animation != 0 {
+                    return Err(FrameError::JxlHasAnimation);
+                }
+                if info.num_color_channels != PIXEL_FORMAT.num_channels {
+                    return Err(FrameError::JxlColorChannels {
+                        expected: PIXEL_FORMAT.num_channels,
+                        actual: info.num_color_channels,
+                    });
+                }
+                if info.num_extra_channels != NO_EXTRA_CHANNELS_FORMAT.num_channels {
+                    return Err(FrameError::JxlExtraChannels {
+                        expected: NO_EXTRA_CHANNELS_FORMAT.num_channels,
+                        actual: info.num_extra_channels,
+                    });
+                }
 
                 // SAFETY: JxlResizableParallelRunnerSuggestThreads is only marked unsafe at it is
                 // an external C++ function. Nothing about the function is inherently unsafe
@@ -168,21 +251,29 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
                     dec,
                     &PIXEL_FORMAT,
                     &mut buffer_size
-                )?;
+                )
+                .map_err(|e| FrameError::Jxl(e.to_string()))?;
                 let Some(info) = info.get() else {
-                    bail!("jxl decoder needs image output buffer before basic info received");
+                    return Err(FrameError::Jxl(
+                        "jxl decoder needs image output buffer before basic info received"
+                            .to_string(),
+                    ));
                 };
                 let expected_size = (info.xsize * info.ysize * PIXEL_FORMAT.num_channels) as usize;
                 if buffer_size != expected_size {
-                    bail!(
+                    return Err(FrameError::Jxl(format!(
                         "jxl decoder output buffer size is invalid - expected {expected_size}, got {buffer_size}"
-                    );
+                    )));
                 }
                 if output_size.set(expected_size).is_err() {
-                    bail!("jxl decoder set output size more than once");
+                    return Err(FrameError::Jxl(
+                        "jxl decoder set output size more than once".to_string(),
+                    ));
                 }
                 if output.set(Vec::with_capacity(expected_size)).is_err() {
-                    bail!("jxl decoder set output more than once");
+                    return Err(FrameError::Jxl(
+                        "jxl decoder set output more than once".to_string(),
+                    ));
                 }
                 let uninit_slice = output.get_mut().unwrap().spare_capacity_mut();
                 // SAFETY:
@@ -195,9 +286,14 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
                     &PIXEL_FORMAT,
                     uninit_slice.as_mut_ptr() as *mut _,
                     expected_size,
-                )?;
+                )
+                .map_err(|e| FrameError::Jxl(e.to_string()))?;
             }
-            event => bail!("unexpected event from jxl decoder: {event:?}"),
+            event => {
+                return Err(FrameError::Jxl(format!(
+                    "unexpected event from jxl decoder: {event:?}"
+                )));
+            }
         }
     }
 
@@ -209,7 +305,9 @@ pub fn decode_jpegxl(encoded_data: Vec<u8>) -> Result<Vec<u8>> {
     //   - Parallel runner is done being used and can be destroyed
     unsafe { JxlResizableParallelRunnerDestroy(par_runner_opaque) };
 
-    output.take().ok_or(anyhow!("jxl decoder output never set"))
+    output
+        .take()
+        .ok_or_else(|| FrameError::Jxl("jxl decoder output never set".to_string()))
 }
 
 fn decode(codec: Codec, encoded_data: Vec<u8>) -> Result<Vec<u8>> {
@@ -217,7 +315,7 @@ fn decode(codec: Codec, encoded_data: Vec<u8>) -> Result<Vec<u8>> {
         Codec::Raw => decode_raw(encoded_data),
         Codec::Zlib => decode_zlib(encoded_data),
         Codec::Jpegxl => decode_jpegxl(encoded_data),
-        codec => bail!("Unsupported codec: {codec:?}"),
+        codec => Err(FrameError::UnsupportedCodec(codec)),
     }
 }
 
@@ -236,13 +334,15 @@ struct EncodedFragmentData {
 }
 
 impl TryFrom<FrameFragment> for EncodedFragmentData {
-    type Error = anyhow::Error;
+    type Error = FrameError;
 
     fn try_from(frag: FrameFragment) -> Result<Self> {
-        let loc = frag.location.ok_or(anyhow!("no origin"))?;
-        let dim = frag.dimension.ok_or(anyhow!("no dimension"))?;
+        let loc = frag.location.ok_or(FrameError::MissingFragmentOrigin)?;
+        let dim = frag.dimension.ok_or(FrameError::MissingFragmentDimension)?;
         let origin = Point::new(loc.x_position.try_into()?, loc.y_position.try_into()?);
         let size = Size::new(dim.width.try_into()?, dim.height.try_into()?);
+        let codec =
+            Codec::try_from(frag.codec).map_err(|_| FrameError::InvalidCodecValue(frag.codec))?;
 
         Ok(EncodedFragmentData {
             frame: frag.frame.try_into()?,
@@ -251,7 +351,7 @@ impl TryFrom<FrameFragment> for EncodedFragmentData {
             display: frag.display.try_into()?,
             display_config: frag.display_config.try_into()?,
             terminal: frag.terminal,
-            codec: frag.codec.try_into()?,
+            codec,
             size,
             decoder_relative_origin: origin,
             encoded_pixels: frag.data,
@@ -262,15 +362,16 @@ impl TryFrom<FrameFragment> for EncodedFragmentData {
 impl EncodedFragmentData {
     fn decode(self) -> Result<DecodedFragmentData> {
         let decoded_data = decode(self.codec, self.encoded_pixels)?;
-        ensure!(
-            decoded_data.len() == self.size.area() * mem::size_of::<Pixel24>(),
-            "Decompressed Length {} < {}x{}x{} = {}",
-            decoded_data.len(),
-            self.size.width,
-            self.size.height,
-            mem::size_of::<Pixel24>(),
-            self.size.area() * mem::size_of::<Pixel24>(),
-        );
+        if decoded_data.len() != self.size.area() * mem::size_of::<Pixel24>() {
+            let expected = self.size.area() * mem::size_of::<Pixel24>();
+            return Err(FrameError::PixelDataLengthMismatch {
+                actual: decoded_data.len(),
+                expected,
+                width: self.size.width,
+                height: self.size.height,
+                pixel_size: mem::size_of::<Pixel24>(),
+            });
+        }
 
         // SAFETY: We compute `len` and `capacity` to ensure that the `pixels24_vec` is the correct
         // size. We create a `Vec` with the pointer to the decoded data, but `mem::forget` that
@@ -331,10 +432,9 @@ impl DecoderFrameState {
     fn mark_sequence_received(&mut self, sequence: usize, terminal: bool) -> Result<()> {
         match self {
             DecoderFrameState::InFlight { received } => {
-                ensure!(
-                    !received.contains(sequence),
-                    "identical sequence {sequence}"
-                );
+                if received.contains(sequence) {
+                    return Err(FrameError::DuplicateSequence { sequence });
+                }
 
                 received.insert(sequence);
 
@@ -350,7 +450,9 @@ impl DecoderFrameState {
                 }
             }
             DecoderFrameState::TerminatedIncomplete { missing_sequences } => {
-                ensure!(!terminal, "received duplicate terminals");
+                if terminal {
+                    return Err(FrameError::DuplicateTerminal);
+                }
 
                 missing_sequences.remove(sequence);
                 if missing_sequences.is_empty() {
@@ -358,7 +460,7 @@ impl DecoderFrameState {
                 }
             }
             DecoderFrameState::Complete => {
-                bail!("marking sequence received for complete decoder frame")
+                return Err(FrameError::SequenceForCompleteDecoderFrame);
             }
         }
         Ok(())
@@ -367,14 +469,13 @@ impl DecoderFrameState {
     fn mark_empty_frame_terminal_received(&mut self) -> Result<()> {
         match self {
             DecoderFrameState::InFlight { received } => {
-                ensure!(
-                    received.is_empty(),
-                    "marking non-empty frame terminated with empty frame terminal"
-                );
+                if !received.is_empty() {
+                    return Err(FrameError::EmptyFrameTerminalNonEmpty);
+                }
                 *self = DecoderFrameState::Complete;
                 Ok(())
             }
-            _ => bail!("marking empty frame terminal received for previously terminated frame"),
+            _ => Err(FrameError::EmptyFrameTerminalAfterTermination),
         }
     }
 }
@@ -395,11 +496,11 @@ impl InFlightFrame {
     }
 
     fn add_fragment(&mut self, frag: DecodedFragmentData) -> Result<()> {
-        ensure!(
-            frag.decoder < self.decoder_frame_states.len(),
-            "Invalid decoder {}",
-            frag.decoder
-        );
+        if frag.decoder >= self.decoder_frame_states.len() {
+            return Err(FrameError::InvalidDecoder {
+                decoder: frag.decoder,
+            });
+        }
         self.decoder_frame_states[frag.decoder]
             .mark_sequence_received(frag.sequence, frag.terminal)?;
         self.decoded_fragments.push(frag);
@@ -440,10 +541,9 @@ impl InFlightFrame {
     }
 
     fn terminate_empty(&mut self, decoder: usize) -> Result<()> {
-        ensure!(
-            decoder < self.decoder_frame_states.len(),
-            "Invalid decoder {decoder}"
-        );
+        if decoder >= self.decoder_frame_states.len() {
+            return Err(FrameError::InvalidDecoder { decoder });
+        }
         self.decoder_frame_states[decoder].mark_empty_frame_terminal_received()?;
         Ok(())
     }
@@ -461,20 +561,18 @@ impl EarlyDrawFrame {
         sequence: usize,
         terminal: bool,
     ) -> Result<()> {
-        ensure!(
-            decoder < self.decoder_frame_states.len(),
-            "mark fragment {sequence} received for decoder {decoder}, which does not exist"
-        );
+        if decoder >= self.decoder_frame_states.len() {
+            return Err(FrameError::InvalidDecoderForFragment { decoder, sequence });
+        }
 
         self.decoder_frame_states[decoder].mark_sequence_received(sequence, terminal)?;
         Ok(())
     }
 
     fn mark_empty_frame_terminal_received(&mut self, decoder: usize) -> Result<()> {
-        ensure!(
-            decoder < self.decoder_frame_states.len(),
-            "mark empty frame terminal received for decoder {decoder}, which does not exist"
-        );
+        if decoder >= self.decoder_frame_states.len() {
+            return Err(FrameError::InvalidDecoderForEmptyTerminal { decoder });
+        }
 
         self.decoder_frame_states[decoder].mark_empty_frame_terminal_received()?;
         Ok(())
@@ -555,16 +653,18 @@ impl DisplayFramer {
     }
 
     fn report_fragment(&mut self, encoded_frag: EncodedFragmentData) -> Result<()> {
-        ensure!(
-            encoded_frag.decoder < self.decoder_areas.len(),
-            "Invalid decoder {}",
-            encoded_frag.decoder
-        );
-        ensure!(
-            !self.complete.contains(encoded_frag.frame),
-            "fragment for complete frame {}",
-            encoded_frag.frame
-        );
+        if encoded_frag.decoder >= self.decoder_areas.len() {
+            return Err(FrameError::InvalidDecoder {
+                decoder: encoded_frag.decoder,
+            });
+        }
+        if self.complete.contains(encoded_frag.frame) {
+            trace!(
+                "dropping fragment for complete frame {}",
+                encoded_frag.frame
+            );
+            return Ok(());
+        }
 
         let decoded_frag = encoded_frag.decode()?;
         let frame = decoded_frag.frame;
@@ -611,16 +711,15 @@ impl DisplayFramer {
             term.frame, term.encoder
         );
         let decoder = term.encoder as usize;
-        ensure!(
-            decoder < self.decoder_areas.len(),
-            "Invalid decoder {decoder}"
-        );
+        if decoder >= self.decoder_areas.len() {
+            return Err(FrameError::InvalidDecoder { decoder });
+        }
 
         let frame = term.frame as usize;
-        ensure!(
-            !self.complete.contains(frame),
-            "empty frame terminal for complete frame {frame}"
-        );
+        if self.complete.contains(frame) {
+            trace!("dropping empty frame terminal for complete frame {frame}");
+            return Ok(());
+        }
 
         if let Some(early_draw) = self.early_draw.get_mut(&frame) {
             early_draw.mark_empty_frame_terminal_received(decoder)?;
@@ -635,14 +734,13 @@ impl DisplayFramer {
     }
 
     fn report_terminal(&mut self, frame: usize, decoder: usize) -> Result<()> {
-        ensure!(
-            !self.complete.contains(frame),
-            "terminal for complete frame"
-        );
-        ensure!(
-            decoder < self.decoder_areas.len(),
-            "invalid decoder {decoder}"
-        );
+        if self.complete.contains(frame) {
+            trace!("dropping terminal for complete frame {frame}");
+            return Ok(());
+        }
+        if decoder >= self.decoder_areas.len() {
+            return Err(FrameError::InvalidDecoder { decoder });
+        }
 
         if let Some(early_draw) = self.early_draw.remove(&frame) {
             match early_draw.try_complete() {
@@ -768,17 +866,17 @@ impl Framer {
         if encoded_frag.display_config < self.display_config.id {
             return Ok(());
         }
-        ensure!(
-            encoded_frag.display_config == self.display_config.id,
-            "Mismatching display config id {} != {}",
-            encoded_frag.display_config,
-            self.display_config.id
-        );
-        ensure!(
-            encoded_frag.display < self.displays.len(),
-            "Invalid display {}",
-            encoded_frag.display
-        );
+        if encoded_frag.display_config != self.display_config.id {
+            return Err(FrameError::MismatchedDisplayConfig {
+                expected: self.display_config.id,
+                actual: encoded_frag.display_config,
+            });
+        }
+        if encoded_frag.display >= self.displays.len() {
+            return Err(FrameError::InvalidDisplay {
+                display: encoded_frag.display,
+            });
+        }
         self.displays[encoded_frag.display].report_fragment(encoded_frag)
     }
 
@@ -794,14 +892,16 @@ impl Framer {
         if display_config < self.display_config.id {
             return Ok(());
         }
-        ensure!(
-            display_config == self.display_config.id,
-            "Mismatching display config id {} != {}",
-            display_config,
-            self.display_config.id
-        );
+        if display_config != self.display_config.id {
+            return Err(FrameError::MismatchedDisplayConfig {
+                expected: self.display_config.id,
+                actual: display_config,
+            });
+        }
         let display = term.display as usize;
-        ensure!(display < self.displays.len(), "Invalid display {display}");
+        if display >= self.displays.len() {
+            return Err(FrameError::InvalidDisplay { display });
+        }
         self.displays[display].report_empty_frame_terminal(term)
     }
 

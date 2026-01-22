@@ -12,8 +12,19 @@ version=$(
 )
 
 mkdir -p "${PKG_DIR}"
-cp "${ROOT_DIR}"/target/release/aperturec-client "${PKG_DIR}"
-install_name_tool -add_rpath "@executable_path" "${PKG_DIR}/aperturec-client"
+cp "${ROOT_DIR}"/target/release/aperturec-client-gtk4 "${PKG_DIR}/aperturec-client"
+has_rpath() {
+	otool -l "$1" \
+		| awk '
+			/LC_RPATH/ { in_rpath=1; next }
+			in_rpath && /path / { print; in_rpath=0 }
+		' \
+		| grep -q "$2"
+}
+
+if ! has_rpath "${PKG_DIR}/aperturec-client" "@executable_path"; then
+	install_name_tool -add_rpath "@executable_path" "${PKG_DIR}/aperturec-client"
+fi
 
 # Recursively copy all Homebrew dylib dependencies and their package contents
 pushd "${PKG_DIR}" > /dev/null
@@ -38,9 +49,7 @@ while [ ${#queue[@]} -gt 0 ]; do
 	# Add rpath so dylibs will look in this folder.  Skip the main exe.
 	if [[ "$lib_rel_path" != "aperturec-client" ]]; then
 		# only if @loader_path isn’t already baked in
-		if ! otool -l "$lib_rel_path" \
-		       | awk '/LC_RPATH/ { getline; print }' \
-		       | grep -q "@loader_path"; then
+		if ! has_rpath "$lib_rel_path" "@loader_path"; then
 			install_name_tool -add_rpath "@loader_path" "$lib_rel_path"
 		fi
 	fi

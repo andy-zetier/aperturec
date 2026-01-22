@@ -12,7 +12,7 @@ version=$(
 )
 
 mkdir -p package
-cp aperturec-client.exe package
+cp aperturec-client-gtk4.exe package/aperturec-client.exe
 
 for DLL in $(peldd package/*.exe -t --ignore-errors)
     do cp "$DLL" package
