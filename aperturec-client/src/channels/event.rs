@@ -12,7 +12,8 @@ use aperturec_protocol::{
 };
 use aperturec_utils::channels::SenderExt;
 
-use crossbeam::channel::{Receiver, Sender, bounded, select_biased};
+use crossbeam::channel::{Receiver, Sender, TryRecvError, bounded};
+use crossbeam_ring_channel::{RingReceiver, Select};
 use ndarray::ArcArray2;
 use std::{collections::BTreeMap, mem, thread};
 use tracing::*;
@@ -210,11 +211,15 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// # Parameters
 /// * `client_ec` - Event channel handle split into Rx/Tx halves.
 /// * `pt_tx` - Sends display/cursor updates or errors to the primary thread.
-/// * `from_pt_rx` - Receives user input notifications or termination requests.
+/// * `from_pt_lossless_rx` - Receives lossless notifications including user input and termination
+///   requests
+/// * `from_pt_lossy_rx` - Receives newest-wins user input notifications, currently just pointer
+///   movements
 pub fn setup(
     client_ec: channel::ClientEvent,
     pt_tx: Sender<Ptn>,
-    from_pt_rx: Receiver<Notification>,
+    from_pt_lossless_rx: Receiver<Notification>,
+    from_pt_lossy_rx: RingReceiver<UserEvent>,
 ) {
     let (ec_rx, mut ec_tx) = client_ec.split();
 
@@ -226,72 +231,144 @@ pub fn setup(
     thread::spawn(move || {
         let _s = debug_span!("ec-main").entered();
         debug!("started");
-        loop {
-            select_biased! {
-                recv(from_pt_rx) -> pt_msg_res => {
-                    let Ok(pt_msg) = pt_msg_res else {
-                        warn!("primary died before ec-main");
-                        break;
+        let mut lossy_closed = false;
+        let mut send_user_event = |ue: UserEvent| {
+            let send_res = time!(EventChannelSendLatency, ec_tx.send(ue.into()));
+            if let Err(error) = send_res {
+                error!(%error);
+                pt_tx.send_or_warn(Ptn::Error(error.into()));
+            }
+        };
+        let mut handle_network_msg = |network_msg: Result<
+            s2c::Message,
+            channel::codec::in_order::RxError,
+        >| {
+            match network_msg {
+                Ok(s2c::Message::DisplayConfiguration(display_config)) => {
+                    trace!(?display_config);
+                    let display_config = match DisplayConfiguration::try_from(display_config) {
+                        Ok(dc) => dc,
+                        Err(error) => {
+                            warn!(?error, "invalid display configuration");
+                            return;
+                        }
                     };
+                    pt_tx.send_or_warn(Ptn::from(display_config));
+                }
+                Ok(s2c::Message::CursorImage(cursor_image)) => {
+                    trace!(?cursor_image);
+                    let id = cursor_image.id;
+                    let cursor = match Cursor::try_from(cursor_image) {
+                        Ok(cursor) => cursor,
+                        Err(error) => {
+                            warn!(%id, %error);
+                            return;
+                        }
+                    };
+
+                    if let Some(existing) = cursor_cache.insert(id, cursor) {
+                        warn!(%id, ?existing, "replaced existing cursor");
+                    }
+                }
+                Ok(s2c::Message::CursorChange(cursor_change)) => {
+                    trace!(?cursor_change);
+                    if let Some(cursor) = cursor_cache.get(&cursor_change.id) {
+                        pt_tx.send_or_warn(Ptn::Cursor(cursor.clone()));
+                    } else {
+                        warn!("received cursor change notification for missing cursor");
+                    }
+                }
+                Err(err) => {
+                    pt_tx.send_or_warn(Ptn::Error(err.into()));
+                }
+            }
+        };
+
+        loop {
+            match from_pt_lossless_rx.try_recv() {
+                Ok(pt_msg) => {
                     let ue = match pt_msg {
                         Notification::Terminate => break,
                         Notification::UserEvent(ue) => ue,
                     };
-                    if matches!(ue, UserEvent::Pointer { .. }) {
-                        trace!(?ue);
-                    } else {
-                        debug!(?ue);
-                    }
+                    debug!(?ue);
+                    send_user_event(ue);
+                    continue;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    warn!("primary died before ec-main");
+                    break;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
 
-                    let send_res = time!(EventChannelSendLatency, ec_tx.send(ue.into()));
-                    if let Err(error) = send_res {
-                        error!(%error);
-                        pt_tx.send_or_warn(Ptn::Error(error.into()));
+            match from_network_rx.try_recv() {
+                Ok(network_msg) => {
+                    handle_network_msg(network_msg);
+                    continue;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    debug!("ec-network-rx died before ec-main");
+                    break;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+
+            if !lossy_closed {
+                match from_pt_lossy_rx.try_recv() {
+                    Ok(ue) => {
+                        trace!(?ue);
+                        send_user_event(ue);
+                        continue;
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => {
+                        lossy_closed = true;
                     }
                 }
-                recv(from_network_rx) -> network_rx_res => {
-                    let Ok(network_msg) = network_rx_res else {
+            }
+
+            let mut sel = Select::new();
+            let idx_lossless = sel.recv(&from_pt_lossless_rx);
+            let idx_network = sel.recv(&from_network_rx);
+            let mut idx_lossy = None;
+            if !lossy_closed {
+                idx_lossy = Some(sel.recv(&from_pt_lossy_rx));
+            }
+
+            let oper = sel.select();
+            let index = oper.index();
+            if index == idx_lossless {
+                match oper.recv(&from_pt_lossless_rx) {
+                    Ok(pt_msg) => {
+                        let ue = match pt_msg {
+                            Notification::Terminate => break,
+                            Notification::UserEvent(ue) => ue,
+                        };
+                        debug!(?ue);
+                        send_user_event(ue);
+                    }
+                    Err(_) => {
+                        warn!("primary died before ec-main");
+                        break;
+                    }
+                }
+            } else if index == idx_network {
+                match oper.recv(&from_network_rx) {
+                    Ok(network_msg) => handle_network_msg(network_msg),
+                    Err(_) => {
                         debug!("ec-network-rx died before ec-main");
                         break;
-                    };
-                    match network_msg {
-                        Ok(s2c::Message::DisplayConfiguration(display_config)) => {
-                            trace!(?display_config);
-                            let display_config = match DisplayConfiguration::try_from(display_config) {
-                                Ok(dc) => dc,
-                                Err(error) => {
-                                    warn!(?error, "invalid display configuration");
-                                    continue;
-                                }
-                            };
-                            pt_tx.send_or_warn(Ptn::from(display_config));
-                        }
-                        Ok(s2c::Message::CursorImage(cursor_image)) => {
-                            trace!(?cursor_image);
-                            let id = cursor_image.id;
-                            let cursor = match Cursor::try_from(cursor_image) {
-                                Ok(cursor) => cursor,
-                                Err(error) => {
-                                    warn!(%id, %error);
-                                    continue;
-                                }
-                            };
-
-                            if let Some(existing) = cursor_cache.insert(id, cursor) {
-                                warn!(%id, ?existing, "replaced existing cursor");
-                            }
-                        }
-                        Ok(s2c::Message::CursorChange(cursor_change)) => {
-                            trace!(?cursor_change);
-                            if let Some(cursor) = cursor_cache.get(&cursor_change.id) {
-                                pt_tx.send_or_warn(Ptn::Cursor(cursor.clone()));
-                            } else {
-                                warn!("received cursor change notification for missing cursor");
-                            }
-                        }
-                        Err(err) => {
-                            pt_tx.send_or_warn(Ptn::Error(err.into()));
-                        }
+                    }
+                }
+            } else if Some(index) == idx_lossy {
+                match oper.recv(&from_pt_lossy_rx) {
+                    Ok(ue) => {
+                        trace!(?ue);
+                        send_user_event(ue);
+                    }
+                    Err(_) => {
+                        lossy_closed = true;
                     }
                 }
             }

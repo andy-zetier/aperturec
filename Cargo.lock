@@ -151,6 +151,7 @@ dependencies = [
  "cbindgen",
  "clap",
  "crossbeam",
+ "crossbeam-ring-channel",
  "ctrlc",
  "derive-new",
  "derive_builder",
@@ -1002,6 +1003,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f58bbc28f91df819d0aa2a2c00cd19754769c2fad90579b3592b1c9ba7a3115"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-ring-channel"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55e58e99f302e5f34a5d7ca7d23c13615bc32c2616b9aa7379faa23385c3ee51"
+dependencies = [
+ "crossbeam-channel",
+ "crossbeam-queue",
 ]
 
 [[package]]
