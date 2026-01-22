@@ -23,6 +23,7 @@ async-channel = "2.5"
 atomicbox = "0.4"
 clap = { version = "4.5.54", features = ["derive"] }
 crossbeam = "0.8"
+crossbeam-ring-channel = "0.1.0"
 ctrlc = { version = "3.5", features = ["termination"] }
 derive_builder = "0.20"
 derive_more = { version = "2.1", features = ["display"] }
