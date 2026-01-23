@@ -8,28 +8,18 @@ pub mod ffi;
 pub mod frame;
 mod metrics;
 
-use crate::args::Args;
 use crate::channels::event::Cursor;
 use crate::frame::Draw;
 
 use aperturec_graphics::{display::*, prelude::*};
 use aperturec_protocol::control;
-use aperturec_utils::warn_early;
 use config::Configuration;
 use state::LockState;
 
 use anyhow::Result;
-use clap::Parser;
 use crossbeam::channel::RecvError;
-use gethostname::gethostname;
-use openssl::x509::X509;
-use secrecy::SecretString;
-use std::env;
 use std::error::Error;
-use std::fs;
 use std::time::Duration;
-use tracing::*;
-use tracing_subscriber::prelude::*;
 
 /// Display mode for the client window or fullscreen configuration.
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -316,63 +306,6 @@ impl Connection {
 }
 
 pub fn run() -> Result<()> {
-    let args = if env::args().count() == 2 {
-        let arg1 = env::args().nth(1).unwrap();
-        if let Ok(parsed) = Args::from_uri(&arg1) {
-            parsed
-        } else if let Ok(uri) = env::var("AC_URI") {
-            warn_early!(
-                "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
-            );
-            Args::from_uri(&uri)?
-        } else {
-            Args::parse()
-        }
-    } else if let Ok(uri) = env::var("AC_URI") {
-        if env::args().count() > 1 {
-            warn_early!(
-                "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
-            );
-        }
-        Args::from_uri(&uri)?
-    } else {
-        Args::parse()
-    };
-
-    let (log_layer, _guard) = args.log.as_tracing_layer()?;
-    tracing_subscriber::registry().with(log_layer).init();
-
-    info!("ApertureC Client Startup");
-
-    let config = {
-        // Scope config_builder to ensure it is dropped and any auth-token leaves memory
-        let mut config_builder = config::ConfigurationBuilder::default();
-        let auth_token = match args.auth_token.into_token()? {
-            Some(token) => token,
-            None => SecretString::from(rpassword::prompt_password(format!(
-                "Authentication token for {}: ",
-                args.server_address
-            ))?),
-        };
-        config_builder
-            .decoder_max(args.decoder_max)
-            .name(gethostname().into_string().unwrap())
-            .server_addr(args.server_address)
-            .auth_token(auth_token)
-            .initial_display_mode(args.resolution.into())
-            .allow_insecure_connection(args.insecure)
-            .client_bound_tunnel_reqs(args.local)
-            .server_bound_tunnel_reqs(args.remote);
-        if let Some(program_cmdline) = args.program_cmdline {
-            config_builder.program_cmdline(program_cmdline);
-        }
-        for cert_path in args.additional_tls_certificates {
-            config_builder.additional_tls_certificate(X509::from_pem(&fs::read(cert_path)?)?);
-        }
-        config_builder.build()?
-    };
-    debug!(?config);
-
     unimplemented!("run client");
 }
 
@@ -382,7 +315,7 @@ pub extern "C" fn run_aperturec_client() -> libc::c_int {
     match run() {
         Ok(()) => 0,
         Err(error) => {
-            error!(%error);
+            tracing::error!(%error);
             1
         }
     }

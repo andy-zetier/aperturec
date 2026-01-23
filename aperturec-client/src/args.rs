@@ -123,27 +123,25 @@ fn parse_resolution(s: &str) -> Result<Size, String> {
     Ok(Size::new(width, height))
 }
 
-/// Mutually exclusive display mode arguments.
+/// Mutually exclusive display mode arguments (multi-monitor fullscreen supported).
 #[derive(Debug, clap::Args)]
 #[group(required = false, multiple = false)]
-pub struct ResolutionGroup {
+pub struct ResolutionGroupMulti {
     /// Display size specified as WIDTHxHEIGHT
     #[arg(short, long, default_value = format!("{:?}", crate::DEFAULT_RESOLUTION), value_parser = parse_resolution)]
     resolution: Size,
 
-    /// Set resolution to your displays' current sizes and startup in multi-monitor fullscreen
-    /// mode. Fullscreen mode can be toggled at any time with Ctrl+Alt+Enter
+    /// Set resolution to your displays' current sizes and start in multi-monitor fullscreen mode.
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     fullscreen: bool,
 
-    /// Set resolution to the current display's size and startup in single-monitor fullscreen mode.
-    /// Single-monitor fullscreen mode can be toggled at any time with Ctrl+Alt+Shift+Enter
+    /// Set resolution to the current display's size and start in single-monitor fullscreen mode.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     single_fullscreen: bool,
 }
 
-impl From<ResolutionGroup> for DisplayMode {
-    fn from(g: ResolutionGroup) -> Self {
+impl From<ResolutionGroupMulti> for DisplayMode {
+    fn from(g: ResolutionGroupMulti) -> Self {
         if g.fullscreen {
             DisplayMode::MultiFullscreen
         } else if g.single_fullscreen {
@@ -154,12 +152,41 @@ impl From<ResolutionGroup> for DisplayMode {
     }
 }
 
+/// Mutually exclusive display mode arguments (single-monitor fullscreen only).
+#[derive(Debug, clap::Args)]
+#[group(required = false, multiple = false)]
+pub struct ResolutionGroupSingle {
+    /// Display size specified as WIDTHxHEIGHT
+    #[arg(short, long, default_value = format!("{:?}", crate::DEFAULT_RESOLUTION), value_parser = parse_resolution)]
+    resolution: Size,
+
+    /// Set resolution to the current display's size and start in single-monitor fullscreen mode.
+    #[arg(short, long, visible_alias = "single-fullscreen", action = clap::ArgAction::SetTrue)]
+    fullscreen: bool,
+}
+
+impl From<ResolutionGroupSingle> for DisplayMode {
+    fn from(g: ResolutionGroupSingle) -> Self {
+        if g.fullscreen {
+            DisplayMode::SingleFullscreen
+        } else {
+            DisplayMode::Windowed { size: g.resolution }
+        }
+    }
+}
+
+/// Resolution argument groups supported by the client.
+pub trait ResolutionGroup: clap::Args + Into<DisplayMode> {}
+
+impl ResolutionGroup for ResolutionGroupMulti {}
+impl ResolutionGroup for ResolutionGroupSingle {}
+
 /// Command-line arguments for the ApertureC client.
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
-pub struct Args {
+pub struct Args<R: ResolutionGroup = ResolutionGroupMulti> {
     #[clap(flatten)]
-    pub resolution: ResolutionGroup,
+    pub resolution: R,
 
     /// Maximum number of decoders to use
     #[arg(short, long, default_value_t = thread::available_parallelism().unwrap())]
@@ -211,9 +238,6 @@ pub struct Args {
 
     #[clap(flatten)]
     pub auth_token: utils::args::auth_token::AuthTokenAllArgGroup,
-
-    #[clap(flatten)]
-    pub metrics: utils::args::metrics::MetricsArgGroup,
 }
 
 /// Errors that can occur when parsing command-line arguments.
@@ -244,12 +268,12 @@ pub enum UriError {
     NoHost,
 }
 
-impl Args {
+impl<R: ResolutionGroup> Args<R> {
     /// Parses arguments from an ApertureC URI.
     ///
     /// URIs follow the format `aperturec://host[:port][?param=value&...]`.
     /// Query parameters are mapped to command-line flags.
-    pub fn from_uri(uri: &str) -> Result<Args, ArgsError> {
+    pub fn from_uri(uri: &str) -> Result<Args<R>, ArgsError> {
         let parsed_uri = Url::parse(uri).map_err(UriError::UrlParse)?;
         if parsed_uri.scheme() != URI_SCHEME {
             return Err(UriError::BadScheme(parsed_uri.scheme().to_string()).into());
@@ -278,7 +302,7 @@ impl Args {
                 vec![k, v.to_string()]
             }
         });
-        Ok(Args::try_parse_from(
+        Ok(Args::<R>::try_parse_from(
             iter::once(env!("CARGO_PKG_NAME").to_string())
                 .chain(iter::once(host))
                 .chain(args),
