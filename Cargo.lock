@@ -2378,9 +2378,9 @@ dependencies = [
 
 [[package]]
 name = "jxl-sys"
-version = "0.1.5+libjxl-0.11.1"
+version = "0.1.6+libjxl-0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ff4d0496eeda34bca26102a3be39f984a2bd4d4796e9b2e09ea3b407e5a5707"
+checksum = "97e645f673727003844aa78f6c7e5dc8f13defbf0670e90f00c6110839f7d60b"
 dependencies = [
  "anyhow",
  "bindgen",
