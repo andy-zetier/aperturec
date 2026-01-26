@@ -130,24 +130,24 @@ def get_git_commit_info(repo_dir):
 # Build Functions
 ###############################################################################
 
-def build_server(test_dir):
+def build_server(test_dir, profile):
     """
-    Build aperturec-server (release mode), twice.
+    Build aperturec-server using the requested cargo profile, twice.
     """
     for i in range(2):
         print("Building aperturec-server (attempt {})...".format(i+1))
-        cmd = ["cargo", "build", "--release", "-p", "aperturec-server"]
+        cmd = ["cargo", "build", "--profile", profile, "-p", "aperturec-server"]
         ret = subprocess.run(cmd, cwd=test_dir)
         if ret.returncode != 0:
             raise RuntimeError("Build of aperturec-server failed on attempt {}.".format(i+1))
 
-def build_client(test_dir):
+def build_client(test_dir, profile):
     """
-    Build aperturec-client-gtk3 (release mode), twice.
+    Build aperturec-client-gtk3 using the requested cargo profile, twice.
     """
     for i in range(2):
         print("Building aperturec-client-gtk3 (attempt {})...".format(i+1))
-        cmd = ["cargo", "build", "--release", "-p", "aperturec-client-gtk3"]
+        cmd = ["cargo", "build", "--profile", profile, "-p", "aperturec-client-gtk3"]
         ret = subprocess.run(cmd, cwd=test_dir)
         if ret.returncode != 0:
             raise RuntimeError("Build of aperturec-client-gtk3 failed on attempt {}.".format(i+1))
@@ -162,6 +162,7 @@ def start_server(
     server_logs_dir,
     auth_token_path,
     server_tmp_dir,
+    profile,
 ):
     """
     Start the aperturec-server process, redirecting stdout+stderr to PIPE
@@ -178,7 +179,7 @@ def start_server(
     server_metrics_path = os.path.join(test_dir, "server_metrics.csv")
 
     server_cmd = [
-        "cargo", "run", "-p", "aperturec-server", "--release", "--",
+        "cargo", "run", "-p", "aperturec-server", "--profile", profile, "--",
         "-vvv",
         "--bind-address=127.0.0.1:{}".format(port),
         "--tls-save-directory={}".format(tls_dir),
@@ -291,7 +292,8 @@ def start_client(
     auth_token_path,
     server_cert_path,
     client_tmp_dir,
-    display_num
+    display_num,
+    profile,
 ):
     """
     Start the aperturec-client under the chosen :display_num.
@@ -308,7 +310,7 @@ def start_client(
     client_metrics_path = os.path.join(test_dir, "client_metrics.csv")
 
     client_cmd = [
-        "cargo", "run", "-p", "aperturec-client-gtk3", "--release", "--",
+        "cargo", "run", "-p", "aperturec-client-gtk3", "--profile", profile, "--",
         "-vvv",
         "--fullscreen",
         "--auth-token-file={}".format(auth_token_path),
@@ -335,7 +337,7 @@ def start_client(
 # Main Test Function
 ###############################################################################
 
-def run_test_for_branch(branch, test_dir, duration, skip_clone=False, clone_source=None):
+def run_test_for_branch(branch, test_dir, duration, profile, skip_clone=False, clone_source=None):
     branch_dir = os.path.join(test_dir, branch)
     os.makedirs(branch_dir, exist_ok=True)
 
@@ -371,8 +373,8 @@ def run_test_for_branch(branch, test_dir, duration, skip_clone=False, clone_sour
 
     # Build
     try:
-        build_server(code_dir)
-        build_client(code_dir)
+        build_server(code_dir, profile)
+        build_client(code_dir, profile)
     except RuntimeError as e:
         print("ERROR during build:", e)
         return
@@ -384,7 +386,7 @@ def run_test_for_branch(branch, test_dir, duration, skip_clone=False, clone_sour
 
     server_logs_dir = os.path.join(branch_dir, "server_logs")
     server_proc, tls_dir = start_server(
-        branch_dir, port, server_logs_dir, auth_token_path, server_tmp_dir
+        branch_dir, port, server_logs_dir, auth_token_path, server_tmp_dir, profile
     )
 
     # Wait until we see "Listening for client"
@@ -418,7 +420,7 @@ def run_test_for_branch(branch, test_dir, duration, skip_clone=False, clone_sour
     client_log_path = os.path.join(branch_dir, "client.log")
     client_proc, client_log_file = start_client(
         branch_dir, port, client_log_path, auth_token_path,
-        server_cert_path, client_tmp_dir, display_num
+        server_cert_path, client_tmp_dir, display_num, profile
     )
 
     # 5) Let everything run for <duration> seconds
@@ -670,6 +672,11 @@ def main():
         action="store_true",
         help="Clone from the local repository containing this script instead of the remote."
     )
+    parser.add_argument(
+        "--profile",
+        default="release",
+        help="Cargo profile to use for both build and run (e.g. release, dev, dev-optimized)."
+    )
     args = parser.parse_args()
 
     # Determine which branches to test.
@@ -708,6 +715,7 @@ def main():
             branch,
             test_root,
             args.duration,
+            args.profile,
             skip_clone=args.use_local_repo,
             clone_source=clone_source,
         )
