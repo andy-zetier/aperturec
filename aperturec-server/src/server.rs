@@ -761,7 +761,13 @@ where
             .derive_extent()
             .expect("Invalid displays");
         let encoder_counts: Vec<_> = self.state.encoder_areas.iter().map(|a| a.len()).collect();
-        EncoderCount::update(encoder_counts.iter().sum::<usize>() as f64);
+        let encoder_count = encoder_counts.iter().sum::<usize>();
+        EncoderCount::update(encoder_count as f64);
+        info!(
+            encoder_count,
+            max_encoder_count = self.state.max_encoder_count,
+            "Initial encoder count"
+        );
 
         let (cc_handler_task, cc_handler_channels) = cc_handler::Task::new(self.state.session.cc);
         let (ec_handler_task, mut ec_handler_channels) =

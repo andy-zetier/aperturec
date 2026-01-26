@@ -13,6 +13,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 #[derive(Debug)]
 pub struct SubframeBuffer<M: PixelMap> {
@@ -186,6 +187,13 @@ where
                         ensure!(
                             disabled_display_count == 0,
                             "Disabled Displays have {disabled_display_count} encoders assigned, expected 0",
+                        );
+
+                        info!(
+                            encoder_count,
+                            max_encoder_count = self.state.max_encoder_count,
+                            config_id = ndc.config_id,
+                            "Updated encoder count"
                         );
 
                         //
