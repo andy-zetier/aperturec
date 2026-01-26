@@ -17,33 +17,30 @@
 //! // Create a stats metric
 //! aperturec_metrics::create_stats_metric!(MyStatsMetric);
 //!
-//! fn main() {
-//!     MetricsInitializer::default()
-//!         .with_exporter(Exporter::Log(LogExporter::new(Level::DEBUG).unwrap()))
-//!         .with_exporter(Exporter::Pushgateway(PushgatewayExporter::new(
-//!             String::from("http://127.0.0.1:9091"),
-//!             String::from("my job"),
-//!             1234
-//!         ).unwrap()))
-//!         .init()
-//!         .expect("Failed to init metrics");
+//! MetricsInitializer::default()
+//!     .with_exporter(Exporter::Log(LogExporter::new(Level::DEBUG).unwrap()))
+//!     .with_exporter(Exporter::Pushgateway(PushgatewayExporter::new(
+//!         String::from("http://127.0.0.1:9091"),
+//!         String::from("my job"),
+//!         1234
+//!     ).unwrap()))
+//!     .init()
+//!     .expect("Failed to init metrics");
 //!
-//!     // Register the macro-created metrics
-//!     MyMetric::register();
-//!     MyHistogram::register();
-//!     MyStatsMetric::register_sticky();
+//! // Register the macro-created metrics
+//! MyMetric::register();
+//! MyHistogram::register();
+//! MyStatsMetric::register_sticky();
 //!
-//!     // Increment the "MyMetric" metric
-//!     MyMetric::inc();
+//! // Increment the "MyMetric" metric
+//! MyMetric::inc();
 //!
-//!     // Add an observation to "MyHistogram"
-//!     MyHistogram::observe(123.4);
+//! // Add an observation to "MyHistogram"
+//! MyHistogram::observe(123.4);
 //!
-//!     // Add a computation result to "MyStatsMetric"
-//!     let data = 1.0;
-//!     MyStatsMetric::update_with(move || (data + 7.0) / 4.0);
-//!
-//! }
+//! // Add a computation result to "MyStatsMetric"
+//! let data = 1.0;
+//! MyStatsMetric::update_with(move || (data + 7.0) / 4.0);
 //!```
 //!
 //! # Time Macro Example

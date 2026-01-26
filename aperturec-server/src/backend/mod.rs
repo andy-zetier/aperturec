@@ -110,11 +110,9 @@ impl TryFrom<em_c2s::Message> for Event {
                     .button_states
                     .into_iter()
                     .map(|bs| {
-                        if bs.button.is_some() {
-                            Ok((bs.button.unwrap(), bs.is_depressed))
-                        } else {
-                            Err(EventError)
-                        }
+                        bs.button
+                            .map(|button| (button, bs.is_depressed))
+                            .ok_or(EventError)
                     })
                     .collect::<Result<_, EventError>>()?,
             },

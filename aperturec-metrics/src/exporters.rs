@@ -153,26 +153,35 @@ impl CsvExporter {
         if self.file.is_none() {
             self.update_header(results);
             self.reopen_file()?;
-            writeln!(self.file.as_ref().unwrap(), "{}", self.header)
-                .or_else(|_| self.reopen_file())?;
+            self.file
+                .as_mut()
+                .ok_or_else(|| anyhow!("CSV exporter file is not open"))
+                .and_then(|file| Ok(writeln!(file, "{}", self.header)?))?;
         }
 
         let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let line = results
             .iter()
             .map(|r| {
-                if r.value.is_some() {
-                    format!("{:.6?}", r.value.unwrap())
+                if let Some(value) = r.value {
+                    format!("{:.6?}", value)
                 } else {
                     "".to_string()
                 }
             })
             .collect::<Vec<_>>()
             .join(",");
-        writeln!(self.file.as_ref().unwrap(), "{timestamp},{line}").or_else(|e| {
+        let write_line_result = {
+            let file = self
+                .file
+                .as_mut()
+                .ok_or_else(|| anyhow!("CSV exporter file is not open"))?;
+            writeln!(file, "{timestamp},{line}")
+        };
+        if let Err(e) = write_line_result {
             warn!("Failed to write metrics to '{}': {}", self.path, e);
-            self.reopen_file()
-        })?;
+            self.reopen_file()?;
+        }
         Ok(())
     }
 

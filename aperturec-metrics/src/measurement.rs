@@ -16,14 +16,8 @@ pub struct Measurement {
 
 impl fmt::Display for Measurement {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if self.value.is_some() {
-            write!(
-                f,
-                "{}: {:.1?}{}",
-                self.title,
-                self.value.unwrap(),
-                self.units
-            )
+        if let Some(value) = self.value {
+            write!(f, "{}: {:.1?}{}", self.title, value, self.units)
         } else {
             write!(f, "{}: ---{}", self.title, self.units)
         }
