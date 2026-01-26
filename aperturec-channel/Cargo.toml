@@ -12,7 +12,6 @@ aperturec-utils = { path = "../aperturec-utils" }
 
 bytes = "1.11"
 futures = "0.3"
-aws-lc-rs = "=1.15.2" # Pinned globally for Windows builds; see https://github.com/Zetier/aperturec/pull/798
 openssl = { version = "0.10" }
 paste = "1.0"
 pem = "3.0"
