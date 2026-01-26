@@ -238,6 +238,9 @@ pub struct Args<R: ResolutionGroup = ResolutionGroupMulti> {
 
     #[clap(flatten)]
     pub auth_token: utils::args::auth_token::AuthTokenAllArgGroup,
+
+    #[clap(flatten)]
+    pub metrics: utils::args::metrics::MetricsArgGroup,
 }
 
 /// Errors that can occur when parsing command-line arguments.
