@@ -9,7 +9,7 @@ publish = false
 build = "../common_build.rs"
 
 [[bin]]
-name = "aperturec-client"
+name = "aperturec-client-gtk4"
 path = "src/main.rs"
 
 [dependencies]
@@ -21,7 +21,7 @@ copyright = "2025, Zetier Inc."
 maintainer = "ApertureC Team <aperturec@zetier.com>"
 section = "x11"
 assets = [
-  ["target/release/aperturec-client", "/usr/bin/aperturec-client", "755"],
+  ["target/release/aperturec-client-gtk4", "/usr/bin/aperturec-client", "755"],
   ["packaging/aperturec-client.desktop", "/usr/share/applications/aperturec-client.desktop", "644"],
 ]
 
@@ -29,6 +29,6 @@ assets = [
 name = "aperturec-client"
 license = "Commercial License for ApertureC"
 assets = [
-  { source = "target/release/aperturec-client", dest = "/usr/bin/aperturec-client", mode = "755" },
+  { source = "target/release/aperturec-client-gtk4", dest = "/usr/bin/aperturec-client", mode = "755" },
   { source = "packaging/aperturec-client.desktop", dest = "/usr/share/applications/aperturec-client.desktop", mode = "644" }
 ]

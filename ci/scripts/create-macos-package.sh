@@ -12,7 +12,7 @@ version=$(
 )
 
 mkdir -p "${PKG_DIR}"
-cp "${ROOT_DIR}"/target/release/aperturec-client "${PKG_DIR}"
+cp "${ROOT_DIR}"/target/release/aperturec-client-gtk4 "${PKG_DIR}/aperturec-client"
 
 for dylib in \
 	$(otool -L "${PKG_DIR}"/aperturec-client \
