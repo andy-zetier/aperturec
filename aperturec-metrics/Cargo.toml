@@ -19,10 +19,10 @@ whoami = "2.0"
 procfs = "0.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-sysinfo = "0.37"
+sysinfo = "0.38"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-sysinfo = "0.37"
+sysinfo = "0.38"
 
 [dev-dependencies]
 paste = "1.0"
