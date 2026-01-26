@@ -1,6 +1,6 @@
 use crate::{
     DisplayMode,
-    args::{Args, ArgsError, PortForwardArg},
+    args::{Args, ArgsError, PortForwardArg, ResolutionGroup},
 };
 
 use aperturec_utils::{args, warn_early};
@@ -47,7 +47,10 @@ impl Configuration {
     ///
     /// Checks for a single URI argument or the `AC_URI` environment variable,
     /// otherwise parses standard command-line arguments.
-    pub fn auto() -> Result<Self, ConfigurationError> {
+    pub fn auto<R>() -> Result<Self, ConfigurationError>
+    where
+        R: ResolutionGroup,
+    {
         let cli_args: Vec<String> = env::args().collect();
 
         let args = if let Ok(uri) = env::var("AC_URI") {
@@ -56,15 +59,15 @@ impl Configuration {
                     "CLI arguments are ignored when using AC_URI. Unset AC_URI if you would like to use CLI arguments."
                 );
             }
-            Args::from_uri(&uri)?
+            Args::<R>::from_uri(&uri)?
         } else if cli_args.len() == 2 {
-            if let Ok(parsed) = Args::from_uri(&cli_args[1]) {
+            if let Ok(parsed) = Args::<R>::from_uri(&cli_args[1]) {
                 parsed
             } else {
-                Args::parse()
+                Args::<R>::parse()
             }
         } else {
-            Args::parse()
+            Args::<R>::parse()
         };
 
         Configuration::from_args(args)
@@ -73,7 +76,10 @@ impl Configuration {
     /// Creates configuration from parsed arguments.
     ///
     /// Prompts for an authentication token if not provided in arguments.
-    pub fn from_args(args: Args) -> Result<Self, ConfigurationError> {
+    pub fn from_args<R>(args: Args<R>) -> Result<Self, ConfigurationError>
+    where
+        R: ResolutionGroup,
+    {
         let mut config_builder = ConfigurationBuilder::default();
         let auth_token = match args.auth_token.into_token()? {
             Some(token) => token,
@@ -114,15 +120,21 @@ impl Configuration {
     ///
     /// This function reads arguments from the process's command line (via `std::env::args`)
     /// and constructs a configuration object.
-    pub fn from_argv() -> Result<Self, ConfigurationError> {
-        Configuration::from_args(Args::try_parse().map_err(ArgsError::ClapError)?)
+    pub fn from_argv<R>() -> Result<Self, ConfigurationError>
+    where
+        R: ResolutionGroup,
+    {
+        Configuration::from_args(Args::<R>::try_parse().map_err(ArgsError::ClapError)?)
     }
 
     /// Creates configuration from an ApertureC URI.
     ///
     /// URIs follow the format: `aperturec://[auth_token@]server_address[?query_params]`
-    pub fn from_uri(uri: &str) -> Result<Self, ConfigurationError> {
-        Configuration::from_args(Args::from_uri(uri)?)
+    pub fn from_uri<R>(uri: &str) -> Result<Self, ConfigurationError>
+    where
+        R: ResolutionGroup,
+    {
+        Configuration::from_args(Args::<R>::from_uri(uri)?)
     }
 }
 

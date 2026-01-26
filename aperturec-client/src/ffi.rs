@@ -117,7 +117,8 @@
 //! errors immediately after failures in multi-threaded applications.
 
 use crate::{
-    Client, Connection, ConnectionError, Event, EventError, InputError, MetricsError,
+    Client, Connection, ConnectionError, Event, EventError, InputError,
+    args::ResolutionGroupMulti,
     config::{Configuration, ConfigurationError},
     state::LockState,
 };
@@ -352,7 +353,6 @@ enum AcErrorKind {
     Connection(ConnectionError),
     Event(EventError),
     Input(InputError),
-    Metrics(MetricsError),
 }
 
 impl error::Error for AcErrorKind {}
@@ -388,7 +388,7 @@ pub unsafe extern "C" fn ac_configuration_from_argv(
 ) -> AcStatus {
     let config_out = as_mut_checked!(config_out);
     *config_out = Box::into_raw(Box::new(AcConfiguration(attempt!(
-        Configuration::from_argv()
+        Configuration::from_argv::<ResolutionGroupMulti>()
     ))));
     AcStatus::Ok
 }
@@ -423,7 +423,7 @@ pub unsafe extern "C" fn ac_configuration_from_uri(
         uri.to_str()
             .map_err(|_| AcErrorKind::Argument("uri is not valid UTF-8"))
     );
-    let config = attempt!(Configuration::from_uri(uri));
+    let config = attempt!(Configuration::from_uri::<ResolutionGroupMulti>(uri));
     *config_out = Box::into_raw(Box::new(AcConfiguration(config)));
     AcStatus::Ok
 }
@@ -558,7 +558,10 @@ pub unsafe extern "C" fn ac_client_from_args(
     let lock_state = as_ref_checked!(lock_state, ptr::null_mut());
     let displays = as_slice_checked!(initial_displays_requested, num_displays, ptr::null_mut());
 
-    let config = attempt!(Configuration::from_argv(), ptr::null_mut());
+    let config = attempt!(
+        Configuration::from_argv::<ResolutionGroupMulti>(),
+        ptr::null_mut()
+    );
     let client = Client::new(config, lock_state.0, displays.iter().map(|d| &d.0));
     Box::into_raw(Box::new(AcClient(client)))
 }
@@ -605,7 +608,10 @@ pub unsafe extern "C" fn ac_client_from_uri(
         ptr::null_mut()
     );
 
-    let config = attempt!(Configuration::from_uri(uri_str), ptr::null_mut());
+    let config = attempt!(
+        Configuration::from_uri::<ResolutionGroupMulti>(uri_str),
+        ptr::null_mut()
+    );
     let client = Client::new(config, lock_state.0, displays.iter().map(|d| &d.0));
     Box::into_raw(Box::new(AcClient(client)))
 }
