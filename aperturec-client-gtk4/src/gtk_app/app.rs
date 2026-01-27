@@ -9,6 +9,8 @@ use aperturec_client::{Client, Connection, DisplayMode, config};
 use aperturec_graphics::display::Display;
 use aperturec_graphics::prelude::*;
 use async_channel::{Receiver, Sender, unbounded};
+use libadwaita as adw;
+use gtk4::glib::prelude::Cast;
 #[cfg(not(target_os = "macos"))]
 use gtk4::gdk;
 #[cfg(target_os = "macos")]
@@ -72,10 +74,11 @@ impl App {
         debug!("connecting to server");
         let conn = Arc::new(client.connect()?);
 
-        let app = gtk::Application::builder()
+        let app: gtk::Application = adw::Application::builder()
             .application_id("com.zetier.aperturec.client")
             .flags(gio::ApplicationFlags::NON_UNIQUE)
-            .build();
+            .build()
+            .upcast();
 
         let (ui_event_tx, ui_event_rx) = unbounded();
         trace!("ui event channel created");

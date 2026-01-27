@@ -23,6 +23,6 @@ runs:
         go-version: '1.22'
         cache: false
     - shell: bash
-      run: brew install gtk+3 protobuf
+      run: brew install gtk4 libadwaita protobuf
     - shell: bash
       run: echo "PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig:/usr/local/opt/openssl@3/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV

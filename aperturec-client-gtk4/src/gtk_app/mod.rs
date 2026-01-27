@@ -13,7 +13,8 @@ use aperturec_graphics::prelude::*;
 use clap::Parser;
 #[cfg(target_os = "macos")]
 use gtk4::glib;
-use gtk4::{self as gtk, gdk};
+use libadwaita as adw;
+use gtk4::gdk;
 use std::sync::LazyLock;
 use tracing::debug;
 
@@ -43,7 +44,7 @@ fn ensure_gtk_init() {
             glib::set_prgname(Some("ApertureC Client"));
         }
         gdk::set_allowed_backends("x11,*");
-        gtk::init().expect("Failed to initialize GTK");
+        adw::init().expect("Failed to initialize libadwaita");
     });
     *GTK_INIT;
 }

@@ -240,21 +240,6 @@ pub fn create_overlay_layout(drawing_area: &gtk::DrawingArea) -> gtk::Widget {
         }
     ));
 
-    // Hover cursor effect
-    let motion_show = gtk::EventControllerMotion::new();
-    let show_clone = show_button.clone();
-    motion_show.connect_enter(move |_, _, _| {
-        show_clone.set_cursor_from_name(Some("pointer"));
-    });
-    show_button.add_controller(motion_show);
-
-    let motion_hide = gtk::EventControllerMotion::new();
-    let hide_clone = hide_button.clone();
-    motion_hide.connect_enter(move |_, _, _| {
-        hide_clone.set_cursor_from_name(Some("pointer"));
-    });
-    hide_button.add_controller(motion_hide);
-
     overlay.upcast()
 }
 

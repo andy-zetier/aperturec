@@ -228,7 +228,6 @@ impl Ui {
         };
 
         ui.update_display_mode_actions();
-        ui.update_edge_release_mode();
         Ok(ui)
     }
 
@@ -334,7 +333,6 @@ impl Ui {
         }
         self.window_mode = window_mode;
         self.set_shortcut_passthrough(self.shortcut_passthrough_requested);
-        self.update_edge_release_mode();
         self.request_display_config()?;
         self.update_display_mode_actions();
         Ok(())
@@ -381,7 +379,6 @@ impl Ui {
         }
         self.window_mode = window_mode;
         self.set_shortcut_passthrough(self.shortcut_passthrough_requested);
-        self.update_edge_release_mode();
         self.update_display_mode_actions();
         Ok(())
     }
@@ -458,24 +455,19 @@ impl Ui {
         if let Some(action) = app.lookup_action(Action::ShortcutPassthrough.as_ref())
             && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>()
         {
-            let enabled = self.shortcut_passthrough_allowed();
-            simple_action.set_enabled(enabled);
-            simple_action.set_state(&glib::Variant::from(self.shortcut_passthrough_active));
-        }
+        let enabled = true;
+        simple_action.set_enabled(enabled);
+        simple_action.set_state(&glib::Variant::from(self.shortcut_passthrough_active));
     }
+}
 
     pub fn set_shortcut_passthrough(&mut self, enabled: bool) {
-        let allowed = self.shortcut_passthrough_allowed();
-        if enabled && !allowed {
-            debug!("shortcut passthrough requested outside fullscreen; ignoring");
-        }
-        let next = if allowed { enabled } else { false };
-        if self.shortcut_passthrough_requested == next {
+        if self.shortcut_passthrough_requested == enabled {
             return;
         }
-        debug!(enabled = next, "shortcut passthrough toggled");
-        self.shortcut_passthrough_requested = next;
-        self.shortcut_passthrough_active = next;
+        debug!(enabled, "shortcut passthrough toggled");
+        self.shortcut_passthrough_requested = enabled;
+        self.shortcut_passthrough_active = enabled;
         self.apply_shortcut_passthrough();
         self.update_display_mode_actions();
     }
@@ -484,13 +476,6 @@ impl Ui {
         for window in self.all_windows() {
             window.set_shortcut_passthrough(self.shortcut_passthrough_requested);
         }
-    }
-
-    fn shortcut_passthrough_allowed(&self) -> bool {
-        matches!(
-            self.window_mode,
-            WindowMode::Single { fullscreen: true } | WindowMode::Multi
-        )
     }
 
     pub fn update_shortcut_passthrough_status(&mut self, active: bool) {
@@ -554,39 +539,9 @@ impl Ui {
             width = cursor.pixels.shape()[0],
             height = cursor.pixels.shape()[1],
             hot = ?cursor.hot,
-            "change cursor"
+            "change cursor (ignored)"
         );
-        let shape = cursor.pixels.shape();
-        let (width, height) = (shape[0], shape[1]);
-        let cursor_vec = if cursor.pixels.is_standard_layout() {
-            cursor.pixels.into_owned()
-        } else {
-            cursor.pixels.to_owned()
-        }
-        .into_raw_vec_and_offset()
-        .0;
-
-        // Convert Pixel32 buffer to RGBA byte stream; cast_vec requires identical
-        // alignment between source and target, which Pixel32 (align 4) and u8
-        // do not share. Use cast_slice + to_vec to avoid the runtime
-        // AlignmentMismatch panic seen in bytemuck::cast_vec.
-        let bytes_vec: Vec<u8> = bytemuck::cast_slice(&cursor_vec).to_vec();
-
-        let texture = gdk::MemoryTexture::new(
-            width as _,
-            height as _,
-            gdk::MemoryFormat::R8g8b8a8,
-            &glib::Bytes::from_owned(bytes_vec),
-            width * std::mem::size_of::<Pixel32>(),
-        );
-        let cursor = gdk::Cursor::builder()
-            .texture(&texture)
-            .hotspot_x(cursor.hot.x as _)
-            .hotspot_y(cursor.hot.y as _)
-            .build();
-        for window in self.all_windows() {
-            window.set_remote_cursor(cursor.clone());
-        }
+        let _ = cursor;
     }
 
     pub fn set_display_configuration(
@@ -742,7 +697,6 @@ impl Ui {
         }
         self.window_mode = WindowMode::Single { fullscreen };
         self.set_shortcut_passthrough(self.shortcut_passthrough_requested);
-        self.update_edge_release_mode();
         self.update_display_mode_actions();
     }
 
@@ -751,13 +705,6 @@ impl Ui {
             .iter()
             .map(|(_, window)| window)
             .chain(iter::once(&self.single_window))
-    }
-
-    fn update_edge_release_mode(&self) {
-        let enabled = matches!(self.window_mode, WindowMode::Single { fullscreen: false });
-        for window in self.all_windows() {
-            window.set_edge_release_enabled(enabled);
-        }
     }
 
     fn window_at(&self, point: Point) -> Option<(Rect, &Window)> {

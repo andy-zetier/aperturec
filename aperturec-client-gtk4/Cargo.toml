@@ -25,6 +25,7 @@ clap = "4.5"
 futures = { version = "0.3", default-features = false }
 gtk4 = "0.10"
 keycode = "1.0"
+libadwaita = { package = "libadwaita", version = "0.8.1" }
 ndarray = "0.17"
 strum = { version = "0.27", features = ["derive"] }
 tracing = "0.1"
@@ -39,6 +40,7 @@ gdk4-macos = "0.10"
 [target.'cfg(target_os = "windows")'.dependencies]
 gdk4-win32 = "0.10"
 windows = "0.62.2"
+
 
 [package.metadata.deb]
 name = "aperturec-client"

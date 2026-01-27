@@ -26,7 +26,7 @@ impl Action {
         match self {
             Action::Refresh => "Refresh",
             Action::Disconnect => "Disconnect",
-            Action::ShortcutPassthrough => "Grab keyboard shortcuts",
+            Action::ShortcutPassthrough => "Toggle Keyboard Grab",
             Action::Window => "Windowed Mode",
             Action::SingleMonitorFullscreen => "Single Monitor Fullscreen Mode",
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
