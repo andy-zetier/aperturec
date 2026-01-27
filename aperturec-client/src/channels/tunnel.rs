@@ -58,10 +58,6 @@ mod io_waker {
             Self { bits }
         }
 
-        pub fn data(&self) -> bool {
-            self.bits & DATA != 0
-        }
-
         pub fn cancel(&self) -> bool {
             self.bits & CANCEL != 0
         }
@@ -118,7 +114,7 @@ mod io_waker {
             let handle = make_handle();
             handle.notify_data();
             let flags = handle.take();
-            assert!(flags.data());
+            assert!(flags.bits & DATA != 0);
             assert!(!flags.cancel());
         }
 
@@ -127,7 +123,7 @@ mod io_waker {
             let handle = make_handle();
             handle.notify_cancel();
             let flags = handle.take();
-            assert!(!flags.data());
+            assert!(flags.bits & DATA == 0);
             assert!(flags.cancel());
         }
 
@@ -137,7 +133,7 @@ mod io_waker {
             handle.notify_data();
             handle.notify_cancel();
             let flags = handle.take();
-            assert!(flags.data());
+            assert!(flags.bits & DATA != 0);
             assert!(flags.cancel());
         }
     }

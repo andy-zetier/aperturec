@@ -140,7 +140,6 @@ dependencies = [
 name = "aperturec-client"
 version = "1.2.0"
 dependencies = [
- "anyhow",
  "aperturec-channel",
  "aperturec-graphics",
  "aperturec-metrics",
@@ -170,13 +169,12 @@ dependencies = [
  "regex",
  "rpassword",
  "secrecy",
- "socket2",
+ "serial_test",
  "strum",
  "sysinfo",
  "test-log",
  "thiserror 2.0.18",
  "tracing",
- "tracing-subscriber",
  "url",
  "windows",
 ]
@@ -2631,7 +2629,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc"
 dependencies = [
  "libc",
- "log",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
 ]

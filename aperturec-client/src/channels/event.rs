@@ -497,7 +497,7 @@ mod tests {
         let info = &display_event.displays[0];
         assert!(info.is_enabled);
         let rectangle = info.area.as_ref().expect("rectangle present");
-        let exported: Rectangle = display.area.clone().try_into().expect("rect to proto");
+        let exported: Rectangle = display.area.try_into().expect("rect to proto");
         assert_eq!(rectangle, &exported);
     }
 
