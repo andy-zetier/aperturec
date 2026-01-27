@@ -37,6 +37,65 @@ import math
 # Utility Functions
 ###############################################################################
 
+def cpu_list_from_count(count, allowed_cpus):
+    if count is None:
+        return None
+    if count < 1:
+        raise ValueError(f"CPU count must be >= 1, got {count}")
+    if count > len(allowed_cpus):
+        raise ValueError(
+            f"CPU count {count} exceeds available affinity CPUs {len(allowed_cpus)}"
+        )
+    selected = allowed_cpus[:count]
+    return ",".join(str(cpu) for cpu in selected)
+
+def positive_int(value):
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Expected integer, got {value!r}") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"Expected positive integer, got {parsed}")
+    return parsed
+
+def apply_taskset(cmd, cpu_list, label):
+    if cpu_list is None:
+        return cmd
+    if shutil.which("taskset") is None:
+        raise RuntimeError("taskset is required for --client-cpus/--server-cpus but was not found")
+    print(f"Limiting {label} to CPUs: {cpu_list}")
+    return ["taskset", "-c", cpu_list] + cmd
+
+def plan_cpu_lists(client_cpus, server_cpus):
+    """
+    Plan non-overlapping CPU lists for client and server when possible.
+    Returns (client_cpu_list, server_cpu_list) as taskset-compatible strings.
+    """
+    if client_cpus is None and server_cpus is None:
+        return None, None
+
+    allowed = sorted(os.sched_getaffinity(0))
+    if not allowed:
+        raise ValueError("No CPUs available in current affinity set")
+
+    if client_cpus is not None and server_cpus is not None:
+        total = client_cpus + server_cpus
+        if total <= len(allowed):
+            client_list = cpu_list_from_count(client_cpus, allowed)
+            server_list = cpu_list_from_count(server_cpus, allowed[client_cpus:total])
+        else:
+            print(
+                "Warning: Not enough CPUs to fully separate client and server; "
+                "falling back to overlapping CPU sets."
+            )
+            client_list = cpu_list_from_count(client_cpus, allowed)
+            server_list = cpu_list_from_count(server_cpus, allowed)
+    else:
+        client_list = cpu_list_from_count(client_cpus, allowed)
+        server_list = cpu_list_from_count(server_cpus, allowed)
+
+    return client_list, server_list
+
 def pick_random_port():
     """Bind to an ephemeral port and return it."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -163,6 +222,7 @@ def start_server(
     auth_token_path,
     server_tmp_dir,
     profile,
+    server_cpu_list,
 ):
     """
     Start the aperturec-server process, redirecting stdout+stderr to PIPE
@@ -189,6 +249,7 @@ def start_server(
         "--log-file-directory={}".format(server_logs_dir),
         "glxgears -fullscreen"
     ]
+    server_cmd = apply_taskset(server_cmd, server_cpu_list, "server")
     print("\nStarting aperturec-server:")
     print(" ".join(server_cmd))
 
@@ -294,6 +355,7 @@ def start_client(
     client_tmp_dir,
     display_num,
     profile,
+    client_cpu_list,
 ):
     """
     Start the aperturec-client under the chosen :display_num.
@@ -318,6 +380,7 @@ def start_client(
         "--metrics-csv={}".format(client_metrics_path),
         "127.0.0.1:{}".format(port)
     ]
+    client_cmd = apply_taskset(client_cmd, client_cpu_list, "client")
 
     print("Starting aperturec-client on DISPLAY=:{}, connecting to port {}:".format(
         display_num, port))
@@ -337,7 +400,16 @@ def start_client(
 # Main Test Function
 ###############################################################################
 
-def run_test_for_branch(branch, test_dir, duration, profile, skip_clone=False, clone_source=None):
+def run_test_for_branch(
+    branch,
+    test_dir,
+    duration,
+    profile,
+    skip_clone=False,
+    clone_source=None,
+    server_cpus=None,
+    client_cpus=None,
+):
     branch_dir = os.path.join(test_dir, branch)
     os.makedirs(branch_dir, exist_ok=True)
 
@@ -380,13 +452,20 @@ def run_test_for_branch(branch, test_dir, duration, profile, skip_clone=False, c
         return
 
     # 3) Start server with random port and random auth token
+    client_cpu_list, server_cpu_list = plan_cpu_lists(client_cpus, server_cpus)
     port = pick_random_port()
     auth_token_path = generate_auth_token_file(branch_dir)
     server_tmp_dir = tempfile.mkdtemp(prefix="aperturec_server_tmp_")
 
     server_logs_dir = os.path.join(branch_dir, "server_logs")
     server_proc, tls_dir = start_server(
-        branch_dir, port, server_logs_dir, auth_token_path, server_tmp_dir, profile
+        branch_dir,
+        port,
+        server_logs_dir,
+        auth_token_path,
+        server_tmp_dir,
+        profile,
+        server_cpu_list,
     )
 
     # Wait until we see "Listening for client"
@@ -419,8 +498,15 @@ def run_test_for_branch(branch, test_dir, duration, profile, skip_clone=False, c
     client_tmp_dir = tempfile.mkdtemp(prefix="aperturec_client_tmp_")
     client_log_path = os.path.join(branch_dir, "client.log")
     client_proc, client_log_file = start_client(
-        branch_dir, port, client_log_path, auth_token_path,
-        server_cert_path, client_tmp_dir, display_num, profile
+        branch_dir,
+        port,
+        client_log_path,
+        auth_token_path,
+        server_cert_path,
+        client_tmp_dir,
+        display_num,
+        profile,
+        client_cpu_list,
     )
 
     # 5) Let everything run for <duration> seconds
@@ -677,6 +763,18 @@ def main():
         default="release",
         help="Cargo profile to use for both build and run (e.g. release, dev, dev-optimized)."
     )
+    parser.add_argument(
+        "--client-cpus",
+        type=positive_int,
+        default=None,
+        help="Limit client to N CPUs."
+    )
+    parser.add_argument(
+        "--server-cpus",
+        type=positive_int,
+        default=None,
+        help="Limit server to N CPUs."
+    )
     args = parser.parse_args()
 
     # Determine which branches to test.
@@ -718,6 +816,8 @@ def main():
             args.profile,
             skip_clone=args.use_local_repo,
             clone_source=clone_source,
+            server_cpus=args.server_cpus,
+            client_cpus=args.client_cpus,
         )
 
     generate_comparison_graphs(test_root)
