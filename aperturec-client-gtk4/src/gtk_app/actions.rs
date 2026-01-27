@@ -1,7 +1,8 @@
 use super::ui::{UiEvent, WindowMode};
 use aperturec_utils::channels::SenderExt;
 use async_channel::Sender;
-use gtk4::{self as gtk, gio, prelude::*};
+use gio::prelude::ActionExt;
+use gtk4::{self as gtk, gio, glib, prelude::*};
 use strum::{AsRefStr, EnumIter, IntoEnumIterator};
 use tracing::{debug, trace};
 
@@ -9,6 +10,7 @@ use tracing::{debug, trace};
 pub enum Action {
     Refresh,
     Disconnect,
+    ShortcutPassthrough,
     Window,
     SingleMonitorFullscreen,
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -24,6 +26,7 @@ impl Action {
         match self {
             Action::Refresh => "Refresh",
             Action::Disconnect => "Disconnect",
+            Action::ShortcutPassthrough => "Grab keyboard shortcuts",
             Action::Window => "Windowed Mode",
             Action::SingleMonitorFullscreen => "Single Monitor Fullscreen Mode",
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -36,6 +39,7 @@ impl Action {
         match self {
             Action::Refresh => &["<Ctrl><Primary>F5"],
             Action::Disconnect => &["<Ctrl><Primary>F12"],
+            Action::ShortcutPassthrough => &["<Ctrl><Primary>G"],
             Action::Window => &["<Ctrl><Primary>W"],
             Action::SingleMonitorFullscreen => &["<Ctrl><Primary>F"],
         }
@@ -43,6 +47,7 @@ impl Action {
         match self {
             Action::Refresh => &["<Ctrl><Alt>F5", "<Ctrl><Alt><Shift>F5"],
             Action::Disconnect => &["<Ctrl><Alt>F12", "<Ctrl><Alt><Shift>F12"],
+            Action::ShortcutPassthrough => &["<Ctrl><Alt>G", "<Ctrl><Alt><Shift>G"],
             Action::Window => &["<Ctrl><Alt>W", "<Ctrl><Alt><Shift>W"],
             Action::SingleMonitorFullscreen => &["<Ctrl><Alt>Return"],
             #[cfg(not(target_os = "windows"))]
@@ -70,26 +75,48 @@ impl ActionManager {
         debug!("registering actions");
         for action in Action::iter() {
             trace!(action = action.name(), "register action");
-            let simple_action = gio::SimpleAction::new(action.name(), None);
             let ui_event_tx = self.ui_event_tx.clone();
+            let simple_action = if matches!(action, Action::ShortcutPassthrough) {
+                let initial_state = glib::Variant::from(false);
+                let simple_action =
+                    gio::SimpleAction::new_stateful(action.name(), None, &initial_state);
+                simple_action.connect_activate(move |simple_action, parameter| {
+                    trace!(action = action.name(), "action activated");
+                    let current = simple_action
+                        .state()
+                        .and_then(|state| state.get::<bool>())
+                        .unwrap_or(false);
+                    let next = parameter
+                        .and_then(|value| value.get::<bool>())
+                        .unwrap_or(!current);
+                    simple_action.set_state(&glib::Variant::from(next));
+                    ui_event_tx.send_or_warn(UiEvent::SetShortcutPassthrough(next));
+                });
+                simple_action
+            } else {
+                let simple_action = gio::SimpleAction::new(action.name(), None);
+                simple_action.connect_activate(move |_, _| {
+                    trace!(action = action.name(), "action activated");
+                    let event = match action {
+                        Action::Disconnect => UiEvent::Shutdown,
+                        Action::Refresh => UiEvent::Refresh,
+                        Action::Window => {
+                            UiEvent::SetWindowMode(WindowMode::Single { fullscreen: false })
+                        }
+                        Action::SingleMonitorFullscreen => {
+                            UiEvent::SetWindowMode(WindowMode::Single { fullscreen: true })
+                        }
+                        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                        Action::MultiMonitorFullscreen => UiEvent::SetWindowMode(WindowMode::Multi),
+                        Action::ShortcutPassthrough => unreachable!(
+                            "shortcut passthrough handled by stateful action"
+                        ),
+                    };
 
-            simple_action.connect_activate(move |_, _| {
-                trace!(action = action.name(), "action activated");
-                let event = match action {
-                    Action::Disconnect => UiEvent::Shutdown,
-                    Action::Refresh => UiEvent::Refresh,
-                    Action::Window => {
-                        UiEvent::SetWindowMode(WindowMode::Single { fullscreen: false })
-                    }
-                    Action::SingleMonitorFullscreen => {
-                        UiEvent::SetWindowMode(WindowMode::Single { fullscreen: true })
-                    }
-                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-                    Action::MultiMonitorFullscreen => UiEvent::SetWindowMode(WindowMode::Multi),
-                };
-
-                ui_event_tx.send_or_warn(event);
-            });
+                    ui_event_tx.send_or_warn(event);
+                });
+                simple_action
+            };
 
             self.app.add_action(&simple_action);
         }

@@ -33,6 +33,8 @@ pub enum UiEvent {
     WindowResized(Size),
     SetWindowMode(WindowMode),
     Refresh,
+    SetShortcutPassthrough(bool),
+    ShortcutPassthroughStatus(bool),
     UserConfirmedClose,
     MonitorsChanged,
 }
@@ -114,6 +116,8 @@ pub struct Ui {
     monitors: Monitors,
     app: glib::WeakRef<gtk::Application>,
     ui_event_tx: Sender<UiEvent>,
+    shortcut_passthrough_requested: bool,
+    shortcut_passthrough_active: bool,
 }
 
 impl Ui {
@@ -219,9 +223,12 @@ impl Ui {
             monitors,
             app: app.downgrade(),
             ui_event_tx,
+            shortcut_passthrough_requested: false,
+            shortcut_passthrough_active: false,
         };
 
         ui.update_display_mode_actions();
+        ui.update_edge_release_mode();
         Ok(ui)
     }
 
@@ -301,9 +308,7 @@ impl Ui {
             WindowMode::Single { fullscreen } => {
                 if !fullscreen {
                     let size = self.single_window.image.borrow().size();
-                    self.single_window
-                        .gtk_window
-                        .set_default_size(size.width as _, size.height as _);
+                    self.single_window.set_content_size(size);
                 }
                 if fullscreen {
                     self.single_window.fullscreen();
@@ -328,6 +333,8 @@ impl Ui {
             }
         }
         self.window_mode = window_mode;
+        self.set_shortcut_passthrough(self.shortcut_passthrough_requested);
+        self.update_edge_release_mode();
         self.request_display_config()?;
         self.update_display_mode_actions();
         Ok(())
@@ -348,9 +355,7 @@ impl Ui {
             WindowMode::Single { fullscreen } => {
                 if !fullscreen {
                     let size = self.single_window.image.borrow().size();
-                    self.single_window
-                        .gtk_window
-                        .set_default_size(size.width as _, size.height as _);
+                    self.single_window.set_content_size(size);
                 }
                 if fullscreen {
                     self.single_window.fullscreen();
@@ -375,6 +380,8 @@ impl Ui {
             }
         }
         self.window_mode = window_mode;
+        self.set_shortcut_passthrough(self.shortcut_passthrough_requested);
+        self.update_edge_release_mode();
         self.update_display_mode_actions();
         Ok(())
     }
@@ -447,13 +454,68 @@ impl Ui {
                 && !matches!(self.window_mode, WindowMode::Multi);
             simple_action.set_enabled(enabled);
         }
+
+        if let Some(action) = app.lookup_action(Action::ShortcutPassthrough.as_ref())
+            && let Some(simple_action) = action.downcast_ref::<gio::SimpleAction>()
+        {
+            let enabled = self.shortcut_passthrough_allowed();
+            simple_action.set_enabled(enabled);
+            simple_action.set_state(&glib::Variant::from(self.shortcut_passthrough_active));
+        }
+    }
+
+    pub fn set_shortcut_passthrough(&mut self, enabled: bool) {
+        let allowed = self.shortcut_passthrough_allowed();
+        if enabled && !allowed {
+            debug!("shortcut passthrough requested outside fullscreen; ignoring");
+        }
+        let next = if allowed { enabled } else { false };
+        if self.shortcut_passthrough_requested == next {
+            return;
+        }
+        debug!(enabled = next, "shortcut passthrough toggled");
+        self.shortcut_passthrough_requested = next;
+        self.shortcut_passthrough_active = next;
+        self.apply_shortcut_passthrough();
+        self.update_display_mode_actions();
+    }
+
+    fn apply_shortcut_passthrough(&self) {
+        for window in self.all_windows() {
+            window.set_shortcut_passthrough(self.shortcut_passthrough_requested);
+        }
+    }
+
+    fn shortcut_passthrough_allowed(&self) -> bool {
+        matches!(
+            self.window_mode,
+            WindowMode::Single { fullscreen: true } | WindowMode::Multi
+        )
+    }
+
+    pub fn update_shortcut_passthrough_status(&mut self, active: bool) {
+        if !self.shortcut_passthrough_requested {
+            return;
+        }
+        if self.shortcut_passthrough_active == active {
+            return;
+        }
+        debug!(active, "shortcut passthrough status updated");
+        self.shortcut_passthrough_active = active;
+        self.update_display_mode_actions();
     }
 
     pub fn request_display_config(&self) -> Result<()> {
         debug!(?self.window_mode, "request display configuration");
         match self.window_mode {
             WindowMode::Single { .. } => {
-                let size = self.single_window.image.borrow().size();
+                let width = self.single_window.drawing_area.allocated_width();
+                let height = self.single_window.drawing_area.allocated_height();
+                let size = if width > 0 && height > 0 {
+                    Size::new(width as _, height as _)
+                } else {
+                    self.single_window.image.borrow().size()
+                };
                 self.single_window.image.replace(image::Image::black(size));
                 self.single_window.drawing_area.queue_draw();
                 let display = Display::new(Rect::new(Point::zero(), size), true);
@@ -522,8 +584,8 @@ impl Ui {
             .hotspot_x(cursor.hot.x as _)
             .hotspot_y(cursor.hot.y as _)
             .build();
-        for da in self.all_windows().map(|w| &w.drawing_area) {
-            da.set_cursor(Some(&cursor));
+        for window in self.all_windows() {
+            window.set_remote_cursor(cursor.clone());
         }
     }
 
@@ -581,9 +643,7 @@ impl Ui {
             WindowMode::Single { .. } => {
                 let size = display_config.display_decoder_infos[0].display.size();
                 self.single_window.image.replace(image::Image::black(size));
-                self.single_window
-                    .gtk_window
-                    .set_default_size(size.width as _, size.height as _);
+                self.single_window.set_content_size(size);
                 self.single_window.drawing_area.queue_draw();
             }
         }
@@ -681,6 +741,8 @@ impl Ui {
             return;
         }
         self.window_mode = WindowMode::Single { fullscreen };
+        self.set_shortcut_passthrough(self.shortcut_passthrough_requested);
+        self.update_edge_release_mode();
         self.update_display_mode_actions();
     }
 
@@ -689,6 +751,13 @@ impl Ui {
             .iter()
             .map(|(_, window)| window)
             .chain(iter::once(&self.single_window))
+    }
+
+    fn update_edge_release_mode(&self) {
+        let enabled = matches!(self.window_mode, WindowMode::Single { fullscreen: false });
+        for window in self.all_windows() {
+            window.set_edge_release_enabled(enabled);
+        }
     }
 
     fn window_at(&self, point: Point) -> Option<(Rect, &Window)> {

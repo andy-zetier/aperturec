@@ -8,7 +8,8 @@ use aperturec_graphics::prelude::*;
 use aperturec_utils::channels::SenderExt;
 use async_channel::Sender;
 use gtk4::{self as gtk, gdk, glib, prelude::*};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use glib::prelude::Cast;
+use std::{cell::{Cell, RefCell}, rc::Rc, sync::Arc};
 use tracing::*;
 
 use glib::translate::IntoGlib;
@@ -18,6 +19,7 @@ const SCROLL_BUTTON_UP: u32 = 3;
 const SCROLL_BUTTON_DOWN: u32 = 4;
 const SCROLL_BUTTON_LEFT: u32 = 5;
 const SCROLL_BUTTON_RIGHT: u32 = 6;
+const EDGE_CURSOR_MARGIN: f64 = 8.0;
 
 #[derive(Default)]
 struct ScrollAccum {
@@ -29,6 +31,9 @@ pub struct Window {
     pub gtk_window: gtk::ApplicationWindow,
     pub drawing_area: gtk::DrawingArea,
     pub image: Rc<RefCell<image::Image>>,
+    edge_release_enabled: Rc<Cell<bool>>,
+    cursor_released: Rc<Cell<bool>>,
+    last_remote_cursor: Rc<RefCell<Option<gdk::Cursor>>>,
 }
 
 impl Window {
@@ -36,6 +41,9 @@ impl Window {
         conn: Arc<Connection>,
         origin: Point,
         pointer_pos: Rc<RefCell<Option<(f64, f64)>>>,
+        edge_release_enabled: Rc<Cell<bool>>,
+        cursor_released: Rc<Cell<bool>>,
+        last_remote_cursor: Rc<RefCell<Option<gdk::Cursor>>>,
     ) -> gtk::EventControllerMotion {
         let ec_motion = gtk::EventControllerMotion::new();
         ec_motion.connect_motion(glib::clone!(
@@ -44,12 +52,47 @@ impl Window {
             #[strong]
             pointer_pos,
             #[strong]
+            edge_release_enabled,
+            #[strong]
+            cursor_released,
+            #[strong]
+            last_remote_cursor,
+            #[strong]
             origin,
             move |ec, x, y| {
                 trace!(%x, %y, "motion");
                 *pointer_pos.borrow_mut() = Some((x, y));
                 if let Some(widget) = ec.widget() {
                     widget.grab_focus();
+                    if edge_release_enabled.get() {
+                        let width = widget.width() as f64;
+                        let height = widget.height() as f64;
+                        if width > 0.0 && height > 0.0 {
+                            let margin = EDGE_CURSOR_MARGIN;
+                            let near_edge = x <= margin
+                                || y <= margin
+                                || x >= (width - margin)
+                                || y >= (height - margin);
+                            if near_edge {
+                                if !cursor_released.get() {
+                                    if let Some(native) = widget.native()
+                                        && let Some(surface) = native.surface()
+                                    {
+                                        surface.set_cursor(None);
+                                    }
+                                    cursor_released.set(true);
+                                }
+                            } else if cursor_released.get() {
+                                let cursor = last_remote_cursor.borrow().clone();
+                                if let Some(native) = widget.native()
+                                    && let Some(surface) = native.surface()
+                                {
+                                    surface.set_cursor(cursor.as_ref());
+                                }
+                                cursor_released.set(false);
+                            }
+                        }
+                    }
                 }
                 let global_x = origin.x + x.round() as usize;
                 let global_y = origin.y + y.round() as usize;
@@ -265,6 +308,9 @@ impl Window {
         image: Rc<RefCell<image::Image>>,
         conn: Arc<Connection>,
         origin: Point,
+        edge_release_enabled: Rc<Cell<bool>>,
+        cursor_released: Rc<Cell<bool>>,
+        last_remote_cursor: Rc<RefCell<Option<gdk::Cursor>>>,
     ) -> gtk::DrawingArea {
         let pointer_pos = Rc::new(RefCell::new(None));
         let drawing_area = gtk::DrawingArea::builder().focusable(true).build();
@@ -272,6 +318,9 @@ impl Window {
             conn.clone(),
             origin,
             pointer_pos.clone(),
+            edge_release_enabled,
+            cursor_released,
+            last_remote_cursor,
         ));
         drawing_area.add_controller(Self::focus_controller());
         drawing_area.add_controller(Self::key_controller(conn.clone()));
@@ -320,6 +369,9 @@ impl Window {
         window_child: &impl IsA<gtk::Widget>,
         size: Size,
         ui_event_tx: Sender<UiEvent>,
+        edge_release_enabled: Rc<Cell<bool>>,
+        cursor_released: Rc<Cell<bool>>,
+        last_remote_cursor: Rc<RefCell<Option<gdk::Cursor>>>,
     ) -> gtk::ApplicationWindow {
         let gtk_window = gtk::ApplicationWindow::builder()
             .resizable(true)
@@ -328,7 +380,40 @@ impl Window {
             .can_focus(true)
             .child(window_child)
             .build();
+        #[cfg(not(target_os = "macos"))]
+        {
+            let header_bar = gtk::HeaderBar::new();
+            header_bar.set_show_title_buttons(true);
+            gtk_window.set_titlebar(Some(&header_bar));
+        }
         gtk_window.set_default_size(size.width as _, size.height as _);
+
+        let shortcut_tx = ui_event_tx.clone();
+        let edge_release_enabled_handle = edge_release_enabled.clone();
+        let cursor_released_handle = cursor_released.clone();
+        let last_remote_cursor_handle = last_remote_cursor.clone();
+        gtk_window.connect_realize(move |window| {
+            let Some(surface) = window.surface() else {
+                trace!("window surface not available; skipping shortcut passthrough monitor");
+                return;
+            };
+            let Some(toplevel) = surface.dynamic_cast_ref::<gdk::Toplevel>() else {
+                warn!("window surface is not a toplevel; skipping shortcut passthrough monitor");
+                return;
+            };
+            let shortcut_tx = shortcut_tx.clone();
+            toplevel.connect_shortcuts_inhibited_notify(move |toplevel| {
+                shortcut_tx
+                    .send_or_warn(UiEvent::ShortcutPassthroughStatus(
+                        toplevel.is_shortcuts_inhibited(),
+                    ));
+            });
+            if !cursor_released_handle.get() || !edge_release_enabled_handle.get() {
+                if let Some(cursor) = last_remote_cursor_handle.borrow().clone() {
+                    surface.set_cursor(Some(&cursor));
+                }
+            }
+        });
 
         gtk_window.connect_close_request(move |_| {
             debug!("window close requested");
@@ -347,7 +432,17 @@ impl Window {
     ) -> Window {
         debug!(?size, ?origin, "creating window");
         let image = Rc::new(RefCell::new(image::Image::new(size)));
-        let drawing_area = Self::drawing_area(image.clone(), conn.clone(), origin);
+        let edge_release_enabled = Rc::new(Cell::new(true));
+        let cursor_released = Rc::new(Cell::new(false));
+        let last_remote_cursor = Rc::new(RefCell::new(None));
+        let drawing_area = Self::drawing_area(
+            image.clone(),
+            conn.clone(),
+            origin,
+            edge_release_enabled.clone(),
+            cursor_released.clone(),
+            last_remote_cursor.clone(),
+        );
 
         // Create overlay layout with revealer for all non-macOS modes
         #[cfg(not(target_os = "macos"))]
@@ -355,12 +450,22 @@ impl Window {
 
         #[cfg(target_os = "macos")]
         let window_child = drawing_area.clone();
-        let gtk_window = Self::build_window(&window_child, size, ui_event_tx);
+        let gtk_window = Self::build_window(
+            &window_child,
+            size,
+            ui_event_tx,
+            edge_release_enabled.clone(),
+            cursor_released.clone(),
+            last_remote_cursor.clone(),
+        );
 
         Window {
             gtk_window,
             drawing_area,
             image,
+            edge_release_enabled,
+            cursor_released,
+            last_remote_cursor,
         }
     }
 
@@ -387,5 +492,51 @@ impl Window {
     pub fn fullscreen_on_monitor(&mut self, gdk_monitor: gdk::Monitor) {
         debug!("enter fullscreen on monitor");
         self.gtk_window.fullscreen_on_monitor(&gdk_monitor);
+    }
+
+    pub fn set_shortcut_passthrough(&self, enabled: bool) {
+        let Some(surface) = self.gtk_window.surface() else {
+            trace!("window surface not available; skipping shortcut passthrough update");
+            return;
+        };
+        let Some(toplevel) = surface.dynamic_cast_ref::<gdk::Toplevel>() else {
+            warn!("window surface is not a toplevel; skipping shortcut passthrough update");
+            return;
+        };
+        if enabled {
+            let event: Option<&gdk::Event> = None;
+            toplevel.inhibit_system_shortcuts(event);
+        } else {
+            toplevel.restore_system_shortcuts();
+        }
+    }
+
+    pub fn set_edge_release_enabled(&self, enabled: bool) {
+        self.edge_release_enabled.set(enabled);
+        if !enabled && self.cursor_released.get() {
+            let cursor = self.last_remote_cursor.borrow().clone();
+            if let Some(surface) = self.gtk_window.surface() {
+                surface.set_cursor(cursor.as_ref());
+            }
+            self.cursor_released.set(false);
+        }
+    }
+
+    pub fn set_remote_cursor(&self, cursor: gdk::Cursor) {
+        *self.last_remote_cursor.borrow_mut() = Some(cursor.clone());
+        if self.edge_release_enabled.get() && self.cursor_released.get() {
+            return;
+        }
+        if let Some(surface) = self.gtk_window.surface() {
+            surface.set_cursor(Some(&cursor));
+        }
+        self.cursor_released.set(false);
+    }
+
+    pub fn set_content_size(&self, size: Size) {
+        self.drawing_area
+            .set_content_width(size.width as i32);
+        self.drawing_area
+            .set_content_height(size.height as i32);
     }
 }

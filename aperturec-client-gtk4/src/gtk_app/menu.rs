@@ -51,6 +51,10 @@ fn create_application_menu() -> gio::Menu {
         Some(&Action::Refresh.qualified_name()),
     );
     view_menu.append(
+        Some(Action::ShortcutPassthrough.label()),
+        Some(&Action::ShortcutPassthrough.qualified_name()),
+    );
+    view_menu.append(
         Some(Action::Window.label()),
         Some(&Action::Window.qualified_name()),
     );
@@ -105,7 +109,7 @@ pub fn load_overlay_css(display: &gdk::Display) {
     );
 }
 
-/// Create overlay layout with menu revealer and toggle arrow (for all non-macOS modes)
+/// Create overlay layout with menu revealer and toggle arrows (for all non-macOS modes)
 #[cfg(not(target_os = "macos"))]
 pub fn create_overlay_layout(drawing_area: &gtk::DrawingArea) -> gtk::Widget {
     trace!("creating overlay layout");
@@ -302,9 +306,9 @@ mod tests {
             .expect("view submenu")
             .upcast::<gio::MenuModel>();
         let expected_view_items = if cfg!(any(target_os = "macos", target_os = "windows")) {
-            3
-        } else {
             4
+        } else {
+            5
         };
         assert_eq!(view_menu.n_items(), expected_view_items);
     }

@@ -158,6 +158,12 @@ fn spawn_ui_task(
                             warn!(%error, "failed to request display refresh");
                         }
                     }
+                    UiEvent::SetShortcutPassthrough(enabled) => {
+                        ui.borrow_mut().set_shortcut_passthrough(enabled);
+                    }
+                    UiEvent::ShortcutPassthroughStatus(active) => {
+                        ui.borrow_mut().update_shortcut_passthrough_status(active);
+                    }
                     UiEvent::UserConfirmedClose => break,
                 }
             }
