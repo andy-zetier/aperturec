@@ -57,7 +57,7 @@ use aperturec_utils::channels::SenderExt;
 
 use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::{
-    Receiver, RecvError, SendError, Sender, TryRecvError, after, bounded, select_biased, unbounded,
+    Receiver, RecvError, SendError, Sender, TryRecvError, after, bounded, unbounded,
 };
 use crossbeam_ring_channel::{RingReceiver, Select, SelectedOperation, ring_bounded};
 use secrecy::{ExposeSecret, zeroize::Zeroize};
@@ -327,6 +327,16 @@ impl Connection {
         self.connection_parameters.display_config.clone()
     }
 
+    /// Returns true when the connection is still active.
+    pub fn is_active(&self) -> bool {
+        self.is_active.load(Ordering::Acquire)
+    }
+
+    /// Returns true once shutdown has been initiated.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutdown_initiated.load(Ordering::Acquire)
+    }
+
     /// Disconnects from the remote server.
     ///
     /// Sends a goodbye message to the server indicating the UI exited normally,
@@ -341,10 +351,27 @@ impl Connection {
     /// the connection. Use this to communicate why the connection is ending when the
     /// reason differs from a normal UI exit.
     pub fn disconnect_with_reason(self, reason: proto::control::ClientGoodbyeReason) {
-        self.shutdown_initiated.store(true, Ordering::Release);
+        if self.shutdown_initiated.swap(true, Ordering::AcqRel) {
+            return;
+        }
         if self.is_active.load(Ordering::Acquire) {
             let _ = self.pt_tx.send(Notification::ToCC(ToCC::Goodbye {
                 reason,
+                id: self.connection_parameters.client_id,
+            }));
+        }
+    }
+
+    /// Request a graceful disconnect without consuming the connection.
+    ///
+    /// This sends a client goodbye message if the connection is still active.
+    pub fn request_disconnect(&self) {
+        if self.shutdown_initiated.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if self.is_active.load(Ordering::Acquire) {
+            let _ = self.pt_tx.send(Notification::ToCC(ToCC::Goodbye {
+                reason: proto::control::ClientGoodbyeReason::UserRequested,
                 id: self.connection_parameters.client_id,
             }));
         }
@@ -1023,158 +1050,209 @@ impl Client {
         let shutdown_initiated_pt = shutdown_initiated.clone();
         let primary_thread = thread::spawn(move || {
             let _ = trace_span!("primary-thread").entered();
+            let mut pending_quit: Option<(Instant, QuitReason)> = None;
             loop {
-                select_biased! {
-                    recv(pt_rx) -> pt_msg_res => {
-                        let Ok(pt_msg) = pt_msg_res else {
-                            if !shutdown_initiated_pt.load(Ordering::Acquire) {
-                                warn!("connection dropped without terminating");
-                            }
+                let handle_cc_msg = |cc_msg: FromCC| -> bool {
+                    match cc_msg {
+                        FromCC::ServerInit(si) => warn!(?si, "gratuitous server init"),
+                        FromCC::ServerGoodbye(server_reason) => {
+                            info!(%server_reason, "server exiting");
+                            shutdown_initiated_pt.store(true, Ordering::Release);
+                            let _ = event_lossless_tx
+                                .send(Event::Quit(QuitReason::ServerGoodbye { server_reason }));
+                            return true;
+                        }
+                        FromCC::Error(error) => {
+                            error!(%error, "control channel");
+                            shutdown_initiated_pt.store(true, Ordering::Release);
+                            let _ = event_lossless_tx
+                                .send(Event::Quit(QuitReason::UnrecoverableError(error.into())));
+                            return true;
+                        }
+                    }
+                    false
+                };
+
+                if let Some((deadline, _)) = pending_quit
+                    && Instant::now() >= deadline
+                {
+                    if let Ok(cc_msg) = from_cc_rx.try_recv() {
+                        if handle_cc_msg(cc_msg) {
                             break;
-                        };
-                        match pt_msg {
-                            Notification::Terminate => {
-                                shutdown_initiated_pt.store(true, Ordering::Release);
-                                break;
+                        }
+                        pending_quit = None;
+                        continue;
+                    }
+                    if let Some((_, reason)) = pending_quit.take() {
+                        error!(%reason, "shutdown requested by channel error");
+                        shutdown_initiated_pt.store(true, Ordering::Release);
+                        let _ = event_lossless_tx.send(Event::Quit(reason));
+                    }
+                    break;
+                }
+
+                let mut sel = Select::new();
+                let idx_pt = sel.recv(&pt_rx);
+                let idx_cc = sel.recv(&from_cc_rx);
+                let idx_ec = sel.recv(&from_ec_rx);
+                let idx_mc = sel.recv(&from_mc_rx);
+                let idx_tc = sel.recv(&from_tc_rx);
+                let timeout_rx = pending_quit.as_ref().map(|(deadline, _)| {
+                    let now = Instant::now();
+                    after(deadline.saturating_duration_since(now))
+                });
+                let idx_timeout = timeout_rx.as_ref().map(|rx| sel.recv(rx));
+
+                let oper = sel.select();
+                let index = oper.index();
+
+                if Some(index) == idx_timeout {
+                    if let Some(ref timeout_rx) = timeout_rx {
+                        let _ = oper.recv(timeout_rx);
+                    }
+                    if let Ok(cc_msg) = from_cc_rx.try_recv() {
+                        if handle_cc_msg(cc_msg) {
+                            break;
+                        }
+                        pending_quit = None;
+                        continue;
+                    }
+                    if let Some((_, reason)) = pending_quit.take() {
+                        error!(%reason, "shutdown requested by channel error");
+                        shutdown_initiated_pt.store(true, Ordering::Release);
+                        let _ = event_lossless_tx.send(Event::Quit(reason));
+                    }
+                    break;
+                } else if index == idx_pt {
+                    let Ok(pt_msg) = oper.recv(&pt_rx) else {
+                        if !shutdown_initiated_pt.load(Ordering::Acquire) {
+                            warn!("connection dropped without terminating");
+                        }
+                        break;
+                    };
+                    match pt_msg {
+                        Notification::Terminate => {
+                            shutdown_initiated_pt.store(true, Ordering::Release);
+                            break;
+                        }
+                        Notification::ToCC(msg) => {
+                            let is_shutting_down = shutdown_initiated_pt.load(Ordering::Acquire);
+                            if is_shutting_down && !matches!(msg, ToCC::Goodbye { .. }) {
+                                continue;
                             }
-                            Notification::ToCC(msg) => {
-                                let is_shutting_down =
-                                    shutdown_initiated_pt.load(Ordering::Acquire);
-                                if is_shutting_down && !matches!(msg, ToCC::Goodbye { .. }) {
+                            if is_shutting_down {
+                                let _ = to_cc_tx.send(msg);
+                            } else {
+                                to_cc_tx.send_or_warn(msg);
+                            }
+                        }
+                        Notification::ToEC(msg) => match msg {
+                            ToEC::Terminate => {
+                                if shutdown_initiated_pt.load(Ordering::Acquire) {
+                                    let _ = to_ec_lossless_tx.send(ToEC::Terminate);
+                                } else {
+                                    to_ec_lossless_tx.send_or_warn(ToEC::Terminate);
+                                }
+                            }
+                            ToEC::UserEvent(ue) => {
+                                if shutdown_initiated_pt.load(Ordering::Acquire) {
                                     continue;
                                 }
-                                if is_shutting_down {
-                                    let _ = to_cc_tx.send(msg);
+                                if matches!(ue, ec::UserEvent::Pointer { .. }) {
+                                    let _ = to_ec_lossy_tx.send(ue);
                                 } else {
-                                    to_cc_tx.send_or_warn(msg);
+                                    to_ec_lossless_tx.send_or_warn(ToEC::UserEvent(ue));
                                 }
                             }
-                            Notification::ToEC(msg) => match msg {
-                                ToEC::Terminate => {
-                                    if shutdown_initiated_pt.load(Ordering::Acquire) {
-                                        let _ = to_ec_lossless_tx.send(ToEC::Terminate);
-                                    } else {
-                                        to_ec_lossless_tx.send_or_warn(ToEC::Terminate);
-                                    }
-                                }
-                                ToEC::UserEvent(ue) => {
-                                    if shutdown_initiated_pt.load(Ordering::Acquire) {
-                                        continue;
-                                    }
-                                    if matches!(ue, ec::UserEvent::Pointer { .. }) {
-                                        let _ = to_ec_lossy_tx.send(ue);
-                                    } else {
-                                        to_ec_lossless_tx
-                                            .send_or_warn(ToEC::UserEvent(ue));
-                                    }
-                                }
-                            },
-                            Notification::ToMC(msg) => {
-                                if shutdown_initiated_pt.load(Ordering::Acquire) {
-                                    let _ = to_mc_tx.send(msg);
-                                } else {
-                                    to_mc_tx.send_or_warn(msg);
-                                }
-                            }
-                            Notification::ToTC(msg) => {
-                                if shutdown_initiated_pt.load(Ordering::Acquire) {
-                                    let _ = to_tc_tx.send(msg);
-                                } else {
-                                    to_tc_tx.send_or_warn(msg);
-                                }
+                        },
+                        Notification::ToMC(msg) => {
+                            if shutdown_initiated_pt.load(Ordering::Acquire) {
+                                let _ = to_mc_tx.send(msg);
+                            } else {
+                                to_mc_tx.send_or_warn(msg);
                             }
                         }
-                    },
-                    recv(from_cc_rx) -> cc_msg_res => {
-                        let Ok(cc_msg) = cc_msg_res else {
-                            if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
-                                warn!("CC terminated unexpectedly");
+                        Notification::ToTC(msg) => {
+                            if shutdown_initiated_pt.load(Ordering::Acquire) {
+                                let _ = to_tc_tx.send(msg);
+                            } else {
+                                to_tc_tx.send_or_warn(msg);
                             }
-                            break;
-                        };
+                        }
+                    }
+                } else if index == idx_cc {
+                    let Ok(cc_msg) = oper.recv(&from_cc_rx) else {
+                        if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
+                            warn!("CC terminated unexpectedly");
+                        }
+                        break;
+                    };
 
-                        match cc_msg {
-                            FromCC::ServerInit(si) => warn!(?si, "gratuitous server init"),
-                            FromCC::ServerGoodbye(server_reason) => {
-                                info!(%server_reason, "server exiting");
-                                shutdown_initiated_pt.store(true, Ordering::Release);
-                                let _ = event_lossless_tx.send(Event::Quit(
-                                    QuitReason::ServerGoodbye { server_reason },
-                                ));
-                                break;
-                            }
-                            FromCC::Error(error) => {
-                                error!(%error, "control channel");
-                                shutdown_initiated_pt.store(true, Ordering::Release);
-                                let _ = event_lossless_tx.send(Event::Quit(
+                    if handle_cc_msg(cc_msg) {
+                        break;
+                    }
+                } else if index == idx_ec {
+                    let Ok(ec_msg) = oper.recv(&from_ec_rx) else {
+                        if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
+                            warn!("EC terminated unexpectedly");
+                        }
+                        break;
+                    };
+
+                    match ec_msg {
+                        FromEC::DisplayConfiguration(dc) => {
+                            to_mc_tx.send_or_warn(ToMC::DisplayConfiguration(dc.clone()));
+                            event_lossless_tx.send_or_warn(Event::DisplayChange(dc));
+                        }
+                        FromEC::Cursor(cursor) => {
+                            let _ = event_lossy_tx.send(Event::CursorChange(cursor));
+                        }
+                        FromEC::Error(error) => {
+                            if let ec::Error::Protocol(error) = error {
+                                warn!(%error, "event channel protocol error");
+                            } else if !shutdown_initiated_pt.load(Ordering::Acquire)
+                                && pending_quit.is_none()
+                            {
+                                pending_quit = Some((
+                                    Instant::now() + Duration::from_millis(250),
                                     QuitReason::UnrecoverableError(error.into()),
                                 ));
-                                break;
                             }
                         }
-                    },
-                    recv(from_ec_rx) -> ec_msg_res => {
-                        let Ok(ec_msg) = ec_msg_res else {
-                            if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
-                                warn!("EC terminated unexpectedly");
-                            }
-                            break;
-                        };
-
-                        match ec_msg {
-                            FromEC::DisplayConfiguration(dc) => {
-                                to_mc_tx.send_or_warn(ToMC::DisplayConfiguration(dc.clone()));
-                                event_lossless_tx.send_or_warn(Event::DisplayChange(dc));
-                            }
-                            FromEC::Cursor(cursor) => {
-                                let _ = event_lossy_tx.send(Event::CursorChange(cursor));
-                            }
-                            FromEC::Error(error) => {
-                                if let ec::Error::Protocol(error) = error {
-                                    warn!(%error, "event channel protocol error");
-                                } else {
-                                    error!(%error, "event channel");
-                                    shutdown_initiated_pt.store(true, Ordering::Release);
-                                    let _ = event_lossless_tx.send(Event::Quit(
-                                        QuitReason::UnrecoverableError(error.into()),
-                                    ));
-                                    break;
-                                }
-                            }
+                    }
+                } else if index == idx_mc {
+                    let Ok(mc_msg) = oper.recv(&from_mc_rx) else {
+                        if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
+                            warn!("MC terminated unexpectedly");
                         }
-                    },
-                    recv(from_mc_rx) -> mc_msg_res => {
-                        let Ok(mc_msg) = mc_msg_res else {
-                            if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
-                                warn!("MC terminated unexpectedly");
-                            }
-                            break;
-                        };
+                        break;
+                    };
 
-                        match mc_msg {
-                            FromMC::Draw(draw) => {
-                                event_lossless_tx.send_or_warn(Event::Draw(draw));
-                            }
-                            FromMC::Error(error) => {
-                                error!(%error, "media channel");
-                                shutdown_initiated_pt.store(true, Ordering::Release);
-                                let _ = event_lossless_tx.send(Event::Quit(
+                    match mc_msg {
+                        FromMC::Draw(draw) => {
+                            event_lossless_tx.send_or_warn(Event::Draw(draw));
+                        }
+                        FromMC::Error(error) => {
+                            if !shutdown_initiated_pt.load(Ordering::Acquire)
+                                && pending_quit.is_none()
+                            {
+                                pending_quit = Some((
+                                    Instant::now() + Duration::from_millis(250),
                                     QuitReason::UnrecoverableError(error.into()),
                                 ));
-                                break;
                             }
                         }
+                    }
+                } else if index == idx_tc {
+                    let Ok(tc_msg) = oper.recv(&from_tc_rx) else {
+                        if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
+                            warn!("TC terminated unexpectedly");
+                        }
+                        break;
+                    };
 
-                    },
-                    recv(from_tc_rx) -> tc_msg_res => {
-                        let Ok(tc_msg) = tc_msg_res else {
-                            if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
-                                warn!("TC terminated unexpectedly");
-                            }
-                            break;
-                        };
-
-                        let FromTC::ChannelError(error) = tc_msg;
+                    let FromTC::ChannelError(error) = tc_msg;
+                    if !shutdown_initiated_pt.load(Ordering::Acquire) {
                         warn!(%error, "tunnel channel");
                     }
                 }
