@@ -59,7 +59,7 @@ use crossbeam::atomic::AtomicCell;
 use crossbeam::channel::{
     Receiver, RecvError, SendError, Sender, TryRecvError, after, bounded, unbounded,
 };
-use crossbeam_ring_channel::{RingReceiver, Select, SelectedOperation, ring_bounded};
+use crossbeam_ring_channel::{RingReceiver, RingSender, Select, SelectedOperation, ring_bounded};
 use secrecy::{ExposeSecret, zeroize::Zeroize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
@@ -307,6 +307,40 @@ enum EventStep {
     Exhausted,
 }
 
+enum PendingQuitOutcome {
+    None,
+    Continue,
+    Break,
+}
+
+fn handle_pending_quit(
+    pending_quit: &mut Option<(Instant, QuitReason)>,
+    force_timeout: bool,
+    from_cc_rx: &Receiver<FromCC>,
+    handle_cc_msg: &impl Fn(FromCC) -> bool,
+    shutdown_initiated_pt: &Arc<AtomicBool>,
+    event_lossless_tx: &Sender<Event>,
+) -> PendingQuitOutcome {
+    let Some((deadline, _)) = pending_quit else {
+        return PendingQuitOutcome::None;
+    };
+    if !force_timeout && Instant::now() < *deadline {
+        return PendingQuitOutcome::None;
+    }
+    if let Ok(cc_msg) = from_cc_rx.try_recv() {
+        if handle_cc_msg(cc_msg) {
+            return PendingQuitOutcome::Break;
+        }
+        return PendingQuitOutcome::Continue;
+    }
+    if let Some((_, reason)) = pending_quit.take() {
+        error!(%reason, "shutdown requested by channel error");
+        shutdown_initiated_pt.store(true, Ordering::Release);
+        let _ = event_lossless_tx.send(Event::Quit(reason));
+    }
+    PendingQuitOutcome::Break
+}
+
 impl Connection {
     fn try_recv_lossy(&self) -> Result<Option<Event>, TryRecvError> {
         match self.event_lossy_rx.try_recv() {
@@ -327,12 +361,20 @@ impl Connection {
         self.connection_parameters.display_config.clone()
     }
 
-    /// Returns true when the connection is still active.
+    /// Returns `true` while the connection is fully active.
+    ///
+    /// A connection is considered active as long as the primary connection thread is running and
+    /// it is still possible to receive events or send input. Once the connection has fully closed
+    /// and the primary thread has exited, this returns `false` permanently.
     pub fn is_active(&self) -> bool {
         self.is_active.load(Ordering::Acquire)
     }
 
-    /// Returns true once shutdown has been initiated.
+    /// Returns `true` once a shutdown sequence has been initiated.
+    ///
+    /// This flag becomes `true` when a disconnect is requested or an internal shutdown path begins,
+    /// but before the connection has fully closed. During this period `is_active()` may still be
+    /// `true` until all in-flight work is drained and the primary thread exits.
     pub fn is_shutting_down(&self) -> bool {
         self.shutdown_initiated.load(Ordering::Acquire)
     }
@@ -1051,6 +1093,71 @@ impl Client {
         let primary_thread = thread::spawn(move || {
             let _ = trace_span!("primary-thread").entered();
             let mut pending_quit: Option<(Instant, QuitReason)> = None;
+            let handle_pt_msg = |pt_msg: Notification,
+                                 to_cc_tx: &Sender<ToCC>,
+                                 to_ec_lossless_tx: &Sender<ToEC>,
+                                 to_ec_lossy_tx: &RingSender<ec::UserEvent>,
+                                 to_mc_tx: &Sender<ToMC>,
+                                 to_tc_tx: &Sender<ToTC>,
+                                 shutdown_initiated_pt: &Arc<AtomicBool>|
+             -> bool {
+                match pt_msg {
+                    Notification::Terminate => {
+                        shutdown_initiated_pt.store(true, Ordering::Release);
+                        true
+                    }
+                    Notification::ToCC(msg) => {
+                        let is_shutting_down = shutdown_initiated_pt.load(Ordering::Acquire);
+                        if is_shutting_down && !matches!(msg, ToCC::Goodbye { .. }) {
+                            return false;
+                        }
+                        if is_shutting_down {
+                            let _ = to_cc_tx.send(msg);
+                        } else {
+                            to_cc_tx.send_or_warn(msg);
+                        }
+                        false
+                    }
+                    Notification::ToEC(msg) => {
+                        match msg {
+                            ToEC::Terminate => {
+                                if shutdown_initiated_pt.load(Ordering::Acquire) {
+                                    let _ = to_ec_lossless_tx.send(ToEC::Terminate);
+                                } else {
+                                    to_ec_lossless_tx.send_or_warn(ToEC::Terminate);
+                                }
+                            }
+                            ToEC::UserEvent(ue) => {
+                                if shutdown_initiated_pt.load(Ordering::Acquire) {
+                                    return false;
+                                }
+                                if matches!(ue, ec::UserEvent::Pointer { .. }) {
+                                    let _ = to_ec_lossy_tx.send(ue);
+                                } else {
+                                    to_ec_lossless_tx.send_or_warn(ToEC::UserEvent(ue));
+                                }
+                            }
+                        }
+                        false
+                    }
+                    Notification::ToMC(msg) => {
+                        if shutdown_initiated_pt.load(Ordering::Acquire) {
+                            let _ = to_mc_tx.send(msg);
+                        } else {
+                            to_mc_tx.send_or_warn(msg);
+                        }
+                        false
+                    }
+                    Notification::ToTC(msg) => {
+                        if shutdown_initiated_pt.load(Ordering::Acquire) {
+                            let _ = to_tc_tx.send(msg);
+                        } else {
+                            to_tc_tx.send_or_warn(msg);
+                        }
+                        false
+                    }
+                }
+            };
             loop {
                 let handle_cc_msg = |cc_msg: FromCC| -> bool {
                     match cc_msg {
@@ -1073,22 +1180,41 @@ impl Client {
                     false
                 };
 
-                if let Some((deadline, _)) = pending_quit
-                    && Instant::now() >= deadline
-                {
-                    if let Ok(cc_msg) = from_cc_rx.try_recv() {
-                        if handle_cc_msg(cc_msg) {
+                match handle_pending_quit(
+                    &mut pending_quit,
+                    false,
+                    &from_cc_rx,
+                    &handle_cc_msg,
+                    &shutdown_initiated_pt,
+                    &event_lossless_tx,
+                ) {
+                    PendingQuitOutcome::Break => break,
+                    PendingQuitOutcome::Continue => continue,
+                    PendingQuitOutcome::None => {}
+                }
+
+                match pt_rx.try_recv() {
+                    Ok(pt_msg) => {
+                        if handle_pt_msg(
+                            pt_msg,
+                            &to_cc_tx,
+                            &to_ec_lossless_tx,
+                            &to_ec_lossy_tx,
+                            &to_mc_tx,
+                            &to_tc_tx,
+                            &shutdown_initiated_pt,
+                        ) {
                             break;
                         }
-                        pending_quit = None;
                         continue;
                     }
-                    if let Some((_, reason)) = pending_quit.take() {
-                        error!(%reason, "shutdown requested by channel error");
-                        shutdown_initiated_pt.store(true, Ordering::Release);
-                        let _ = event_lossless_tx.send(Event::Quit(reason));
+                    Err(TryRecvError::Disconnected) => {
+                        if !shutdown_initiated_pt.load(Ordering::Acquire) {
+                            warn!("connection dropped without terminating");
+                        }
+                        break;
                     }
-                    break;
+                    Err(TryRecvError::Empty) => {}
                 }
 
                 let mut sel = Select::new();
@@ -1110,19 +1236,18 @@ impl Client {
                     if let Some(ref timeout_rx) = timeout_rx {
                         let _ = oper.recv(timeout_rx);
                     }
-                    if let Ok(cc_msg) = from_cc_rx.try_recv() {
-                        if handle_cc_msg(cc_msg) {
-                            break;
-                        }
-                        pending_quit = None;
-                        continue;
+                    match handle_pending_quit(
+                        &mut pending_quit,
+                        true,
+                        &from_cc_rx,
+                        &handle_cc_msg,
+                        &shutdown_initiated_pt,
+                        &event_lossless_tx,
+                    ) {
+                        PendingQuitOutcome::Break => break,
+                        PendingQuitOutcome::Continue => continue,
+                        PendingQuitOutcome::None => {}
                     }
-                    if let Some((_, reason)) = pending_quit.take() {
-                        error!(%reason, "shutdown requested by channel error");
-                        shutdown_initiated_pt.store(true, Ordering::Release);
-                        let _ = event_lossless_tx.send(Event::Quit(reason));
-                    }
-                    break;
                 } else if index == idx_pt {
                     let Ok(pt_msg) = oper.recv(&pt_rx) else {
                         if !shutdown_initiated_pt.load(Ordering::Acquire) {
@@ -1130,55 +1255,16 @@ impl Client {
                         }
                         break;
                     };
-                    match pt_msg {
-                        Notification::Terminate => {
-                            shutdown_initiated_pt.store(true, Ordering::Release);
-                            break;
-                        }
-                        Notification::ToCC(msg) => {
-                            let is_shutting_down = shutdown_initiated_pt.load(Ordering::Acquire);
-                            if is_shutting_down && !matches!(msg, ToCC::Goodbye { .. }) {
-                                continue;
-                            }
-                            if is_shutting_down {
-                                let _ = to_cc_tx.send(msg);
-                            } else {
-                                to_cc_tx.send_or_warn(msg);
-                            }
-                        }
-                        Notification::ToEC(msg) => match msg {
-                            ToEC::Terminate => {
-                                if shutdown_initiated_pt.load(Ordering::Acquire) {
-                                    let _ = to_ec_lossless_tx.send(ToEC::Terminate);
-                                } else {
-                                    to_ec_lossless_tx.send_or_warn(ToEC::Terminate);
-                                }
-                            }
-                            ToEC::UserEvent(ue) => {
-                                if shutdown_initiated_pt.load(Ordering::Acquire) {
-                                    continue;
-                                }
-                                if matches!(ue, ec::UserEvent::Pointer { .. }) {
-                                    let _ = to_ec_lossy_tx.send(ue);
-                                } else {
-                                    to_ec_lossless_tx.send_or_warn(ToEC::UserEvent(ue));
-                                }
-                            }
-                        },
-                        Notification::ToMC(msg) => {
-                            if shutdown_initiated_pt.load(Ordering::Acquire) {
-                                let _ = to_mc_tx.send(msg);
-                            } else {
-                                to_mc_tx.send_or_warn(msg);
-                            }
-                        }
-                        Notification::ToTC(msg) => {
-                            if shutdown_initiated_pt.load(Ordering::Acquire) {
-                                let _ = to_tc_tx.send(msg);
-                            } else {
-                                to_tc_tx.send_or_warn(msg);
-                            }
-                        }
+                    if handle_pt_msg(
+                        pt_msg,
+                        &to_cc_tx,
+                        &to_ec_lossless_tx,
+                        &to_ec_lossy_tx,
+                        &to_mc_tx,
+                        &to_tc_tx,
+                        &shutdown_initiated_pt,
+                    ) {
+                        break;
                     }
                 } else if index == idx_cc {
                     let Ok(cc_msg) = oper.recv(&from_cc_rx) else {
