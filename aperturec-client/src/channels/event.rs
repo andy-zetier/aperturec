@@ -15,7 +15,12 @@ use aperturec_utils::channels::SenderExt;
 use crossbeam::channel::{Receiver, Sender, TryRecvError, bounded};
 use crossbeam_ring_channel::{RingReceiver, Select};
 use ndarray::ArcArray2;
-use std::{collections::BTreeMap, mem, thread};
+use std::{
+    collections::BTreeMap,
+    mem,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+};
 use tracing::*;
 
 /// Notifications the event channel can send back to the primary thread.
@@ -173,6 +178,25 @@ impl TryFrom<proto::CursorImage> for Cursor {
                 .try_into()
                 .map_err(|e| Error::Protocol(Box::new(e)))?,
         );
+        if width == 0 || height == 0 {
+            if hot.x != 0 || hot.y != 0 {
+                return Err(Error::Protocol(
+                    format!(
+                        "cursor hotspot ({}, {}) must be zero when dimensions are {width}x{height}",
+                        hot.x, hot.y
+                    )
+                    .into(),
+                ));
+            }
+        } else if hot.x >= width || hot.y >= height {
+            return Err(Error::Protocol(
+                format!(
+                    "cursor hotspot ({}, {}) out of bounds for dimensions {width}x{height}",
+                    hot.x, hot.y
+                )
+                .into(),
+            ));
+        }
 
         let pixels = ci
             .data
@@ -220,6 +244,7 @@ pub fn setup(
     pt_tx: Sender<Ptn>,
     from_pt_lossless_rx: Receiver<Notification>,
     from_pt_lossy_rx: RingReceiver<UserEvent>,
+    shutdown_initiated: std::sync::Arc<AtomicBool>,
 ) {
     let (ec_rx, mut ec_tx) = client_ec.split();
 
@@ -236,7 +261,9 @@ pub fn setup(
             let send_res = time!(EventChannelSendLatency, ec_tx.send(ue.into()));
             if let Err(error) = send_res {
                 error!(%error);
-                pt_tx.send_or_warn(Ptn::Error(error.into()));
+                if !shutdown_initiated.swap(true, Ordering::AcqRel) {
+                    pt_tx.send_or_warn(Ptn::Error(error.into()));
+                }
             }
         };
         let mut handle_network_msg = |network_msg: Result<
@@ -253,11 +280,32 @@ pub fn setup(
                             return;
                         }
                     };
-                    pt_tx.send_or_warn(Ptn::from(display_config));
+                    if !shutdown_initiated.load(Ordering::Acquire) {
+                        pt_tx.send_or_warn(Ptn::from(display_config));
+                    }
                 }
                 Ok(s2c::Message::CursorImage(cursor_image)) => {
                     trace!(?cursor_image);
+                    let mut cursor_image = cursor_image;
                     let id = cursor_image.id;
+                    let max_x = cursor_image.width.saturating_sub(1);
+                    let max_y = cursor_image.height.saturating_sub(1);
+                    let clamped_x = cursor_image.x_hot.min(max_x);
+                    let clamped_y = cursor_image.y_hot.min(max_y);
+                    if clamped_x != cursor_image.x_hot || clamped_y != cursor_image.y_hot {
+                        warn!(
+                            %id,
+                            width = cursor_image.width,
+                            height = cursor_image.height,
+                            hot_x = cursor_image.x_hot,
+                            hot_y = cursor_image.y_hot,
+                            clamped_x,
+                            clamped_y,
+                            "cursor hotspot out of bounds; clamping"
+                        );
+                        cursor_image.x_hot = clamped_x;
+                        cursor_image.y_hot = clamped_y;
+                    }
                     let cursor = match Cursor::try_from(cursor_image) {
                         Ok(cursor) => cursor,
                         Err(error) => {
@@ -273,13 +321,17 @@ pub fn setup(
                 Ok(s2c::Message::CursorChange(cursor_change)) => {
                     trace!(?cursor_change);
                     if let Some(cursor) = cursor_cache.get(&cursor_change.id) {
-                        pt_tx.send_or_warn(Ptn::Cursor(cursor.clone()));
+                        if !shutdown_initiated.load(Ordering::Acquire) {
+                            pt_tx.send_or_warn(Ptn::Cursor(cursor.clone()));
+                        }
                     } else {
                         warn!("received cursor change notification for missing cursor");
                     }
                 }
                 Err(err) => {
-                    pt_tx.send_or_warn(Ptn::Error(err.into()));
+                    if !shutdown_initiated.swap(true, Ordering::AcqRel) {
+                        pt_tx.send_or_warn(Ptn::Error(err.into()));
+                    }
                 }
             }
         };
@@ -291,12 +343,17 @@ pub fn setup(
                         Notification::Terminate => break,
                         Notification::UserEvent(ue) => ue,
                     };
+                    if shutdown_initiated.load(Ordering::Acquire) {
+                        continue;
+                    }
                     debug!(?ue);
                     send_user_event(ue);
                     continue;
                 }
                 Err(TryRecvError::Disconnected) => {
-                    warn!("primary died before ec-main");
+                    if !shutdown_initiated.load(Ordering::Acquire) {
+                        warn!("primary died before ec-main");
+                    }
                     break;
                 }
                 Err(TryRecvError::Empty) => {}
@@ -317,6 +374,9 @@ pub fn setup(
             if !lossy_closed {
                 match from_pt_lossy_rx.try_recv() {
                     Ok(ue) => {
+                        if shutdown_initiated.load(Ordering::Acquire) {
+                            continue;
+                        }
                         trace!(?ue);
                         send_user_event(ue);
                         continue;
@@ -345,11 +405,16 @@ pub fn setup(
                             Notification::Terminate => break,
                             Notification::UserEvent(ue) => ue,
                         };
+                        if shutdown_initiated.load(Ordering::Acquire) {
+                            continue;
+                        }
                         debug!(?ue);
                         send_user_event(ue);
                     }
                     Err(_) => {
-                        warn!("primary died before ec-main");
+                        if !shutdown_initiated.load(Ordering::Acquire) {
+                            warn!("primary died before ec-main");
+                        }
                         break;
                     }
                 }
@@ -516,7 +581,7 @@ mod tests {
             width,
             height,
             x_hot: 1,
-            y_hot: 2,
+            y_hot: 1,
             data,
         }
     }
@@ -528,7 +593,7 @@ mod tests {
         let data = build_pixel_data(width, height);
         let cursor_image = build_cursor_image(width as u32, height as u32, data.clone());
         let cursor = Cursor::try_from(cursor_image).expect("cursor conversion succeeds");
-        assert_eq!(cursor.hot, Point::new(1, 2));
+        assert_eq!(cursor.hot, Point::new(1, 1));
         // ndarray stores row-major as (rows = height, cols = width)
         assert_eq!(cursor.pixels.shape(), &[height, width]);
         for ((x, y), pixel) in cursor.pixels.indexed_iter() {
@@ -561,6 +626,23 @@ mod tests {
             data: vec![],
         };
         let err = Cursor::try_from(cursor_image).expect_err("overflow should fail");
+        assert!(matches!(err, Error::Protocol(_)));
+    }
+
+    #[test]
+    fn cursor_try_from_hotspot_out_of_bounds() {
+        let width = 2;
+        let height = 2;
+        let data = build_pixel_data(width, height);
+        let cursor_image = proto::CursorImage {
+            id: 1,
+            width: width as u32,
+            height: height as u32,
+            x_hot: 2,
+            y_hot: 0,
+            data,
+        };
+        let err = Cursor::try_from(cursor_image).expect_err("hotspot bounds should fail");
         assert!(matches!(err, Error::Protocol(_)));
     }
 

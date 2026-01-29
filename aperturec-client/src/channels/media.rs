@@ -8,6 +8,7 @@ use aperturec_graphics::display;
 use aperturec_utils::channels::SenderExt;
 
 use crossbeam::channel::{Receiver, Sender, bounded, select_biased};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use tracing::*;
 
@@ -48,7 +49,12 @@ pub enum Error {
 /// * `mc` - Media channel handle used to receive server-originated media messages.
 /// * `pt_tx` - Sends `Draw` or error notifications back to the primary thread.
 /// * `from_pt_rx` - Receives display updates or termination requests.
-pub fn setup(mc: channel::ClientMedia, pt_tx: Sender<Ptn>, from_pt_rx: Receiver<Notification>) {
+pub fn setup(
+    mc: channel::ClientMedia,
+    pt_tx: Sender<Ptn>,
+    from_pt_rx: Receiver<Notification>,
+    shutdown_initiated: std::sync::Arc<AtomicBool>,
+) {
     let (from_network_tx, from_network_rx) = bounded(0);
 
     let network_rx_thread = spawn_rx_thread(mc, from_network_tx, debug_span!("mc-network-rx"));
@@ -72,14 +78,18 @@ pub fn setup(mc: channel::ClientMedia, pt_tx: Sender<Ptn>, from_pt_rx: Receiver<
         loop {
             if framer.has_draws() {
                 for draw in framer.get_draws_and_reset() {
-                    pt_tx.send_or_warn(Ptn::Draw(draw));
+                    if !shutdown_initiated.load(Ordering::Acquire) {
+                        pt_tx.send_or_warn(Ptn::Draw(draw));
+                    }
                 }
             }
 
             select_biased! {
                 recv(from_pt_rx) -> pt_msg_res => {
                     let Ok(pt_msg) = pt_msg_res else {
-                        warn!("primary died before mc-main");
+                        if !shutdown_initiated.load(Ordering::Acquire) {
+                            warn!("primary died before mc-main");
+                        }
                         break;
                     };
                     let display_config = match pt_msg {
@@ -105,7 +115,11 @@ pub fn setup(mc: channel::ClientMedia, pt_tx: Sender<Ptn>, from_pt_rx: Receiver<
                                 warn!(%error, "error processing media message");
                             }
                         },
-                        Err(err) => pt_tx.send_or_warn(Ptn::Error(err.into())),
+                        Err(err) => {
+                            if !shutdown_initiated.swap(true, Ordering::AcqRel) {
+                                pt_tx.send_or_warn(Ptn::Error(err.into()));
+                            }
+                        }
                     }
                 },
             }

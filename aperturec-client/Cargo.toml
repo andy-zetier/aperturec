@@ -18,12 +18,10 @@ aperturec-protocol = { path = "../aperturec-protocol" }
 aperturec-metrics = { path = "../aperturec-metrics" }
 aperturec-utils = { path = "../aperturec-utils" }
 
-async-channel = "2.5"
 atomicbox = "0.4"
 clap = { version = "4.5.54", features = ["derive"] }
 crossbeam = "0.8"
 crossbeam-ring-channel = "0.1"
-ctrlc = { version = "3.5", features = ["termination"] }
 derive_builder = "0.20"
 derive_more = { version = "2.1", features = ["display"] }
 derive-new = "0.7"
@@ -40,7 +38,6 @@ range-set-blaze = "0.4"
 regex = "1.12"
 rpassword = "7.4"
 secrecy = "0.10"
-strum = { version = "0.27", features = ["derive"] }
 sysinfo = "0.38"
 thiserror = "2.0"
 tracing = "0.1"

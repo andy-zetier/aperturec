@@ -275,11 +275,13 @@ pub struct Connection {
     pt_tx: Sender<Notification>,
     primary_thread: Option<thread::JoinHandle<()>>,
     is_active: Arc<AtomicBool>,
+    shutdown_initiated: Arc<AtomicBool>,
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        self.pt_tx.send_or_warn(Notification::Terminate);
+        self.shutdown_initiated.store(true, Ordering::Release);
+        let _ = self.pt_tx.send(Notification::Terminate);
         if let Some(handle) = self.primary_thread.take()
             && let Err(panic) = handle.join()
         {
@@ -339,8 +341,9 @@ impl Connection {
     /// the connection. Use this to communicate why the connection is ending when the
     /// reason differs from a normal UI exit.
     pub fn disconnect_with_reason(self, reason: proto::control::ClientGoodbyeReason) {
+        self.shutdown_initiated.store(true, Ordering::Release);
         if self.is_active.load(Ordering::Acquire) {
-            self.pt_tx.send_or_warn(Notification::ToCC(ToCC::Goodbye {
+            let _ = self.pt_tx.send(Notification::ToCC(ToCC::Goodbye {
                 reason,
                 id: self.connection_parameters.client_id,
             }));
@@ -927,6 +930,7 @@ impl Client {
         crate::metrics::ensure_client_metrics_registered();
 
         let (cc, ec, mc, tc, handle) = self.setup_unified_channel()?;
+        let shutdown_initiated = Arc::new(AtomicBool::new(false));
 
         let (pt_tx, pt_rx) = bounded(0);
         let (event_lossless_tx, event_lossless_rx) = unbounded();
@@ -934,7 +938,7 @@ impl Client {
 
         let (to_cc_tx, to_cc_rx) = unbounded();
         let (from_cc_tx, from_cc_rx) = bounded(0);
-        channels::control::setup(cc, from_cc_tx, to_cc_rx);
+        channels::control::setup(cc, from_cc_tx, to_cc_rx, shutdown_initiated.clone());
 
         let client_init = self.get_init()?;
         debug!(?client_init);
@@ -981,18 +985,30 @@ impl Client {
         let (to_ec_lossless_tx, to_ec_lossless_rx) = unbounded();
         let (to_ec_lossy_tx, to_ec_lossy_rx) = ring_bounded(1);
         let (from_ec_tx, from_ec_rx) = bounded(0);
-        channels::event::setup(ec, from_ec_tx, to_ec_lossless_rx, to_ec_lossy_rx);
+        channels::event::setup(
+            ec,
+            from_ec_tx,
+            to_ec_lossless_rx,
+            to_ec_lossy_rx,
+            shutdown_initiated.clone(),
+        );
 
         let (to_mc_tx, to_mc_rx) = unbounded();
         let (from_mc_tx, from_mc_rx) = bounded(0);
-        channels::media::setup(mc, from_mc_tx, to_mc_rx);
+        channels::media::setup(mc, from_mc_tx, to_mc_rx, shutdown_initiated.clone());
         to_mc_tx.send(channels::media::Notification::DisplayConfiguration(
             connection_parameters.display_config.clone(),
         ))?;
 
         let (to_tc_tx, to_tc_rx) = unbounded();
         let (from_tc_tx, from_tc_rx) = bounded(0);
-        channels::tunnel::setup(self.requested_tunnels.clone(), tc, from_tc_tx, to_tc_rx);
+        channels::tunnel::setup(
+            self.requested_tunnels.clone(),
+            tc,
+            from_tc_tx,
+            to_tc_rx,
+            shutdown_initiated.clone(),
+        );
         to_tc_tx.send(channels::tunnel::Notification::Allocations(
             connection_parameters.allocated_tunnels.clone(),
         ))?;
@@ -1004,21 +1020,47 @@ impl Client {
 
         let is_active = Arc::new(AtomicBool::new(true));
         let is_active_pt = is_active.clone();
+        let shutdown_initiated_pt = shutdown_initiated.clone();
         let primary_thread = thread::spawn(move || {
             let _ = trace_span!("primary-thread").entered();
             loop {
                 select_biased! {
                     recv(pt_rx) -> pt_msg_res => {
                         let Ok(pt_msg) = pt_msg_res else {
-                            warn!("connection dropped without terminating");
+                            if !shutdown_initiated_pt.load(Ordering::Acquire) {
+                                warn!("connection dropped without terminating");
+                            }
                             break;
                         };
                         match pt_msg {
-                            Notification::Terminate => break,
-                            Notification::ToCC(msg) => to_cc_tx.send_or_warn(msg),
+                            Notification::Terminate => {
+                                shutdown_initiated_pt.store(true, Ordering::Release);
+                                break;
+                            }
+                            Notification::ToCC(msg) => {
+                                let is_shutting_down =
+                                    shutdown_initiated_pt.load(Ordering::Acquire);
+                                if is_shutting_down && !matches!(msg, ToCC::Goodbye { .. }) {
+                                    continue;
+                                }
+                                if is_shutting_down {
+                                    let _ = to_cc_tx.send(msg);
+                                } else {
+                                    to_cc_tx.send_or_warn(msg);
+                                }
+                            }
                             Notification::ToEC(msg) => match msg {
-                                ToEC::Terminate => to_ec_lossless_tx.send_or_warn(ToEC::Terminate),
+                                ToEC::Terminate => {
+                                    if shutdown_initiated_pt.load(Ordering::Acquire) {
+                                        let _ = to_ec_lossless_tx.send(ToEC::Terminate);
+                                    } else {
+                                        to_ec_lossless_tx.send_or_warn(ToEC::Terminate);
+                                    }
+                                }
                                 ToEC::UserEvent(ue) => {
+                                    if shutdown_initiated_pt.load(Ordering::Acquire) {
+                                        continue;
+                                    }
                                     if matches!(ue, ec::UserEvent::Pointer { .. }) {
                                         let _ = to_ec_lossy_tx.send(ue);
                                     } else {
@@ -1027,13 +1069,27 @@ impl Client {
                                     }
                                 }
                             },
-                            Notification::ToMC(msg) => to_mc_tx.send_or_warn(msg),
-                            Notification::ToTC(msg) => to_tc_tx.send_or_warn(msg),
+                            Notification::ToMC(msg) => {
+                                if shutdown_initiated_pt.load(Ordering::Acquire) {
+                                    let _ = to_mc_tx.send(msg);
+                                } else {
+                                    to_mc_tx.send_or_warn(msg);
+                                }
+                            }
+                            Notification::ToTC(msg) => {
+                                if shutdown_initiated_pt.load(Ordering::Acquire) {
+                                    let _ = to_tc_tx.send(msg);
+                                } else {
+                                    to_tc_tx.send_or_warn(msg);
+                                }
+                            }
                         }
                     },
                     recv(from_cc_rx) -> cc_msg_res => {
                         let Ok(cc_msg) = cc_msg_res else {
-                            warn!("CC terminated unexpectedly");
+                            if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
+                                warn!("CC terminated unexpectedly");
+                            }
                             break;
                         };
 
@@ -1041,22 +1097,27 @@ impl Client {
                             FromCC::ServerInit(si) => warn!(?si, "gratuitous server init"),
                             FromCC::ServerGoodbye(server_reason) => {
                                 info!(%server_reason, "server exiting");
-                                event_lossless_tx
-                                    .send_or_warn(Event::Quit(QuitReason::ServerGoodbye { server_reason }));
+                                shutdown_initiated_pt.store(true, Ordering::Release);
+                                let _ = event_lossless_tx.send(Event::Quit(
+                                    QuitReason::ServerGoodbye { server_reason },
+                                ));
                                 break;
                             }
                             FromCC::Error(error) => {
                                 error!(%error, "control channel");
-                                event_lossless_tx.send_or_warn(Event::Quit(QuitReason::UnrecoverableError(
-                                    error.into(),
-                                )));
+                                shutdown_initiated_pt.store(true, Ordering::Release);
+                                let _ = event_lossless_tx.send(Event::Quit(
+                                    QuitReason::UnrecoverableError(error.into()),
+                                ));
                                 break;
                             }
                         }
                     },
                     recv(from_ec_rx) -> ec_msg_res => {
                         let Ok(ec_msg) = ec_msg_res else {
-                            warn!("EC terminated unexpectedly");
+                            if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
+                                warn!("EC terminated unexpectedly");
+                            }
                             break;
                         };
 
@@ -1073,9 +1134,10 @@ impl Client {
                                     warn!(%error, "event channel protocol error");
                                 } else {
                                     error!(%error, "event channel");
-                                    event_lossless_tx.send_or_warn(Event::Quit(QuitReason::UnrecoverableError(
-                                        error.into(),
-                                    )));
+                                    shutdown_initiated_pt.store(true, Ordering::Release);
+                                    let _ = event_lossless_tx.send(Event::Quit(
+                                        QuitReason::UnrecoverableError(error.into()),
+                                    ));
                                     break;
                                 }
                             }
@@ -1083,7 +1145,9 @@ impl Client {
                     },
                     recv(from_mc_rx) -> mc_msg_res => {
                         let Ok(mc_msg) = mc_msg_res else {
-                            warn!("MC terminated unexpectedly");
+                            if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
+                                warn!("MC terminated unexpectedly");
+                            }
                             break;
                         };
 
@@ -1093,9 +1157,10 @@ impl Client {
                             }
                             FromMC::Error(error) => {
                                 error!(%error, "media channel");
-                                event_lossless_tx.send_or_warn(Event::Quit(QuitReason::UnrecoverableError(
-                                    error.into(),
-                                )));
+                                shutdown_initiated_pt.store(true, Ordering::Release);
+                                let _ = event_lossless_tx.send(Event::Quit(
+                                    QuitReason::UnrecoverableError(error.into()),
+                                ));
                                 break;
                             }
                         }
@@ -1103,7 +1168,9 @@ impl Client {
                     },
                     recv(from_tc_rx) -> tc_msg_res => {
                         let Ok(tc_msg) = tc_msg_res else {
-                            warn!("TC terminated unexpectedly");
+                            if !shutdown_initiated_pt.swap(true, Ordering::AcqRel) {
+                                warn!("TC terminated unexpectedly");
+                            }
                             break;
                         };
 
@@ -1113,10 +1180,10 @@ impl Client {
                 }
             }
             is_active_pt.store(false, Ordering::Release);
-            to_cc_tx.send_or_warn(ToCC::Terminate);
-            to_ec_lossless_tx.send_or_warn(ToEC::Terminate);
-            to_mc_tx.send_or_warn(ToMC::Terminate);
-            to_tc_tx.send_or_warn(ToTC::Terminate);
+            let _ = to_cc_tx.send(ToCC::Terminate);
+            let _ = to_ec_lossless_tx.send(ToEC::Terminate);
+            let _ = to_mc_tx.send(ToMC::Terminate);
+            let _ = to_tc_tx.send(ToTC::Terminate);
             debug!("sent termination signal to all channels");
             handle.close();
             debug!("closed channel connection");
@@ -1129,6 +1196,7 @@ impl Client {
             primary_thread: Some(primary_thread),
             connection_parameters,
             is_active,
+            shutdown_initiated,
         })
     }
 

@@ -16,7 +16,10 @@ use std::{
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream as StdTcpStream, ToSocketAddrs},
     ops::ControlFlow,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -271,6 +274,7 @@ fn spawn_accept_threads(
     client_bound_tunnels: &BTreeMap<u64, proto::Description>,
     stream_state_tx: &Sender<StreamState>,
     pt_tx: &Sender<Ptn>,
+    shutdown_initiated: &AtomicBool,
 ) -> (BTreeMap<u64, Waker>, ThreadMap) {
     let mut accept_wakers: BTreeMap<u64, Waker> = BTreeMap::new();
     let mut threads: ThreadMap = BTreeMap::new();
@@ -421,12 +425,15 @@ fn spawn_accept_threads(
                 accept_wakers.insert(tunnel_id, waker);
                 threads.insert(format!("tc-accept-{tunnel_id}"), accept_thread);
             }
-            Ok(Err(err)) => handle_accept_init_failure(tunnel_id, err, pt_tx, accept_thread),
+            Ok(Err(err)) => {
+                handle_accept_init_failure(tunnel_id, err, pt_tx, shutdown_initiated, accept_thread)
+            }
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
                 handle_accept_init_failure(
                     tunnel_id,
                     AcceptInitError::NoHandshake,
                     pt_tx,
+                    shutdown_initiated,
                     accept_thread,
                 )
             }
@@ -440,13 +447,16 @@ fn handle_accept_init_failure(
     tunnel_id: u64,
     reason: AcceptInitError,
     pt_tx: &Sender<Ptn>,
+    shutdown_initiated: &AtomicBool,
     accept_thread: JoinHandle<()>,
 ) {
     warn!(?tunnel_id, %reason, "accept thread failed to initialize");
-    pt_tx.send_or_warn(Ptn::ChannelError(ChannelError::TunnelAcceptInitFailed {
-        tunnel_id,
-        reason,
-    }));
+    if !shutdown_initiated.load(Ordering::Acquire) {
+        pt_tx.send_or_warn(Ptn::ChannelError(ChannelError::TunnelAcceptInitFailed {
+            tunnel_id,
+            reason,
+        }));
+    }
     if let Err(join_err) = accept_thread.join() {
         warn!(?tunnel_id, "accept thread panicked: {join_err:?}");
     }
@@ -459,6 +469,7 @@ fn spawn_quic_threads(
     to_quic_rx: Receiver<proto::Message>,
     from_quic_tx: Sender<QuicRxResult>,
     pt_tx: Sender<Ptn>,
+    shutdown_initiated: Arc<AtomicBool>,
 ) -> ThreadMap {
     let mut threads = ThreadMap::new();
 
@@ -467,7 +478,9 @@ fn spawn_quic_threads(
         debug!("started");
         while let Ok(msg) = to_quic_rx.recv() {
             if let Err(error) = tc_tx.send(msg) {
-                pt_tx.send_or_warn(Ptn::ChannelError(error.into()));
+                if !shutdown_initiated.load(Ordering::Acquire) {
+                    pt_tx.send_or_warn(Ptn::ChannelError(error.into()));
+                }
                 break;
             }
         }
@@ -489,6 +502,7 @@ fn spawn_tc_main(
     tunnels: TunnelMaps,
     workers: WorkerHandles,
     pt_tx: Sender<Ptn>,
+    shutdown_initiated: Arc<AtomicBool>,
 ) {
     let TcMainInputs {
         from_pt_rx,
@@ -513,7 +527,7 @@ fn spawn_tc_main(
         loop {
             select_biased! {
                 recv(from_pt_rx) -> pt_msg_res => {
-                    if handle_primary_notification(pt_msg_res).is_break() {
+                    if handle_primary_notification(pt_msg_res, &shutdown_initiated).is_break() {
                         break;
                     }
                 }
@@ -525,6 +539,7 @@ fn spawn_tc_main(
                         &server_bound_tunnels,
                         &mut streams,
                         &pt_tx,
+                        &shutdown_initiated,
                     );
                     match cf {
                         ControlFlow::Break(()) => break,
@@ -1069,6 +1084,7 @@ fn initialize_threads(
     from_pt_rx: Receiver<Notification>,
     server_bound_tunnels: BTreeMap<u64, proto::Description>,
     client_bound_tunnels: BTreeMap<u64, proto::Description>,
+    shutdown_initiated: Arc<AtomicBool>,
 ) {
     let (tc_rx, tc_tx) = tc.split();
 
@@ -1076,9 +1092,20 @@ fn initialize_threads(
     let (to_quic_tx, to_quic_rx) = bounded(0);
     let (stream_state_tx, stream_state_rx) = bounded(0);
 
-    let (accept_wakers, accept_threads) =
-        spawn_accept_threads(&client_bound_tunnels, &stream_state_tx, &pt_tx);
-    let quic_threads = spawn_quic_threads(tc_rx, tc_tx, to_quic_rx, from_quic_tx, pt_tx.clone());
+    let (accept_wakers, accept_threads) = spawn_accept_threads(
+        &client_bound_tunnels,
+        &stream_state_tx,
+        &pt_tx,
+        &shutdown_initiated,
+    );
+    let quic_threads = spawn_quic_threads(
+        tc_rx,
+        tc_tx,
+        to_quic_rx,
+        from_quic_tx,
+        pt_tx.clone(),
+        shutdown_initiated.clone(),
+    );
     let mut threads = accept_threads;
     threads.extend(quic_threads);
 
@@ -1098,7 +1125,7 @@ fn initialize_threads(
         threads,
     };
 
-    spawn_tc_main(inputs, tunnels, workers, pt_tx);
+    spawn_tc_main(inputs, tunnels, workers, pt_tx, shutdown_initiated);
 }
 
 /// Entry point for tunnel handling. Waits for server allocation responses, then starts the
@@ -1114,6 +1141,7 @@ pub fn setup(
     tc: channel::ClientTunnel,
     pt_tx: Sender<Ptn>,
     from_pt_rx: Receiver<Notification>,
+    shutdown_initiated: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
         let _s = debug_span!("tc-setup").entered();
@@ -1190,15 +1218,19 @@ pub fn setup(
             from_pt_rx,
             server_bound_tunnels,
             client_bound_tunnels,
+            shutdown_initiated,
         )
     });
 }
 
 fn handle_primary_notification(
     pt_msg_res: Result<Notification, crossbeam::channel::RecvError>,
+    shutdown_initiated: &AtomicBool,
 ) -> ControlFlow<()> {
     let Ok(pt_msg) = pt_msg_res else {
-        warn!("primary died before tc-main");
+        if !shutdown_initiated.load(Ordering::Acquire) {
+            warn!("primary died before tc-main");
+        }
         return ControlFlow::Break(());
     };
     trace!(?pt_msg, "received message from primary");
@@ -1218,6 +1250,7 @@ fn handle_quic_message(
     server_bound_tunnels: &BTreeMap<u64, proto::Description>,
     streams: &mut BTreeMap<Id, State>,
     pt_tx: &Sender<Ptn>,
+    shutdown_initiated: &AtomicBool,
 ) -> ControlFlow<(), Option<(String, JoinHandle<()>)>> {
     let Ok(quic_res) = quic_thread_msg_res else {
         debug!("tc-quic-rx died before tc-main");
@@ -1226,7 +1259,9 @@ fn handle_quic_message(
     let s2c = match quic_res {
         Ok(msg) => msg,
         Err(error) => {
-            pt_tx.send_or_warn(Ptn::ChannelError(error.into()));
+            if !shutdown_initiated.load(Ordering::Acquire) {
+                pt_tx.send_or_warn(Ptn::ChannelError(error.into()));
+            }
             return ControlFlow::Continue(None);
         }
     };

@@ -7,6 +7,7 @@ use aperturec_protocol::control::{
 use aperturec_utils::channels::SenderExt;
 
 use crossbeam::channel::{Receiver, Sender, bounded, select_biased};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use tracing::*;
 
@@ -107,6 +108,7 @@ pub fn setup(
     client_cc: channel::ClientControl,
     pt_tx: Sender<Ptn>,
     from_pt_rx: Receiver<Notification>,
+    shutdown_initiated: std::sync::Arc<AtomicBool>,
 ) {
     let (cc_rx, mut cc_tx) = client_cc.split();
 
@@ -121,11 +123,16 @@ pub fn setup(
             select_biased! {
                 recv(from_pt_rx) -> pt_msg_res => {
                     let Ok(pt_msg) = pt_msg_res else {
-                        warn!("primary died before cc-main");
+                        if !shutdown_initiated.load(Ordering::Acquire) {
+                            warn!("primary died before cc-main");
+                        }
                         break;
                     };
                     let msg = match pt_msg {
-                        Notification::Terminate => break,
+                        Notification::Terminate => {
+                            shutdown_initiated.store(true, Ordering::Release);
+                            break;
+                        }
                         Notification::Init(ci) => c2s::Message::from(*ci),
                         Notification::Goodbye { reason, id } => c2s::Message::from(
                             proto::ClientGoodbyeBuilder::default()
@@ -137,7 +144,9 @@ pub fn setup(
                     };
                     if let Err(error) = cc_tx.send(msg) {
                         error!(%error);
-                        pt_tx.send_or_warn(Ptn::Error(error.into()));
+                        if !shutdown_initiated.swap(true, Ordering::AcqRel) {
+                            pt_tx.send_or_warn(Ptn::Error(error.into()));
+                        }
                     }
                 }
                 recv(from_network_rx) -> network_msg_res => {
@@ -148,13 +157,19 @@ pub fn setup(
                     match network_msg {
                         Ok(s2c::Message::ServerGoodbye(gb)) => {
                             let reason = gb.reason().friendly_str().to_string();
-                            pt_tx.send_or_warn(Ptn::ServerGoodbye(reason));
+                            if !shutdown_initiated.swap(true, Ordering::AcqRel) {
+                                pt_tx.send_or_warn(Ptn::ServerGoodbye(reason));
+                            }
                         }
                         Ok(s2c::Message::ServerInit(si)) => {
-                            pt_tx.send_or_warn(Ptn::ServerInit(si));
+                            if !shutdown_initiated.load(Ordering::Acquire) {
+                                pt_tx.send_or_warn(Ptn::ServerInit(si));
+                            }
                         }
                         Err(err) => {
-                            pt_tx.send_or_warn(Ptn::Error(err.into()));
+                            if !shutdown_initiated.swap(true, Ordering::AcqRel) {
+                                pt_tx.send_or_warn(Ptn::Error(err.into()));
+                            }
                             break;
                         }
                     }
