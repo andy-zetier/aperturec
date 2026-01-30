@@ -26,8 +26,11 @@ jobs:
       - name: Run native build
         shell: pwsh
         run: |
-          ci/scripts/windows-native-build.ps1
-          ci/scripts/windows-native-packaging.ps1
+          $ErrorActionPreference = "Stop"
+          Write-Host "==> Running build script"
+          & ci\scripts\windows-native-build.ps1
+          Write-Host "==> Running packaging script"
+          & ci\scripts\windows-native-packaging.ps1
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: client-package-windows-amd64
