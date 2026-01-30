@@ -1,0 +1,26 @@
+menubar {
+  background-color: @theme_bg_color;
+  color: @theme_fg_color;
+  border-bottom: 1px solid @borders;
+}
+.arrow-button {
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border: none;
+  box-shadow: none;
+  padding: 4px;
+  min-width: 20px;
+  min-height: 20px;
+  border-radius: 4px;
+}
+menubar > item > popover {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+menubar > item > popover > contents {
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+}

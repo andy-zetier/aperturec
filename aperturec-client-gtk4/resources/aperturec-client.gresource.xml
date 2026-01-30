@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/aperturec/client">
+    <file>css/menu-overlay.css</file>
+    <file>ui/dialogs.ui</file>
+    <file>ui/menu.ui</file>
+    <file>ui/menu-nomm.ui</file>
+    <file>ui/menu-windows.ui</file>
+    <file>ui/window.ui</file>
+  </gresource>
+</gresources>

@@ -134,7 +134,7 @@ jobs:
         with:
           cache-key: windows
       - run: cargo build --release -p aperturec-client-gtk4 --target x86_64-pc-windows-gnu
-      - run: cp target/x86_64-pc-windows-gnu/release/aperturec-client.exe ./
+      - run: cp target/x86_64-pc-windows-gnu/release/aperturec-client-gtk4.exe ./
       - run: |
           chmod +x ci/scripts/create-windows-package.sh
           ci/scripts/create-windows-package.sh

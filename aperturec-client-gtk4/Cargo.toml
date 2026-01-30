@@ -6,14 +6,45 @@ edition.workspace = true
 license-file.workspace = true
 publish = false
 
-build = "../common_build.rs"
+build = "build.rs"
 
 [[bin]]
 name = "aperturec-client-gtk4"
 path = "src/main.rs"
 
 [dependencies]
+aperturec-client = { path = "../aperturec-client" }
+aperturec-graphics = { path = "../aperturec-graphics" }
+aperturec-metrics = { path = "../aperturec-metrics" }
+aperturec-utils = { path = "../aperturec-utils" }
+
+anyhow = "1"
+async-channel = "2"
+bytemuck = "1"
+clap = "4"
 gtk4 = "0.10"
+keycode = "1.0"
+ndarray = "0.17"
+strum = { version = "0.27", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[features]
+draw-debug = []
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gdk4-macos = "0.10"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gdk4-win32 = "0.10"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 
 [package.metadata.deb]
 name = "aperturec-client"
