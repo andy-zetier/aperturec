@@ -101,28 +101,9 @@ jobs:
             target/rpm
           if-no-files-found: error
 
-  build-windows-image:
-    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release-please--branches--main'
-    runs-on: ubuntu-latest
-    outputs:
-      image_ref: ${{ steps.build.outputs.image_ref }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-      - id: build
-        uses: ./.github/actions/build-docker-image
-        with:
-          target: client-image-windows
-          upstream_image: docker.io/library/fedora:43
-          os_variant: fedora
-          os_name: windows
-          registry_password: ${{ secrets.GITHUB_TOKEN }}
-
   build-package-windows:
     if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release-please--branches--main'
-    needs: build-windows-image
-    runs-on: ubuntu-latest
-    container:
-      image: ${{ needs.build-windows-image.outputs.image_ref }}
+    runs-on: windows-latest
     env:
       AZURE_APP_ID: ${{ secrets.AZURE_APP_ID }}
       AZURE_APP_SECRET: ${{ secrets.AZURE_APP_SECRET }}
@@ -130,17 +111,17 @@ jobs:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache-key: windows
-      - run: cargo build --release -p aperturec-client-gtk4 --target x86_64-pc-windows-gnu
-      - run: cp target/x86_64-pc-windows-gnu/release/aperturec-client-gtk4.exe ./
-      - run: |
-          chmod +x ci/scripts/create-windows-package.sh
-          ci/scripts/create-windows-package.sh
+      - name: Native Windows build and package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "==> Running build script"
+          & ci\scripts\windows-native-build.ps1
+          Write-Host "==> Running packaging script"
+          & ci\scripts\windows-native-packaging.ps1
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: client-package-windows-amd64
+          name: client-package-windows
           path: |
             aperturec-client-win.zip
             aperturec-client_*.msi

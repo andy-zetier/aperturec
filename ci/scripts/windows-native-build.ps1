@@ -1,19 +1,42 @@
 #
-# This script targets the GitHub-hosted Windows runner label `windows-2025`:
-#     https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md
+# Windows native build script (builds the GTK client executable).
 #
-# The following dependencies are required:
+# CI environment / local use:
+# - GitHub-hosted Windows runner label `windows-2025`
+#   https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md
+# - Can also be run on local Windows hosts with PowerShell
 #
+# Dependencies:
 # - CMake
-# - Cargo
+# - Cargo / Rust toolchain
 # - Git
 # - LLVM
-# - Python 3.14
-# - Rust
-# - SSH
+# - Python 3.14 (launcher `py`)
+# - curl.exe (optional)
+# - tar (optional)
 # - Visual Studio 2022 with C++ workloads
 # - vcpkg
 #
+# Environment variables
+# ---------------------
+# Required:
+# - None
+#
+# Optional overrides:
+# - VCPKG_ROOT: vcpkg install root. If unset, auto-resolved via standard locations/VS install.
+# - VCPKG_INSTALLED_DIR: prebuilt vcpkg installed directory. If set and contains
+#   x64-windows, vcpkg install is skipped.
+# - GTK_ROOT: GTK install root. If set and contains gtk-4-1.dll and adwaita-1-0.dll,
+#   gvsbuild is skipped. Otherwise GTK is built via gvsbuild and auto-resolved.
+# - GVSBUILD_RELEASE_TAG: GitHub release tag for prebuilt GTK download (default: latest).
+# - GVSBUILD_ASSET_NAME: GitHub release asset name for GTK zip (default: first GTK4_*_x64.zip).
+# - GVSBUILD_ZIP_URL: Direct URL to GTK zip (overrides tag/asset lookup).
+# - PYTHON_EXE: Python launcher (defaults to "py").
+# - PYTHON_ARGS: Python args (defaults to "-3.14").
+#
+# Set by this script:
+# - VCPKG_MANIFEST_DIR, VCPKG_INSTALLED_DIR, VCPKGRS_DYNAMIC, OPENSSL_DIR, PROTOC, CL,
+#   PKG_CONFIG_PATH, PATH, LIB.
 
 #
 # Environment setup: read optional env overrides and prepare a temp vcpkg manifest.
@@ -177,6 +200,7 @@ function Resolve-GvsbuildGtkAsset {
       Url = $ZipUrl
       Name = (Split-Path $ZipUrl -Leaf)
       Tag = $ReleaseTag
+      RequestedAsset = $AssetName
     }
   }
   $release = Get-GvsbuildRelease -ReleaseTag $ReleaseTag
@@ -193,6 +217,7 @@ function Resolve-GvsbuildGtkAsset {
     Url = $asset.browser_download_url
     Name = $asset.name
     Tag = $release.tag_name
+    RequestedAsset = $AssetName
   }
 }
 
@@ -208,6 +233,10 @@ function Download-GvsbuildGtk {
     Write-Warning "No GTK asset found from gvsbuild releases (tag=$ReleaseTag, asset=$AssetName)."
     return $null
   }
+  $tagLabel = if ($asset.Tag) { $asset.Tag } else { "<unknown>" }
+  $requested = if ($asset.RequestedAsset) { $asset.RequestedAsset } else { "<auto>" }
+  Write-Host "Selected GTK release tag: $tagLabel"
+  Write-Host "Selected GTK asset: $($asset.Name) (requested: $requested)"
 
   if (-not (Test-Path $TargetRoot)) {
     New-Item -ItemType Directory -Path $TargetRoot | Out-Null
@@ -250,6 +279,10 @@ if (-not $VcpkgRoot) {
 #
 Write-Host "Resolved VCPKG_ROOT=$VcpkgRoot"
 
+if ($env:GTK_ROOT -and -not (Test-Path $env:GTK_ROOT)) {
+  throw "GTK root not found at $env:GTK_ROOT (from GTK_ROOT). Update/unset GTK_ROOT or create that directory."
+}
+
 if (-not (Test-Path $VcpkgRoot)) {
   if ($env:VCPKG_ROOT) {
     throw "vcpkg not found at $VcpkgRoot (from VCPKG_ROOT). Install vcpkg there or update/unset VCPKG_ROOT."
@@ -269,18 +302,12 @@ Require-Command -Name "cmake" -Hint "Install CMake and ensure it is on PATH."
 Require-Command -Name "cargo" -Hint "Install Rust and ensure cargo is on PATH."
 Require-Command -Name $PythonExe -Hint "Install the Python launcher ('py') and ensure it is on PATH."
 
-#
-# Setup and build GTK4 via gvsbuild.
-#
-Write-Host "==> Setup and build GTK4 via gvsbuild"
-
 $existingGtk = Resolve-GtkRoot -PreferredRoot $GtkRoot
-$existingGtkMsg = if ($existingGtk) { $existingGtk } else { "<none>" }
-Write-Host "Detected GTK root candidate: $existingGtkMsg"
 $gtk4Dll = if ($existingGtk) { Join-Path $existingGtk "bin\gtk-4-1.dll" } else { $null }
-$needsGtkBuild = -not $existingGtk -or -not (Test-Path $gtk4Dll)
+$adwaitaDll = if ($existingGtk) { Join-Path $existingGtk "bin\adwaita-1-0.dll" } else { $null }
+$needsGtkBuild = -not $existingGtk -or -not (Test-Path $gtk4Dll) -or -not (Test-Path $adwaitaDll)
 if (-not $needsGtkBuild) {
-  Write-Warning "GTK already present at $existingGtk; skipping gvsbuild. To force a rebuild, delete that directory (or C:\\gtk-build\\gtk\\x64\\release) and unset GTK_ROOT/GVSBUILD_*, then rerun."
+  Write-Host "GTK already present at $existingGtk; skipping gvsbuild. To force a rebuild, delete that directory (or C:\\gtk-build\\gtk\\x64\\release) and unset GTK_ROOT/GVSBUILD_*, then rerun."
 } else {
   $downloadRoot = if ($GtkRoot) { $GtkRoot } else { "C:\gtk" }
   Write-Host "GTK not found locally; attempting to download prebuilt GTK release into $downloadRoot."
@@ -300,32 +327,37 @@ if (-not $needsGtkBuild) {
     $existingGtk = $downloadedGtk
     $GtkRoot = $downloadedGtk
     $needsGtkBuild = $false
+  }
+
+  if ($needsGtkBuild) {
+  #
+  # Setup and build GTK4 via gvsbuild.
+  #
+  Write-Host "==> Setup and build GTK4 via gvsbuild"
+
+  Invoke-Checked -Label "pipx install" -File $PythonExe -Args (@($PythonArgs) + @("-m", "pip", "install", "--user", "pipx"))
+  Invoke-Checked -Label "gvsbuild install" -File $PythonExe -Args (@($PythonArgs) + @("-m", "pipx", "install", "gvsbuild"))
+
+  $pipxBin = Resolve-PipxBinDir -PythonExe $PythonExe -PythonArgs $PythonArgs
+  if ($pipxBin -and ($env:Path -notlike "*$pipxBin*")) {
+    $env:Path = "$pipxBin;$env:Path"
+    Write-Host "Set PATH=$env:Path"
+  }
+
+  # Prevent MSVC compiler from running out of heap space
+  $env:CL = "/Zm200"
+  Write-Host "Set CL=$env:CL"
+
+  if (Get-Command gvsbuild -ErrorAction SilentlyContinue) {
+    Invoke-Checked -Label "gvsbuild build" -File "gvsbuild" -Args @("build", "gtk4", "libadwaita")
   } else {
-    Write-Warning "Falling back to building GTK with gvsbuild."
-    Invoke-Checked -Label "pipx install" -File $PythonExe -Args (@($PythonArgs) + @("-m", "pip", "install", "--user", "pipx"))
-    Invoke-Checked -Label "gvsbuild install" -File $PythonExe -Args (@($PythonArgs) + @("-m", "pipx", "install", "gvsbuild"))
-
-    $pipxBin = Resolve-PipxBinDir -PythonExe $PythonExe -PythonArgs $PythonArgs
-    if ($pipxBin -and ($env:Path -notlike "*$pipxBin*")) {
-      $env:Path = "$pipxBin;$env:Path"
-      Write-Host "Set PATH=$env:Path"
-    }
-
-    # Prevent MSVC compiler from running out of heap space
-    $env:CL = "/Zm200"
-    Write-Host "Set CL=$env:CL"
-
-    if (Get-Command gvsbuild -ErrorAction SilentlyContinue) {
-      Invoke-Checked -Label "gvsbuild build" -File "gvsbuild" -Args @("build", "gtk4")
-    } else {
-      Write-Warning "gvsbuild command not found on PATH; falling back to Python module install"
-      Invoke-Checked -Label "gvsbuild pip install" -File $PythonExe -Args (@($PythonArgs) + @("-m", "pip", "install", "--user", "gvsbuild"))
-      Invoke-Checked -Label "gvsbuild build (module)" -File $PythonExe -Args (@($PythonArgs) + @("-m", "gvsbuild", "build", "gtk4"))
-    }
+    Write-Warning "gvsbuild command not found on PATH; falling back to Python module install"
+    Invoke-Checked -Label "gvsbuild pip install" -File $PythonExe -Args (@($PythonArgs) + @("-m", "pip", "install", "--user", "gvsbuild"))
+    Invoke-Checked -Label "gvsbuild build (module)" -File $PythonExe -Args (@($PythonArgs) + @("-m", "gvsbuild", "build", "gtk4", "libadwaita"))
+  }
   }
 }
 
-$GtkRoot = if (Test-GtkRoot -Root $GtkRoot) { $GtkRoot } else { $null }
 $GtkRoot = Resolve-GtkRoot -PreferredRoot $GtkRoot
 if (-not $GtkRoot) {
   if ($env:GTK_ROOT) {
@@ -351,23 +383,39 @@ $manifestNeedsBaseline = $false
 if ((Get-Content -Raw -Path $manifestPath) -notmatch '"builtin-baseline"\s*:') {
   $manifestNeedsBaseline = $true
 }
-$vcpkgInstalledDir = Join-Path $repoRoot "vcpkg_installed"
+$vcpkgInstalledDir = if ($env:VCPKG_INSTALLED_DIR) { $env:VCPKG_INSTALLED_DIR } else { Join-Path $repoRoot "vcpkg_installed" }
 $env:VCPKG_INSTALLED_DIR = $vcpkgInstalledDir
 Write-Host "Set VCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR"
-Push-Location $tempManifestRoot
-try {
-  if ($manifestNeedsBaseline) {
-    Invoke-Checked -Label "vcpkg baseline" -File $vcpkgExe -Args @("x-update-baseline", "--add-initial-baseline")
-  }
-  Invoke-Checked -Label "vcpkg install (x64-windows)" -File $vcpkgExe -Args @(
-    "install",
-    "--x-install-root",
-    $vcpkgInstalledDir,
-    "--triplet",
-    "x64-windows"
+if ($env:VCPKG_INSTALLED_DIR -and (Test-Path $vcpkgInstalledDir)) {
+  $tripletDirs = @(
+    (Join-Path $vcpkgInstalledDir "x64-windows")
   )
-} finally {
-  Pop-Location
+  $missingTriplets = @()
+  foreach ($dir in $tripletDirs) {
+    if (-not (Test-Path $dir)) {
+      $missingTriplets += $dir
+    }
+  }
+  if ($missingTriplets.Count -gt 0) {
+    throw "VCPKG_INSTALLED_DIR is set to $vcpkgInstalledDir but missing triplets: $($missingTriplets -join ', ')."
+  }
+  Write-Host "Using existing VCPKG_INSTALLED_DIR; skipping vcpkg install."
+} else {
+  Push-Location $tempManifestRoot
+  try {
+    if ($manifestNeedsBaseline) {
+      Invoke-Checked -Label "vcpkg baseline" -File $vcpkgExe -Args @("x-update-baseline", "--add-initial-baseline")
+    }
+    Invoke-Checked -Label "vcpkg install (x64-windows)" -File $vcpkgExe -Args @(
+      "install",
+      "--x-install-root",
+      $vcpkgInstalledDir,
+      "--triplet",
+      "x64-windows"
+    )
+  } finally {
+    Pop-Location
+  }
 }
 
 $env:VCPKGRS_DYNAMIC = 1
