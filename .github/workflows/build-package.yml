@@ -30,7 +30,7 @@ jobs:
         arch: [amd64, arm64]
         component: [client, server]
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - id: build
         uses: ./.github/actions/build-docker-image
         with:
@@ -80,7 +80,7 @@ jobs:
       # Use the specific Docker image built for this OS/arch/component with digest
       image: ${{ fromJSON(needs.collect-image-refs.outputs.images).image_ref[format('{0}-{1}-{2}', matrix.component.name, matrix.os.name, matrix.arch)] }}
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: ${{ matrix.os.name }}-${{ matrix.arch }}
@@ -107,7 +107,7 @@ jobs:
     outputs:
       image_ref: ${{ steps.build.outputs.image_ref }}
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - id: build
         uses: ./.github/actions/build-docker-image
         with:
@@ -129,7 +129,7 @@ jobs:
       AZURE_CERT_ALIAS: ${{ secrets.AZURE_CERT_ALIAS }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: windows
@@ -150,7 +150,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.head_ref == 'release-please--branches--main'
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: ./.github/actions/setup-macos-build
         with:
           cache-key: macos
