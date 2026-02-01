@@ -18,7 +18,7 @@ jobs:
     outputs:
       image_ref: ${{ steps.build.outputs.image_ref }}
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - id: build
         uses: ./.github/actions/build-docker-image
         with:
@@ -34,7 +34,7 @@ jobs:
     container:
       image: ${{ needs.build-image.outputs.image_ref }}
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: ubuntu-24-amd64
