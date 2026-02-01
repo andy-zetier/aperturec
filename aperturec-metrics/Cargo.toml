@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 anyhow = "1.0"
-chrono = "0.4.42"
+chrono = "0.4.43"
 malloc-info = { version = "0.1.2", optional = true }
 prometheus = { version = "0.14.0", features = ["push"] }
 reqwest = "0.12.25"
@@ -26,7 +26,7 @@ sysinfo = "0.37"
 
 [dev-dependencies]
 paste = "1.0"
-tempfile = "3.23.0"
+tempfile = "3.24.0"
 test-log = { version = "0.2", default-features = false, features = ["trace", "color"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

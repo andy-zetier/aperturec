@@ -20,7 +20,7 @@ aperturec-utils = { path = "../aperturec-utils" }
 anyhow = "1.0"
 async-channel = "2.5"
 bytes = "1.10"
-bytemuck = "1.24"
+bytemuck = "1.25"
 clap = "4.5"
 futures = { version = "0.3", default-features = false }
 gtk4 = "0.10"
